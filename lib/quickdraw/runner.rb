@@ -209,7 +209,7 @@ class Quickdraw::Runner
 					end
 
 					if console
-						progress = (@cursor * 100.0 / tests_length)
+						progress = @cursor >= tests_length ? 100.0 : (@cursor * 100.0 / tests_length)
 						print "\r\e[K#{'█' * (progress * bar_width / 100.0).floor}#{'░' * (bar_width - (progress * bar_width / 100.0).floor)} #{progress.round}%"
 					end
 				when Message::Stopping
