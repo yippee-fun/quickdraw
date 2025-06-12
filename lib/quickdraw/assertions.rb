@@ -27,6 +27,7 @@ module Quickdraw::Assertions
 
 		assert(actual == expected) do
 			diff = DIFFER.diff_sql(actual, expected)
+			diff = DIFFER.diff_strings(actual, expected) if no_syntactic_changes?(diff)
 
 			"Expected SQL strings to be equal (compared with `actual == expected`):\n\n#{diff}"
 		end
@@ -39,6 +40,7 @@ module Quickdraw::Assertions
 
 		assert(actual == expected) do
 			diff = DIFFER.diff_html(actual, expected)
+			diff = DIFFER.diff_strings(actual, expected) if no_syntactic_changes?(diff)
 
 			if diff.end_with?("No syntactic changes.")
 				diff = DIFFER.diff_strings(actual, expected)
@@ -74,6 +76,7 @@ module Quickdraw::Assertions
 
 		assert(actual == expected) do
 			diff = DIFFER.diff_ruby(actual, expected)
+			diff = DIFFER.diff_strings(actual, expected) if no_syntactic_changes?(diff)
 
 			"Expected Ruby strings to be equal (compared with `actual == expected`):\n\n#{diff}"
 		end
@@ -177,5 +180,15 @@ module Quickdraw::Assertions
 		refute actual.equal?(expected) do
 			"expected #{actual.inspect} not to be the same object as #{expected.inspect}"
 		end
+	end
+
+	private
+
+	def syntactic_changes?(diff)
+		!no_syntactic_changes?(diff)
+	end
+
+	def no_syntactic_changes?(diff)
+		diff.include?("No syntactic changes.")
 	end
 end
