@@ -49,8 +49,16 @@ class Quickdraw::Test
 		nil
 	end
 
-	def refute(value, ...)
-		assert(!value, ...)
+	def refute(value)
+		if !value
+			success!
+		elsif block_given?
+			failure! { yield(value) }
+		else
+			failure! { "expected #{value.inspect} to be falsy" }
+		end
+
+		nil
 	end
 
 	# Indicate that an assertion passed successfully.
