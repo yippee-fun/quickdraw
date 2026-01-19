@@ -40,7 +40,7 @@ module Quickdraw::HTMLPrettifier
 		when Nokogiri::HTML5::DocumentFragment
 			map_children(node, depth)
 		when Nokogiri::XML::Element
-			attributes = node.attribute_nodes.map { |attr| prettify_node(attr) }.join
+			attributes = node.attribute_nodes.sort_by(&:name).map { |attr| prettify_node(attr) }.join
 			opening_tag = "#{indent}<#{node.name}#{attributes}>"
 
 			if VOID_ELEMENTS.include?(node.name)
