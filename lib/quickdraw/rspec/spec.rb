@@ -32,8 +32,13 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 		end
 
 		def subject(name = nil, &)
-			let("subject", &)
+			let(:subject, &)
 			let(name, &) if name
+		end
+
+		def subject!(name = nil, &)
+			let!(:subject, &)
+			let!(name, &) if name
 		end
 
 		def let(name, &block)
@@ -47,10 +52,29 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 				end
 			end
 		end
+
+		def let!(name, &)
+			let(name, &)
+			own_eager_lets << name
+		end
+
+		def eager_lets
+			parent = superclass.respond_to?(:eager_lets) ? superclass.eager_lets : []
+			parent + own_eager_lets
+		end
+
+		def own_eager_lets
+			@eager_lets ||= []
+		end
 	end
 
 	def described_class
 		self.class.described_class
+	end
+
+	def setup
+		super
+		self.class.eager_lets.each { |name| send(name) }
 	end
 
 	def expect(subject)
