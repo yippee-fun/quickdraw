@@ -17,3 +17,6 @@ run = ["mise run test", "mise run lint"]
 [tasks.update]
 description = "Update project dependencies"
 run = ["mise upgrade --bump", "bundle update --jobs 4"]
+
+[tools]
+ruby = "latest"
