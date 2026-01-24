@@ -3,24 +3,22 @@
 module Quickdraw
 	Box = Ruby::Box.new
 
-	Box.require "difftastic"
-
-	autoload :ArgumentError, "quickdraw/errors/argument_error"
-	autoload :Assertions, "quickdraw/assertions"
 	autoload :CLI, "quickdraw/cli"
-	autoload :Cluster, "quickdraw/cluster"
-	autoload :ConcurrentArray, "quickdraw/concurrent_array"
-	autoload :ConcurrentInteger, "quickdraw/concurrent_integer"
-	autoload :Configuration, "quickdraw/configuration"
-	autoload :Platform, "quickdraw/platform"
-	autoload :Queue, "quickdraw/queue"
-	autoload :RSpecAdapter, "quickdraw/rspec_adapter"
-	autoload :Runner, "quickdraw/runner"
 	autoload :Test, "quickdraw/test"
+	autoload :Queue, "quickdraw/queue"
 	autoload :Timer, "quickdraw/timer"
+	autoload :Runner, "quickdraw/runner"
 	autoload :Worker, "quickdraw/worker"
-	autoload :MinitestAdapter, "quickdraw/minitest_adapter"
+	autoload :Cluster, "quickdraw/cluster"
+	autoload :Platform, "quickdraw/platform"
+	autoload :Assertions, "quickdraw/assertions"
+	autoload :RSpecAdapter, "quickdraw/rspec_adapter"
+	autoload :ArgumentError, "quickdraw/errors/argument_error"
+	autoload :Configuration, "quickdraw/configuration"
 	autoload :HTMLPrettifier, "quickdraw/html_prettifier"
+	autoload :ConcurrentArray, "quickdraw/concurrent_array"
+	autoload :MinitestAdapter, "quickdraw/minitest_adapter"
+	autoload :ConcurrentInteger, "quickdraw/concurrent_integer"
 
 	Null = Object.new.freeze
 	Error = Module.new

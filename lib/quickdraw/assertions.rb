@@ -1,22 +1,17 @@
 # frozen_string_literal: true
 
 module Quickdraw::Assertions
-	DIFFER = Quickdraw::Box::Difftastic::Differ.new(
-		left_label: "Actual",
-		right_label: "Expected",
-		color: :always,
-		tab_width: 2,
-	)
-
 	def assert_equal(actual, expected)
 		assert(actual == expected) do
-			if String === actual && String === expected
-				diff = DIFFER.diff_strings(actual, expected)
-			else
-				diff = DIFFER.diff_objects(actual, expected)
-			end
+			<<~MESSAGE
+				\e[34mActual:\e[0m
 
-			"Expected objects to be equal (compared with `actual == expected`):\n\n#{diff}"
+				#{actual.inspect}
+
+				\e[34mExpected:\e[0m
+
+				#{expected.inspect}
+			MESSAGE
 		end
 	end
 
@@ -26,9 +21,15 @@ module Quickdraw::Assertions
 		end
 
 		assert(actual == expected) do
-			diff = DIFFER.diff_sql(actual, expected)
+			<<~MESSAGE
+				\e[34mActual SQL:\e[0m
 
-			"Expected SQL strings to be equal (compared with `actual == expected`):\n\n#{diff}"
+				#{actual}
+
+				\e[34mExpected SQL:\e[0m
+
+				#{expected}
+			MESSAGE
 		end
 	end
 
@@ -38,13 +39,15 @@ module Quickdraw::Assertions
 		end
 
 		assert(actual == expected) do
-			diff = DIFFER.diff_html(actual, expected)
+			<<~MESSAGE
+				\e[34mActual HTML:\e[0m
 
-			if diff.end_with?("No syntactic changes.")
-				diff = DIFFER.diff_strings(actual, expected)
-			end
+				#{actual}
 
-			"Expected HTML strings to be equal (compared with `actual == expected`):\n\n#{diff}"
+				\e[34mExpected HTML:\e[0m
+
+				#{expected}
+			MESSAGE
 		end
 	end
 
@@ -56,13 +59,15 @@ module Quickdraw::Assertions
 			pretty_expected = Quickdraw::HTMLPrettifier.prettify(expected)
 
 			assert(pretty_actual == pretty_expected) do
-				diff = DIFFER.diff_html(pretty_actual, pretty_expected)
+				<<~MESSAGE
+					\e[34mActual HTML (prettified):\e[0m
 
-				if diff.end_with?("No syntactic changes.")
-					diff = DIFFER.diff_strings(pretty_actual, pretty_expected)
-				end
+					#{pretty_actual}
 
-				"Expected HTML to be equivalent (ignoring whitespace):\n\n#{diff}"
+					\e[34mExpected HTML (prettified):\e[0m
+
+					#{pretty_expected}
+				MESSAGE
 			end
 		end
 	end
@@ -73,9 +78,15 @@ module Quickdraw::Assertions
 		end
 
 		assert(actual == expected) do
-			diff = DIFFER.diff_ruby(actual, expected)
+			<<~MESSAGE
+				\e[34mActual Ruby:\e[0m
 
-			"Expected Ruby strings to be equal (compared with `actual == expected`):\n\n#{diff}"
+				#{actual}
+
+				\e[34mExpected Ruby:\e[0m
+
+				#{expected}
+			MESSAGE
 		end
 	end
 
