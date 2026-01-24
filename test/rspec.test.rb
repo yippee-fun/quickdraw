@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-class RSpecTest < Quickdraw::Test
-	include Quickdraw::RSpecAdapter
+require "quickdraw/rspec"
 
+Quickdraw::RSpec.describe "RSpec" do
 	describe String do
 		describe "test" do
 			let(:example) { "Hello" }

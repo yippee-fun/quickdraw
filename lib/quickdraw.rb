@@ -17,8 +17,8 @@ module Quickdraw
 	autoload :Configuration, "quickdraw/configuration"
 	autoload :HTMLPrettifier, "quickdraw/html_prettifier"
 	autoload :ConcurrentArray, "quickdraw/concurrent_array"
-	autoload :MinitestAdapter, "quickdraw/minitest_adapter"
 	autoload :ConcurrentInteger, "quickdraw/concurrent_integer"
+	autoload :BasicTest, "quickdraw/basic_test"
 
 	Null = Object.new.freeze
 	Error = Module.new

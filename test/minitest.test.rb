@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-class MinitestTest < Quickdraw::Test
-	include Quickdraw::MinitestAdapter
+require "quickdraw/minitest"
 
+class MinitestTest < Quickdraw::Minitest::Test
 	def test_assert_equal
 		assert_equal(1, 1)
 	end

@@ -1,11 +1,5 @@
 # frozen_string_literal: true
 
-begin
-	require "rspec/expectations"
-rescue LoadError
-	raise LoadError.new("You need to add `rspec-expectations` to your Gemfile")
-end
-
 module Quickdraw::RSpecAdapter
 	def self.extended(base)
 		base.extend(ClassMethods)
@@ -17,43 +11,6 @@ module Quickdraw::RSpecAdapter
 	def self.included(...)
 		extended(...)
 		super
-	end
-
-	module ClassMethods
-		def describe(description, &block)
-			Class.new(self) do
-				if respond_to?(:set_temporary_name)
-					case description
-					when Class
-						set_temporary_name "(#{description.name})"
-					else
-						set_temporary_name description.to_s
-					end
-				end
-				class_exec(&block)
-			end
-		end
-
-		def it(description, &)
-			test(description, &)
-		end
-
-		def subject(name = nil, &)
-			let("subject", &)
-			let(name, &) if name
-		end
-
-		def let(name, &block)
-			instance_variable = :"@#{name}"
-
-			define_method(name) do
-				if instance_variable_defined?(instance_variable)
-					instance_variable_get(instance_variable)
-				else
-					instance_variable_set(instance_variable, instance_exec(&block))
-				end
-			end
-		end
 	end
 
 	module InstanceMethods
