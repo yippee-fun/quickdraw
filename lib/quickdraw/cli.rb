@@ -44,10 +44,6 @@ class Quickdraw::CLI
 				self.watch = true
 			end
 
-			parser.on("-t N", "--threads N", Integer, "Number of Threads per Process") do |it|
-				self.threads = it
-			end
-
 			parser.on("-s N", "--seed N", Integer, "Seed for randomization") do |it|
 				self.seed = it
 			end
@@ -76,10 +72,6 @@ class Quickdraw::CLI
 		else
 			fail "You cannot use the watch mode on this platform because forking processes is not supported."
 		end
-	end
-
-	def threads=(value)
-		@threads = value
 	end
 
 	def seed=(value)
@@ -131,7 +123,6 @@ class Quickdraw::CLI
 		$quickdraw_runner = Quickdraw::Runner.new(
 			backtrace: @backtrace,
 			processes: @processes || Quickdraw::Config.processes,
-			threads: @threads || Quickdraw::Config.threads,
 			files: Dir.glob(@files),
 			seed: @seed || Random.new_seed,
 		)

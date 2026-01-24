@@ -11,10 +11,9 @@ class Quickdraw::Runner
 		Stopping = "\x04"
 	end
 
-	def initialize(backtrace: false, processes:, threads:, files:, seed:)
+	def initialize(backtrace: false, processes:, files:, seed:)
 		@backtrace = backtrace
 		@processes = processes
-		@threads = threads
 		@seed = seed
 		@random = Random.new(seed)
 		@files = files.shuffle(random: @random)
@@ -38,7 +37,7 @@ class Quickdraw::Runner
 			fork_processes
 			@cluster.wait
 		else
-			@tests.each do |test|
+			@tests.each do |context, description, skip, block|
 				context.new(description:, skip:, block:, runner: self).run
 			end
 		end
@@ -94,8 +93,6 @@ class Quickdraw::Runner
 
 		@tests.shuffle!(random: @random)
 		@tests.freeze
-		# Try to break up the tests into at least 20 batches per core.
-		@batch = (@tests.size / @processes / 20).clamp(1, 500)
 	end
 
 	def fork_processes
@@ -128,29 +125,13 @@ class Quickdraw::Runner
 	def work(socket)
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
 
-		batch = @batch
-		queue = Thread::SizedQueue.new(batch)
 		tests = @tests
-		tests_size = @tests.size
-
-		threads = @threads.times.map do |i|
-			Thread.new do
-				while true
-					index = queue.pop
-					break if index == :stop
-					context, description, skip, block = tests[index]
-					context.new(description:, skip:, block:, runner: self).run
-				end
-			end
-		end
 
 		while true
 			socket.write Message::Fetch
 
 			case socket.read(1)
 			when nil, Message::Stop
-				threads.each { queue.push(:stop) }
-				threads.each(&:join)
 				socket.write Message::Stopping
 				socket.write JSON.generate({
 					errors: @errors.to_a,
@@ -159,13 +140,9 @@ class Quickdraw::Runner
 				})
 				break
 			when Message::Work
-				cursor = socket.read(4).unpack1("L<")
-				stop = [tests_size, cursor + batch].min
-
-				while cursor < stop
-					queue.push(cursor)
-					cursor += 1
-				end
+				index = socket.read(4).unpack1("L<")
+				context, description, skip, block = tests[index]
+				context.new(description:, skip:, block:, runner: self).run
 			else
 				raise "Unhandled message: #{message}"
 			end
@@ -175,7 +152,6 @@ class Quickdraw::Runner
 	def supervise(worker)
 		socket = worker.socket
 		mutex = @mutex
-		batch = @batch
 		progress = 0
 
 		console = IO.console
@@ -198,7 +174,7 @@ class Quickdraw::Runner
 						if @cursor < tests_length
 							socket.write Message::Work
 							socket.write [@cursor].pack("L<")
-							@cursor += batch
+							@cursor += 1
 						else
 							socket.write Message::Stop
 						end
