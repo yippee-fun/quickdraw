@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Quickdraw::Assertions
-	DIFFER = Difftastic::Differ.new(
+	DIFFER = Quickdraw::Box::Difftastic::Differ.new(
 		left_label: "Actual",
 		right_label: "Expected",
 		color: :always,

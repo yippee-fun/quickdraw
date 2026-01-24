@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
-require "difftastic"
-
 module Quickdraw
+	Box = Ruby::Box.new
+
+	Box.require "difftastic"
+
 	autoload :ArgumentError, "quickdraw/errors/argument_error"
 	autoload :Assertions, "quickdraw/assertions"
 	autoload :CLI, "quickdraw/cli"

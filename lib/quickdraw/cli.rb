@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "optparse"
+Quickdraw::Box.require("optparse")
 
 class Quickdraw::CLI
 	CONFIG_PATH = File.expand_path("config/quickdraw.rb")
@@ -16,7 +16,7 @@ class Quickdraw::CLI
 	end
 
 	def parse_options
-		OptionParser.new do |parser|
+		Quickdraw::Box::OptionParser.new do |parser|
 			parser.banner = "Usage: bundle exec qt [options]"
 
 			parser.on("-h", "--help", "Prints this help") do
@@ -113,14 +113,16 @@ class Quickdraw::CLI
 	end
 
 	def watch
-		require "io/watch"
+		Quickdraw::Box.require("listen")
 
-		IO::Watch::Monitor.new(["."], latency: 0.01).run do |event|
+		Quickdraw::Box::Listen.to(".", wait_for_delay: 0.01) do |modified, added, removed|
 			Process.fork do
 				print "\e[H\e[2J"
 				run_once
 			end
-		end
+		end.start
+
+		sleep
 	end
 
 	def run_once

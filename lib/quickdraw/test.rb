@@ -4,18 +4,17 @@ class Quickdraw::Test
 	include Quickdraw::Assertions
 
 	def self.test(description = nil, skip: false, &block)
-		$quickdraw_runner << [self, description, skip, block].freeze
+		$quickdraw_runner << [self, description, skip, block]
 	end
 
-	def initialize(description:, skip:, block:)
+	def initialize(description:, skip:, block:, runner:)
 		@description = description
 		@skip = skip
 		@block = block
-		@runner = nil
+		@runner = runner
 	end
 
-	def run(runner)
-		@runner = runner
+	def run
 		setup
 		around_test { instance_exec(&@block) }
 		teardown

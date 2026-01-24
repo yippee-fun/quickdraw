@@ -30,7 +30,7 @@ class Quickdraw::Test
 	def assert_test(passes: 0, failures: 0, errors: 0, &block)
 		runner = Runner.new
 
-		Quickdraw::Test.new(description: nil, skip: false, block:).run(runner)
+		Quickdraw::Test.new(description: nil, skip: false, block:, runner:).run
 
 		assert_equal runner.successes, passes
 		assert_equal runner.failures.size, failures

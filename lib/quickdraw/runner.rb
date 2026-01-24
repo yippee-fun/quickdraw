@@ -38,8 +38,8 @@ class Quickdraw::Runner
 			fork_processes
 			@cluster.wait
 		else
-			@tests.each do |(context, description, skip, block)|
-				context.new(description:, skip:, block:).run(self)
+			@tests.each do |test|
+				context.new(description:, skip:, block:, runner: self).run
 			end
 		end
 
@@ -139,7 +139,7 @@ class Quickdraw::Runner
 					index = queue.pop
 					break if index == :stop
 					context, description, skip, block = tests[index]
-					context.new(description:, skip:, block:).run(self)
+					context.new(description:, skip:, block:, runner: self).run
 				end
 			end
 		end
