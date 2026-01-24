@@ -7,11 +7,19 @@ rescue LoadError
 end
 
 module Quickdraw::RSpec
+	autoload :Spec, "quickdraw/rspec/spec"
 	autoload :Matchers, "quickdraw/rspec/matchers"
 	autoload :Expectation, "quickdraw/rspec/expectation"
-	autoload :Spec, "quickdraw/rspec/spec"
 
 	def self.describe(description = nil, &)
 		Spec.describe(description, &)
+	end
+
+	def self.shared_examples(name, metadata = nil, &block)
+		global_shared_examples[name] = { block:, metadata: }
+	end
+
+	def self.global_shared_examples
+		@shared_examples ||= {}
 	end
 end

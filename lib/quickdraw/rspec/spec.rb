@@ -66,6 +66,62 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 		def own_eager_lets
 			@eager_lets ||= []
 		end
+
+		def shared_examples(name, metadata = nil, &block)
+			own_shared_examples[name] = { block:, metadata: }
+		end
+
+		def it_behaves_like(name, *args, &customization_block)
+			shared = find_shared_examples(name)
+			raise ArgumentError, "Shared examples '#{name}' not found" unless shared
+
+			# Create a nested context for it_behaves_like to avoid method override issues
+			describe "behaves like #{name}" do
+				class_exec(*args, &shared[:block])
+				class_exec(&customization_block) if customization_block
+			end
+		end
+
+		def it_should_behave_like(name, *args, &customization_block)
+			it_behaves_like(name, *args, &customization_block)
+		end
+
+		def include_examples(name, *args, &customization_block)
+			shared = find_shared_examples(name)
+			raise ArgumentError, "Shared examples '#{name}' not found" unless shared
+
+			# include_examples runs in the current context (no nesting)
+			class_exec(*args, &shared[:block])
+			class_exec(&customization_block) if customization_block
+		end
+
+		def alias_it_should_behave_like_to(new_name, description_prefix = nil)
+			if description_prefix
+				define_singleton_method(new_name) do |name, *args, &customization_block|
+					shared = find_shared_examples(name)
+					raise ArgumentError, "Shared examples '#{name}' not found" unless shared
+
+					describe "#{description_prefix} #{name}" do
+						class_exec(*args, &shared[:block])
+						class_exec(&customization_block) if customization_block
+					end
+				end
+			else
+				define_singleton_method(new_name) do |name, *args, &customization_block|
+					it_behaves_like(name, *args, &customization_block)
+				end
+			end
+		end
+
+		def find_shared_examples(name)
+			own_shared_examples[name] ||
+				(superclass.find_shared_examples(name) if superclass.respond_to?(:find_shared_examples)) ||
+				Quickdraw::RSpec.global_shared_examples[name]
+		end
+
+		def own_shared_examples
+			@shared_examples ||= {}
+		end
 	end
 
 	def described_class
