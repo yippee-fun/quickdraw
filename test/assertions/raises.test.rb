@@ -24,4 +24,20 @@ class RaisesTest < Quickdraw::Test
 			end
 		end
 	end
+
+	test "#refute_raises when nothing is raised" do
+		assert_test(passes: 1) do
+			refute_raises do
+				"no-op"
+			end
+		end
+	end
+
+	test "#refute_raises when an error is raised" do
+		assert_test(failures: 1) do
+			refute_raises do
+				raise "Test"
+			end
+		end
+	end
 end
