@@ -21,25 +21,49 @@ module RubyLsp
 		end
 
 		module NodeContextPatch
-			private
-
-			def handle_nesting_nodes(nodes)
+			private def handle_nesting_nodes(nodes)
 				nesting, surrounding_method = super
 
-				if @call_node.is_a?(Prism::CallNode) && @call_node.block
-					case @call_node.name
-					when :test
-						# If we're inside a `test` block, treat it as an instance method context
-						# so that `self` resolves to an instance of the test class
-						surrounding_method ||= "<test>"
-					when :Quickdraw
-						# If we're inside a `Quickdraw` block, treat it as being inside `Quickdraw::Test`
-						# so constants and methods resolve correctly
-						nesting << "Quickdraw::Test"
-					end
+				# If we're not already inside a method, check if we're inside a `test` block
+				if surrounding_method.nil? && inside_test_block?(nodes)
+					# Use a synthetic method name to make Ruby LSP treat `self` as an instance
+					surrounding_method = "<test>"
 				end
 
 				[nesting, surrounding_method]
+			end
+
+			private def inside_test_block?(nodes)
+				# Find the class node that contains our position
+				class_node = nodes.find { |n| n.is_a?(Prism::ClassNode) }
+				return false unless class_node
+
+				# Get all BlockNodes from our nesting - these are the blocks we're inside
+				block_nodes = nodes.select { |n| n.is_a?(Prism::BlockNode) }
+				return false if block_nodes.empty?
+
+				# Search the class body for `test` calls and check if any of our blocks
+				# is the block of a test call
+				test_blocks = collect_test_blocks(class_node.body)
+
+				block_nodes.any? do |block_node|
+					test_blocks.any? { |test_block| test_block.equal?(block_node) }
+				end
+			end
+
+			private def collect_test_blocks(node, result = [])
+				return result unless node
+
+				case node
+				when Prism::CallNode
+					if node.name == :test && node.block.is_a?(Prism::BlockNode)
+						result << node.block
+					end
+				when Prism::StatementsNode
+					node.body.each { |child| collect_test_blocks(child, result) }
+				end
+
+				result
 			end
 		end
 	end
