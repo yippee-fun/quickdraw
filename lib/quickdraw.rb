@@ -1,7 +1,17 @@
 # frozen_string_literal: true
 
 module Quickdraw
-	Box = Ruby::Box.new
+	module NoBox
+		def self.require(...)
+			Kernel.require(...)
+		end
+
+		def self.const_missing(name)
+			Kernel.const_get(name).tap { |it| const_set(name, it) }
+		end
+	end
+
+	Box = (defined?(Ruby::Box) && ENV["RUBY_BOX"]) ? Ruby::Box.new : NoBox
 
 	autoload :CLI, "quickdraw/cli"
 	autoload :Test, "quickdraw/test"
