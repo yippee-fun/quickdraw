@@ -8,24 +8,26 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 			@described_class || (superclass.described_class if superclass.respond_to?(:described_class))
 		end
 
-		def describe(description, &block)
+		def describe(*descriptions, &block)
 			Class.new(self) do
-				case description
-				when Class, Module
-					@described_class = description
-				end
+				@described_class = descriptions.find { |m| Module === m }
 
 				if respond_to?(:set_temporary_name)
-					case description
-					when Class
-						set_temporary_name "(#{description.name})"
-					else
-						set_temporary_name "(#{description})"
+					name_parts = descriptions.map do |desc|
+						case desc
+						when Class
+							desc.name
+						else
+							desc.to_s
+						end
 					end
+					set_temporary_name "(#{name_parts.join(' ')})"
 				end
 				class_exec(&block)
 			end
 		end
+
+		alias_method :context, :describe
 
 		def it(description, &)
 			test(description, &)
@@ -130,7 +132,7 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 
 	def setup
 		super
-		self.class.eager_lets.each { |name| send(name) }
+		self.class.eager_lets.each { |name| __send__(name) }
 	end
 
 	def expect(subject)

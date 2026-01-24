@@ -11,8 +11,8 @@ module Quickdraw::RSpec
 	autoload :Matchers, "quickdraw/rspec/matchers"
 	autoload :Expectation, "quickdraw/rspec/expectation"
 
-	def self.describe(description = nil, &)
-		Spec.describe(description, &)
+	def self.describe(*descriptions, &)
+		Spec.describe(*descriptions, &)
 	end
 
 	def self.shared_examples(name, metadata = nil, &block)
