@@ -69,6 +69,122 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 			@eager_lets ||= []
 		end
 
+		# Hooks
+
+		def before(scope = :each, &block)
+			case scope
+			when :each
+				own_before_each_hooks << block
+			when :all, :context
+				own_before_all_hooks << block
+			else
+				raise ArgumentError, "Invalid hook scope: #{scope.inspect}. Use :each, :all, or :context."
+			end
+		end
+
+		def after(scope = :each, &block)
+			case scope
+			when :each
+				own_after_each_hooks << block
+			when :all, :context
+				own_after_all_hooks << block
+			else
+				raise ArgumentError, "Invalid hook scope: #{scope.inspect}. Use :each, :all, or :context."
+			end
+		end
+
+		def around(scope = :each, &block)
+			unless scope == :each
+				raise ArgumentError, "around hooks only support :each scope"
+			end
+			own_around_hooks << block
+		end
+
+		def before_each_hooks
+			parent = superclass.respond_to?(:before_each_hooks) ? superclass.before_each_hooks : []
+			parent + own_before_each_hooks
+		end
+
+		def after_each_hooks
+			parent = superclass.respond_to?(:after_each_hooks) ? superclass.after_each_hooks : []
+			own_after_each_hooks + parent # after hooks run in reverse order
+		end
+
+		def around_hooks
+			parent = superclass.respond_to?(:around_hooks) ? superclass.around_hooks : []
+			parent + own_around_hooks
+		end
+
+		def before_all_hooks
+			parent = superclass.respond_to?(:before_all_hooks) ? superclass.before_all_hooks : []
+			parent + own_before_all_hooks
+		end
+
+		def after_all_hooks
+			parent = superclass.respond_to?(:after_all_hooks) ? superclass.after_all_hooks : []
+			own_after_all_hooks + parent # after hooks run in reverse order
+		end
+
+		def own_before_each_hooks
+			@before_each_hooks ||= []
+		end
+
+		def own_after_each_hooks
+			@after_each_hooks ||= []
+		end
+
+		def own_around_hooks
+			@around_hooks ||= []
+		end
+
+		def own_before_all_hooks
+			@before_all_hooks ||= []
+		end
+
+		def own_after_all_hooks
+			@after_all_hooks ||= []
+		end
+
+		def run_before_all_hooks_once
+			@before_all_mutex ||= Mutex.new
+			@before_all_mutex.synchronize do
+				return if @before_all_ran
+				@before_all_ran = true
+				@before_all_state = {}
+				before_all_hooks.each do |hook|
+					# Create a temporary instance to run the hook and capture instance variables
+					instance = allocate
+					instance.instance_variable_set(:@__before_all_state, @before_all_state)
+					@before_all_state.each { |k, v| instance.instance_variable_set(k, v) }
+					instance.instance_exec(&hook)
+					# Capture any instance variables set during the hook
+					instance.instance_variables.each do |ivar|
+						next if ivar == :@__before_all_state
+						@before_all_state[ivar] = instance.instance_variable_get(ivar)
+					end
+				end
+			end
+		end
+
+		def run_after_all_hooks_once
+			@after_all_mutex ||= Mutex.new
+			@after_all_mutex.synchronize do
+				return if @after_all_ran
+				@after_all_ran = true
+				after_all_hooks.each do |hook|
+					instance = allocate
+					(@before_all_state || {}).each { |k, v| instance.instance_variable_set(k, v) }
+					instance.instance_exec(&hook)
+				end
+			end
+		end
+
+		def before_all_state
+			@before_all_state || {}
+		end
+
+		# Shared examples
+
 		def shared_examples(name, metadata = nil, &block)
 			own_shared_examples[name] = { block:, metadata: }
 		end
@@ -132,7 +248,34 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 
 	def setup
 		super
+		# Run before(:all) hooks once per class
+		self.class.run_before_all_hooks_once
+		# Copy state from before(:all) hooks
+		self.class.before_all_state.each { |k, v| instance_variable_set(k, v) }
+		# Run before(:each) hooks
+		self.class.before_each_hooks.each { |hook| instance_exec(&hook) }
+		# Run eager lets
 		self.class.eager_lets.each { |name| __send__(name) }
+	end
+
+	def teardown
+		# Run after(:each) hooks
+		self.class.after_each_hooks.each { |hook| instance_exec(&hook) }
+		super
+	end
+
+	def around_test
+		hooks = self.class.around_hooks
+
+		if hooks.empty?
+			yield
+		else
+			# Build a chain of around hooks
+			chain = hooks.reverse.reduce(-> { yield }) do |inner, hook|
+				-> { instance_exec(inner, &hook) }
+			end
+			chain.call
+		end
 	end
 
 	def expect(subject)
