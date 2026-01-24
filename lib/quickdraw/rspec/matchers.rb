@@ -30,6 +30,14 @@ module Quickdraw::RSpec::Matchers
 	define_method :start_with, ::RSpec::Matchers.instance_method(:start_with)
 	define_method :throw_symbol, ::RSpec::Matchers.instance_method(:throw_symbol)
 	define_method :yield_control, ::RSpec::Matchers.instance_method(:yield_control)
+
+	# Aliases
+	alias_method :be_an, :be_a
+	alias_method :be_falsy, :be_falsey
+	alias_method :be_instance_of, :be_an_instance_of
+	alias_method :be_kind_of, :be_a_kind_of
+	alias_method :raise_exception, :raise_error
+
 	define_method :yield_successive_args, ::RSpec::Matchers.instance_method(:yield_successive_args)
 	define_method :yield_with_args, ::RSpec::Matchers.instance_method(:yield_with_args)
 	define_method :yield_with_no_args, ::RSpec::Matchers.instance_method(:yield_with_no_args)

@@ -26,6 +26,8 @@ class Quickdraw::RSpec::Expectation
 		end
 	end
 
+	alias_method :to_not, :not_to
+
 		private
 
 	def assert(...)

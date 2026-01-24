@@ -29,9 +29,12 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 
 		alias_method :context, :describe
 
-		def it(description, &)
+		def it(description = nil, &)
 			test(description, &)
 		end
+
+		alias_method :specify, :it
+		alias_method :example, :it
 
 		def subject(name = nil, &)
 			let(:subject, &)
@@ -278,7 +281,7 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 		end
 	end
 
-	def expect(subject)
-		Quickdraw::RSpec::Expectation.new(subject, context: self)
+	def expect(subject = nil, &block)
+		Quickdraw::RSpec::Expectation.new(block || subject, context: self)
 	end
 end
