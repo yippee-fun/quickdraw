@@ -1,14 +1,16 @@
 # frozen_string_literal: true
 
-include Quickdraw::RSpecAdapter
+class RSpecTest < Quickdraw::Test
+	include Quickdraw::RSpecAdapter
 
-describe String do
-	describe "test" do
-		let(:example) { "Hello" }
-		subject { "Hello" }
+	describe String do
+		describe "test" do
+			let(:example) { "Hello" }
+			subject { "Hello" }
 
-		it "works" do
-			expect(example).to eq(subject)
+			it "works" do
+				expect(example).to eq(subject)
+			end
 		end
 	end
 end

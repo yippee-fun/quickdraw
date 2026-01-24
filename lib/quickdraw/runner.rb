@@ -87,11 +87,7 @@ class Quickdraw::Runner
 
 		while i < number_of_files
 			file_path = @files[i]
-
-			Class.new(Quickdraw::Test) do
-				set_temporary_name "(#{file_path})" if respond_to?(:set_temporary_name)
-				class_eval(File.read(file_path), file_path, 1)
-			end
+			require file_path
 
 			i += 1
 		end
@@ -209,7 +205,7 @@ class Quickdraw::Runner
 					end
 
 					if console
-						progress = @cursor >= tests_length ? 100.0 : (@cursor * 100.0 / tests_length)
+						progress = (@cursor >= tests_length) ? 100.0 : (@cursor * 100.0 / tests_length)
 						print "\r\e[K#{'█' * (progress * bar_width / 100.0).floor}#{'░' * (bar_width - (progress * bar_width / 100.0).floor)} #{progress.round}%"
 					end
 				when Message::Stopping
