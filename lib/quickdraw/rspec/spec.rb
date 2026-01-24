@@ -4,8 +4,17 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 	include Quickdraw::RSpec::Matchers
 
 	class << self
+		def described_class
+			@described_class || (superclass.described_class if superclass.respond_to?(:described_class))
+		end
+
 		def describe(description, &block)
 			Class.new(self) do
+				case description
+				when Class, Module
+					@described_class = description
+				end
+
 				if respond_to?(:set_temporary_name)
 					case description
 					when Class
@@ -38,6 +47,10 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 				end
 			end
 		end
+	end
+
+	def described_class
+		self.class.described_class
 	end
 
 	def expect(subject)

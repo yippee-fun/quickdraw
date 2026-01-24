@@ -11,17 +11,7 @@ module Quickdraw::RSpec
 	autoload :Expectation, "quickdraw/rspec/expectation"
 	autoload :Spec, "quickdraw/rspec/spec"
 
-	def self.describe(description = nil, &block)
-		Class.new(Spec) do
-			if respond_to?(:set_temporary_name)
-				case description
-				when Class
-					set_temporary_name "(#{description.name})"
-				else
-					set_temporary_name "(#{description})"
-				end
-			end
-			class_exec(&block)
-		end
+	def self.describe(description = nil, &)
+		Spec.describe(description, &)
 	end
 end
