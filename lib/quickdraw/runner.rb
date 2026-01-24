@@ -120,9 +120,7 @@ class Quickdraw::Runner
 		@errors << error
 	end
 
-	private
-
-	def work(socket)
+	private def work(socket)
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
 
 		tests = @tests
@@ -149,7 +147,7 @@ class Quickdraw::Runner
 		end
 	end
 
-	def supervise(worker)
+	private def supervise(worker)
 		socket = worker.socket
 		mutex = @mutex
 		progress = 0
@@ -196,11 +194,11 @@ class Quickdraw::Runner
 		end
 	end
 
-	def enable_yjit
+	private def enable_yjit
 		RubyVM::YJIT.enable
 	end
 
-	def yjit_supported?
+	private def yjit_supported?
 		Quickdraw::Platform.yjit_supported?
 	end
 end
