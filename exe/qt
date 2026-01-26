@@ -1,5 +1,4 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require_relative "../lib/quickdraw"
-Quickdraw::CLI.new(ARGV).call
+load File.expand_path("quickdraw", __dir__)
