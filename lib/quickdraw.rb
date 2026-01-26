@@ -14,6 +14,7 @@ module Quickdraw
 	Box = (defined?(Ruby::Box) && ENV["RUBY_BOX"]) ? Ruby::Box.new : NoBox
 
 	autoload :CLI, "quickdraw/cli"
+	autoload :Diff, "quickdraw/diff"
 	autoload :Test, "quickdraw/test"
 	autoload :Queue, "quickdraw/queue"
 	autoload :Timer, "quickdraw/timer"

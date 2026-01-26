@@ -3,6 +3,18 @@
 module Quickdraw::Assertions
 	def assert_equal(actual, expected)
 		assert(actual == expected) do
+			if actual.is_a?(String) && expected.is_a?(String)
+				diff = Quickdraw::Diff.diff(expected, actual)
+
+				unless diff.empty?
+					next <<~MESSAGE
+						\e[34mDiff (expected vs actual):\e[0m
+
+						#{diff}
+					MESSAGE
+				end
+			end
+
 			<<~MESSAGE
 				\e[34mActual:\e[0m
 
