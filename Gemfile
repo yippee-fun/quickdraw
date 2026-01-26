@@ -12,7 +12,6 @@ gem "nokogiri"
 if RUBY_ENGINE == "ruby"
 	group :development do
 		gem "rubocop"
-		gem "sus"
 		gem "covered"
 	end
 end
