@@ -15,78 +15,24 @@ module Quickdraw::Assertions
 		end
 	end
 
-	def assert_equal_sql(actual, expected)
-		unless String === actual && String === expected
-			raise ArgumentError.new("expected both actual and expected to be strings")
-		end
-
-		assert(actual == expected) do
-			<<~MESSAGE
-				\e[34mActual SQL:\e[0m
-
-				#{actual}
-
-				\e[34mExpected SQL:\e[0m
-
-				#{expected}
-			MESSAGE
-		end
-	end
-
-	def assert_equal_html(actual, expected)
-		unless String === actual && String === expected
-			raise ArgumentError.new("expected both actual and expected to be strings")
-		end
-
-		assert(actual == expected) do
-			<<~MESSAGE
-				\e[34mActual HTML:\e[0m
-
-				#{actual}
-
-				\e[34mExpected HTML:\e[0m
-
-				#{expected}
-			MESSAGE
-		end
-	end
-
 	def assert_equivalent_html(actual, expected)
 		if actual == expected
 			success!
 		else
-			pretty_actual = Quickdraw::HTMLPrettifier.prettify(actual)
-			pretty_expected = Quickdraw::HTMLPrettifier.prettify(expected)
+			normalized_actual = Quickdraw::HTMLPrettifier.prettify(actual)
+			normalized_expected = Quickdraw::HTMLPrettifier.prettify(expected)
 
-			assert(pretty_actual == pretty_expected) do
+			assert(normalized_actual == normalized_expected) do
 				<<~MESSAGE
 					\e[34mActual HTML (prettified):\e[0m
 
-					#{pretty_actual}
+					#{normalized_actual}
 
 					\e[34mExpected HTML (prettified):\e[0m
 
-					#{pretty_expected}
+					#{normalized_expected}
 				MESSAGE
 			end
-		end
-	end
-
-	def assert_equal_ruby(actual, expected)
-		unless String === actual && String === expected
-			raise ArgumentError.new("expected both actual and expected to be strings")
-		end
-
-		assert(actual == expected) do
-			<<~MESSAGE
-				\e[34mActual Ruby:\e[0m
-
-				#{actual}
-
-				\e[34mExpected Ruby:\e[0m
-
-				#{expected}
-			MESSAGE
 		end
 	end
 
