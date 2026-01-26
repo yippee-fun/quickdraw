@@ -35,4 +35,5 @@ Gem::Specification.new do |spec|
 	spec.metadata["rubygems_mfa_required"] = "true"
 
 	spec.add_dependency "listen", "~> 3.10"
+	spec.add_dependency "refract"
 end

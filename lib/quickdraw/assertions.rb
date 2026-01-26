@@ -48,6 +48,46 @@ module Quickdraw::Assertions
 		end
 	end
 
+	def assert_equivalent_ruby(actual, expected)
+		if actual == expected
+			success!
+		else
+			normalized_actual = Quickdraw::Box::Refract::Formatter.new.format_node(
+				Quickdraw::Box::Refract::Converter.new.visit(
+					Prism.parse(actual).value
+				)
+			).source
+
+			normalized_expected = Quickdraw::Box::Refract::Formatter.new.format_node(
+				Quickdraw::Box::Refract::Converter.new.visit(
+					Prism.parse(expected).value
+				)
+			).source
+
+			assert(normalized_actual == normalized_expected) do
+				diff = Quickdraw::Diff.diff(expected, actual)
+
+				unless diff.empty?
+					next <<~MESSAGE
+						\e[34mDiff (expected vs actual):\e[0m
+
+						#{diff}
+					MESSAGE
+				end
+
+				<<~MESSAGE
+					\e[34mActual Ruby:\e[0m
+
+					#{actual}
+
+					\e[34mExpected Ruby:\e[0m
+
+					#{expected}
+				MESSAGE
+			end
+		end
+	end
+
 	def refute_equal(actual, expected)
 		refute(actual == expected) do
 			<<~MESSAGE

@@ -13,6 +13,9 @@ module Quickdraw
 
 	Box = (defined?(Ruby::Box) && ENV["RUBY_BOX"]) ? Ruby::Box.new : NoBox
 
+	Box.require("prism")
+	Box.require("refract")
+
 	autoload :CLI, "quickdraw/cli"
 	autoload :Diff, "quickdraw/diff"
 	autoload :Test, "quickdraw/test"
