@@ -37,8 +37,8 @@ class Quickdraw::Runner
 			fork_processes
 			@cluster.wait
 		else
-			@tests.each do |context, description, skip, block|
-				context.new(description:, skip:, block:, runner: self).run
+			@tests.each do |context, description, block|
+				context.new(description:, block:, runner: self).run
 			end
 		end
 
@@ -139,8 +139,8 @@ class Quickdraw::Runner
 				break
 			when Message::Work
 				index = socket.read(4).unpack1("L<")
-				context, description, skip, block = tests[index]
-				context.new(description:, skip:, block:, runner: self).run
+				context, description, block = tests[index]
+				context.new(description:, block:, runner: self).run
 			else
 				raise "Unhandled message: #{message}"
 			end
