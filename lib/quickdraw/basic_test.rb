@@ -53,7 +53,19 @@ class Quickdraw::BasicTest
 	# Indicate that an assertion passed successfully.
 	def success!
 		if @skip
-			@runner.failure!("The skipped test `#{@description}` started passing.")
+			test_location = @block.source_location
+			locations = caller_locations
+			location = locations.find { |it| it.path.end_with?(".test.rb") } || locations.first
+
+			@runner.failure!({
+				"class_name" => self.class.name,
+				"test_path" => test_location[0],
+				"test_line" => test_location[1],
+				"description" => @description,
+				"message" => "The skipped test `#{@description}` started passing. Remove `skip: true` to re-enable it.",
+				"path" => location.path,
+				"line" => location.lineno,
+			})
 		else
 			@runner.success!(@description)
 		end
