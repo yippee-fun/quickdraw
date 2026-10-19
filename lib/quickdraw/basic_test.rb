@@ -27,6 +27,10 @@ class Quickdraw::BasicTest
 		})
 	end
 
+	def seed
+		@runner.seed
+	end
+
 	def match
 		yield
 		success!

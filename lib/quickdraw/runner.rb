@@ -30,7 +30,12 @@ class Quickdraw::Runner
 		@successes = Quickdraw::ConcurrentInteger.new
 	end
 
+	attr_reader :seed
+
 	def call
+		puts "Seed: #{@seed}"
+
+		Kernel.srand(@seed)
 		load_tests
 
 		if @processes > 1
@@ -75,7 +80,7 @@ class Quickdraw::Runner
 
 		puts
 
-		puts "Passed: #{@successes.value} | Failed: #{@failures.size} | Errors: #{@errors.size}"
+		puts "Passed: #{@successes.value} | Failed: #{@failures.size} | Errors: #{@errors.size} | Seed: #{@seed}"
 
 		exit(1) if @failures.any? || @errors.any?
 	end

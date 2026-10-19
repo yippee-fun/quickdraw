@@ -78,6 +78,12 @@ class Quickdraw::CLI
 		@seed = value
 	end
 
+	def seed_from_env
+		return unless ENV["SEED"]
+
+		Integer(ENV["SEED"], exception: false) || fail("SEED must be an integer, got #{ENV['SEED'].inspect}")
+	end
+
 	def efficiency!
 		if Quickdraw::Platform.m_series?
 			fail "You cannot use the efficiency flag with the processes flag." if @processes
@@ -124,7 +130,7 @@ class Quickdraw::CLI
 			backtrace: @backtrace,
 			processes: @processes || Quickdraw::Config.processes,
 			files: Dir.glob(@files),
-			seed: @seed || Random.new_seed,
+			seed: @seed || seed_from_env || (Random.new_seed % (1 << 32)),
 		)
 
 		$quickdraw_runner.call
