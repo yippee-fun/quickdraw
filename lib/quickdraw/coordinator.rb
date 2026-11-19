@@ -36,8 +36,15 @@ class Quickdraw::Coordinator
 	class TestFile
 		# `keys` are the tests' history keys, or nil without history. `indices` are
 		# the tests to run. `prior_average` is the average test duration from
-		# history, used until this run has its own measurements.
-		def initialize(path:, display_path:, tests:, keys:, indices:, load_duration:, prior_average:, random:)
+		# history, used until this run has its own measurements, and `expected`
+		# each test's own, or nil where history has none.
+		#
+		# Tests run in a random order, except that slow ones (see #slow?) go first,
+		# slowest first, so the longest work doesn't start last and leave other
+		# workers waiting for it at the end. They're sorted by how many times the
+		# batch budget they take, rounded down to a power of two, so the order a
+		# seed gives only changes when a test gets about twice as fast or slow.
+		def initialize(path:, display_path:, tests:, keys:, indices:, load_duration:, prior_average:, random:, expected: nil)
 			@path = path
 			@display_path = display_path
 			@tests = tests
@@ -45,7 +52,10 @@ class Quickdraw::Coordinator
 			@whole = indices.size == tests.size
 			@load_duration = load_duration
 			@prior_average = prior_average
-			@pending = indices.shuffle(random:)
+			@expected = expected || []
+			@pending = indices.shuffle(random:).each_with_index.sort_by do |index, position|
+				[slow?(index) ? -Math.log2(@expected[index] / BATCH_BUDGET).floor - 1 : 0, position]
+			end.map(&:first)
 
 			# With history, the first batch can fill the budget, up to a quarter of the
 			# file in case its tests have got slower since.
@@ -67,6 +77,9 @@ class Quickdraw::Coordinator
 		attr_accessor :unstealable
 
 		def next_batch
+			# Alone, so other workers can take the slow tests after it.
+			return @pending.shift(1) if slow?(@pending.first)
+
 			average = average_duration
 			size = average ? [@batch_size, (BATCH_BUDGET / [average, 1e-9].max).floor].min : 1
 			size = size.clamp(1, @pending.size)
@@ -83,9 +96,28 @@ class Quickdraw::Coordinator
 			(@completed > 0) ? @total_duration / @completed : @prior_average
 		end
 
+		# From history, scaled by how this run's tests compare with it so far.
 		def estimated_pending_time
 			average = average_duration
-			average * @pending.size if average
+			return unless average || @pending.any? { |index| @expected[index] }
+
+			drift = (@completed > 0 && @prior_average&.positive?) ? average / @prior_average : 1.0
+			@pending.sum { |index| @expected[index] ? @expected[index] * drift : average || 0.0 }
+		end
+
+		# The tests waiting that are slow (see #slow?).
+		def slow_pending
+			@pending.take_while { |index| slow?(index) }.size
+		end
+
+		# How long the next test is expected to take, from history, or nil.
+		def next_expected
+			@expected[@pending.first] if @pending.any?
+		end
+
+		# A test that takes a batch's budget on its own.
+		def slow?(index)
+			(expected = @expected[index]) && expected >= BATCH_BUDGET
 		end
 	end
 
@@ -274,6 +306,8 @@ class Quickdraw::Coordinator
 		end
 		@display_paths = @unloaded.to_h
 		@files = {}
+		# Files with slow tests waiting (see TestFile#slow?), so dispatching doesn't scan the rest.
+		@slow_files = {}
 		@averages = {}
 		@records = []
 		@load_errors = []
@@ -883,7 +917,8 @@ class Quickdraw::Coordinator
 
 			@selected += indices.size
 
-			known = keys&.filter_map { |key| @averages[key] } || []
+			expected = keys&.map { |key| @averages[key] }
+			known = expected&.compact || []
 
 			@files[path] = TestFile.new(
 				path:,
@@ -893,8 +928,11 @@ class Quickdraw::Coordinator
 				indices:,
 				load_duration:,
 				prior_average: (known.sum / known.size if known.any?),
+				expected:,
 				random: Random.new(Quickdraw.stable_hash("#{@seed}:#{display_path}")),
 			)
+
+			@slow_files[@files[path]] = true if @files[path].slow_pending > 0
 		end
 	end
 
@@ -1067,6 +1105,8 @@ class Quickdraw::Coordinator
 				# A fresh worker starts in its slot once this one exits.
 				attempt.refreshing = true
 				move(worker, worker.loader)
+			elsif (file = slowest_waiting(worker))
+				worker.loaded[file.path] ? run_batch(worker, file) : load(worker, file.path)
 			elsif (file = own_file(worker))
 				run_batch(worker, file)
 			elsif (path = next_unloaded(worker.group))
@@ -1159,6 +1199,26 @@ class Quickdraw::Coordinator
 		end
 
 		candidates.max_by { |file| file.estimated_pending_time || 0 }
+	end
+
+	# The file whose next test is the slowest waiting in the worker's group (see
+	# TestFile#slow?), counting the time to load it if the worker hasn't. Taken
+	# before anything else, so slow tests start early and in parallel.
+	private def slowest_waiting(worker)
+		@slow_files.delete_if { |file, _| file.slow_pending == 0 }
+
+		candidates = @slow_files.each_key.filter_map do |file|
+			next if file.unstealable || @group_of[file.display_path] != worker.group
+			next if worker.loaded[file.path] == false
+
+			# Workers already loading it will take as many of its slow tests.
+			next if !worker.loaded[file.path] && @workers.each_value.count { |other| other.loading == file.path } >= file.slow_pending
+
+			worth = file.next_expected - (worker.loaded[file.path] ? 0 : file.load_duration)
+			[file, worth] if worth >= BATCH_BUDGET
+		end
+
+		candidates.max_by { |_file, worth| worth }&.first
 	end
 
 	private def orphaned?(file)

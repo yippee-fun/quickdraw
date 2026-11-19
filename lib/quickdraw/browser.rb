@@ -24,8 +24,8 @@ module Quickdraw::Browser
 
 	ARTIFACTS = File.join(Quickdraw::ROOT, ".quickdraw", "browser")
 
-	# Seconds, long enough for npx to download it.
-	DRIVER_TIMEOUT = 60
+	# Seconds, since the driver never has to be downloaded first (see default_driver).
+	DRIVER_TIMEOUT = 20
 
 	# A test's browser context and page, and what the page logged.
 	Tab = Data.define(:context, :page, :console)
@@ -187,11 +187,14 @@ module Quickdraw::Browser
 	end
 
 	# The project's own Playwright, if it has one, which starts faster than npx.
-	# Otherwise the version playwright-ruby-client needs, since others may not work.
+	# Otherwise the version playwright-ruby-client needs, since others may not
+	# work, if npx already has it: downloading it, or even asking the registry
+	# about it, can hang every worker, so --no and --offline make npx fail at
+	# once instead. After --, arguments such as --version reach Playwright.
 	private_class_method def self.default_driver
 		local = File.expand_path("node_modules/.bin/playwright")
 		# A command, which playwright-ruby-client runs with a shell.
-		File.executable?(local) ? Shellwords.escape(local) : "npx playwright@#{Playwright::COMPATIBLE_PLAYWRIGHT_VERSION}"
+		File.executable?(local) ? Shellwords.escape(local) : "npx --no --offline -- playwright@#{Playwright::COMPATIBLE_PLAYWRIGHT_VERSION}"
 	end
 
 	private_class_method def self.in_background(&block)

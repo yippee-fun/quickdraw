@@ -202,7 +202,8 @@ class Quickdraw::Reporters::Human
 
 		slowest = timings.slowest_tests(1).first
 
-		if @processes > 1 && slowest && elapsed >= 1 && slowest.duration >= elapsed * 0.5
+		# Short runs too, since a slow test is often what limits them.
+		if @processes > 1 && slowest && slowest.duration >= elapsed * 0.5
 			hints << "#{location(slowest)} took #{seconds(slowest.duration)}, " \
 				"#{percent(slowest.duration / elapsed)} of the run. Splitting it up would let workers share it."
 		elsif @processes > 1 && elapsed >= 2 && utilization < 0.6
