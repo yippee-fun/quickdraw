@@ -33,6 +33,68 @@ class CLITest < Quickdraw::Test
 		match { project.run("--watch", "--format", "junit") => { stderr: /--watch would write a JUnit document to the terminal on every run\./ } }
 	end
 
+	test "--profile finds a cost that tests share", timeout: 30 do
+		result = project("shared.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--profile")
+			def build_world = sleep(0.1)
+
+			class Shared < Quickdraw::Test
+				test("one") { build_world; assert true }
+				test("two") { build_world; assert true }
+				test("three") { build_world; assert true }
+				test("quick") { assert true }
+			end
+		RUBY
+
+		assert result.success?
+		assert_includes result.stdout, "Where test time goes"
+		assert_match result.stdout, /^ +(9\d|100)% +\d+% +3   build_world  shared\.test\.rb:1$/
+		# Ruby 3.3 labels it `sleep`.
+		assert_match result.stdout, /^ +(9\d|100)% +(9\d|100)% +3   (Kernel#)?sleep  shared\.test\.rb$/
+	end
+
+	test "--profile weighs time spent computing and waiting fairly", timeout: 30 do
+		result = project("mixed.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--profile")
+			def compute
+				finish = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.3
+				nil while Process.clock_gettime(Process::CLOCK_MONOTONIC) < finish
+			end
+
+			def wait = sleep(0.3)
+
+			class Mixed < Quickdraw::Test
+				test("both") { compute; wait; assert true }
+			end
+		RUBY
+
+		shares = result.stdout.scan(/^ +(\d+)% .* (compute|wait)  mixed\.test\.rb:\d+$/).to_h { |share, name| [name, Integer(share)] }
+		assert_in_delta shares["compute"], 50, 20
+		assert_in_delta shares["wait"], 50, 20
+	end
+
+	test "--profile tells apart methods with the same name in different classes", timeout: 30 do
+		result = project("setups.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--profile")
+			class Slow < Quickdraw::Test
+				def setup = sleep(0.2)
+				test("a") { assert true }
+			end
+
+			class Fast < Quickdraw::Test
+				private def setup = sleep(0.05)
+				test("b") { assert true }
+			end
+		RUBY
+
+		assert_match result.stdout, /  setup  setups\.test\.rb:2$/
+		assert_match result.stdout, /  setup  setups\.test\.rb:7$/
+	end
+
+	test "finishes a run with no test files", timeout: 20 do
+		result = project.run("-p", "1", "--no-history")
+
+		assert(result.success?) { result.output }
+		match { result => { summary: /\A0 tests · / } }
+	end
+
 	test "writes several formats at once, with the default on the terminal", timeout: 20 do
 		project = passing
 		result = project.run("-p", "1", "--no-history", "--format", "json:out.json", "--format", "junit:reports/junit.xml")

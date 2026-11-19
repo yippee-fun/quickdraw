@@ -7,6 +7,7 @@ class Quickdraw::CLI
 	FORMATS = ["human", "agent", "json", "junit"].freeze
 	# Formats that other programs read, which what tests print would corrupt.
 	MACHINE_FORMATS = ["json", "junit"].freeze
+	PROFILE_TIMESLICE = "1"
 	MAX_SEED = (2 ** 63) - 1
 
 	def initialize(args)
@@ -23,6 +24,14 @@ class Quickdraw::CLI
 		# throwaway process so they don’t leak into the processes that run tests.
 		options = Quickdraw.isolate { parse }
 
+		# Ruby reads the timeslice at boot, so it's set by starting again. See Sampler.
+		if options[:profile] && ENV["RUBY_THREAD_TIMESLICE"] != PROFILE_TIMESLICE
+			exec({ "RUBY_THREAD_TIMESLICE" => PROFILE_TIMESLICE }, RbConfig.ruby, "-I", Quickdraw::LIB, File.expand_path($PROGRAM_NAME), *@args)
+		end
+
+		# Forks keep the timeslice; processes that tests start shouldn't get it.
+		ENV.delete("RUBY_THREAD_TIMESLICE") if options[:profile]
+
 		if options[:watch]
 			watch(options)
 		else
@@ -36,6 +45,7 @@ class Quickdraw::CLI
 		options = {
 			backtrace: false,
 			timings: false,
+			profile: false,
 			processes: nil,
 			watch: false,
 			seed: nil,
@@ -201,6 +211,10 @@ class Quickdraw::CLI
 
 			parser.on("-t", "--timings", "List the slowest tests and files") do
 				options[:timings] = true
+			end
+
+			parser.on("--profile", "Sample tests and list the methods that take the most of their time") do
+				options[:profile] = true
 			end
 
 			parser.on("-b", "--backtrace", "Include Quickdraw’s own frames in backtraces") do
@@ -420,6 +434,7 @@ class Quickdraw::CLI
 			history_path: (HISTORY_PATH if options[:history]),
 			only_keys:,
 			whole_files:,
+			profile: options[:profile],
 		).call
 	end
 

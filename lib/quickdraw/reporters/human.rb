@@ -9,6 +9,7 @@ class Quickdraw::Reporters::Human
 	HINT_THRESHOLD = 1.0
 	SLOWEST_LIMIT = 10
 	SET_ASIDE_LIMIT = 20
+	PROFILE_LIMIT = 20
 	PROGRESS_INTERVAL = 0.1
 	BAR_WIDTH = 24
 
@@ -17,6 +18,7 @@ class Quickdraw::Reporters::Human
 		@backtrace = backtrace
 		@show_timings = timings
 		@timings = Quickdraw::Timings.new
+		@profile = Quickdraw::Profile.new
 		@color = io.tty? && !ENV.key?("NO_COLOR")
 		@live = io.tty?
 		@problems = []
@@ -36,6 +38,7 @@ class Quickdraw::Reporters::Human
 	def result(path, test, result)
 		@tests += 1
 		@timings.record(path, test, result)
+		@profile.record(result)
 
 		case Quickdraw::Outcome.status(result)
 		in "failed" | "errored" then problem(path, test, result)
@@ -58,6 +61,7 @@ class Quickdraw::Reporters::Human
 		release_bottom_row
 
 		print_slowest if @show_timings
+		print_profile if @profile.any?
 		print_set_aside
 		print_recap if @problems.any?
 
@@ -117,7 +121,7 @@ class Quickdraw::Reporters::Human
 
 		if timings.setup_and_teardown_share >= 0.5
 			hints << "Setup and teardown take #{percent(timings.setup_and_teardown_share)} of test time. " \
-				"Look for expensive shared hooks, factories or fixtures."
+				"Look for expensive shared hooks, factories or fixtures#{', or run with --profile to find them' unless @profile.any?}."
 		end
 
 		if timings.waiting_share >= 0.3
@@ -141,6 +145,22 @@ class Quickdraw::Reporters::Human
 
 		hints.each { |hint| @io.puts "#{yellow('!')} #{hint}" }
 		@io.puts "  #{dim('Run with --timings to see the slowest tests and files.')}" if hints.any? && !@show_timings
+	end
+
+	# A method in many tests with a large share is a cost they share.
+	private def print_profile
+		@io.puts
+		@io.puts "#{bold('Where test time goes')} #{dim("· #{delimit(@profile.samples)} samples from #{pluralize(@profile.tests, 'test')}")}"
+		@io.puts dim("   total    self   tests")
+
+		@profile.top(PROFILE_LIMIT).each do |method|
+			@io.puts [
+				"  #{percent(method.share).rjust(6)}",
+				dim(percent(method.self_share).rjust(6)),
+				delimit(method.tests).rjust(7),
+				"  #{method.label}  #{dim([relative(method.path), method.line].compact.join(':'))}",
+			].join(" ")
+		end
 	end
 
 	private def print_slowest

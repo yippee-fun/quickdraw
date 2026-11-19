@@ -11,18 +11,27 @@ class Quickdraw::Loader
 	# sends commands on `control`, one per line:
 	#
 	#   start COUNT          start workers on the first COUNT channels
-	#   fork CHANNEL SLOT    start a worker on CHANNEL in SLOT, replacing one that died
+	#   fork CHANNEL SLOT    start a worker on CHANNEL in SLOT
 	#
-	# A worker's slot is its QUICKDRAW_WORKER number, so a replacement takes over
-	# the per-worker resources (such as a database) of the worker it replaces.
-	# When `control` closes, no more workers start. Without fork, there's no
-	# `control`: see #call_in_thread.
-	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false)
+	# A worker's slot is its QUICKDRAW_WORKER number, so a worker started in a
+	# slot takes over the per-worker resources (such as a database) of the one
+	# before it. When `control` closes, no more workers start. Without fork,
+	# there's no `control`: see #call_in_thread.
+	#
+	# `group` names the group (see Configuration#group) whose tests this loader
+	# runs, or is nil for tests in none. Once it has booted, the loader writes
+	# to `report`, if given, a length-prefixed Marshal message: [:booted,
+	# groups] with the groups config defines as [name, patterns] pairs, or
+	# [:failed, error] if booting raised.
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, group: nil, report: nil)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
 		@control = control
 		@test_output_to_stderr = test_output_to_stderr
+		@profile = profile
+		@group = group
+		@report = report
 		@running = {}
 		@statuses = []
 	end
@@ -37,7 +46,16 @@ class Quickdraw::Loader
 		# the loader waits for its workers to finish their teardown.
 		trap("INT") { nil }
 
-		boot
+		begin
+			self.class.boot(group: @group)
+		rescue Exception => error
+			raise unless @report
+
+			report([:failed, Quickdraw.serialize_error(error)])
+			return false
+		end
+
+		report([:booted, Quickdraw::Config.groups.map { |group| [group.name, group.patterns] }]) if @report
 		test_files = real_paths
 
 		while @control
@@ -62,11 +80,12 @@ class Quickdraw::Loader
 
 	# Used where fork isn’t available: a single worker in a thread of this process.
 	# Tests then share a process with the coordinator, so they can see what it
-	# loads (sqlite3 and json for run history).
+	# loads (sqlite3 and json for run history), and every group's setup runs.
 	def call_in_thread
 		Thread.new do
 			channel = @channels.fetch(0)
-			boot
+			self.class.boot
+			Quickdraw::Config.groups.each { |group| group.setup&.call }
 			start_worker(channel, 0, real_paths, timeouts: false)
 		ensure
 			channel.close
@@ -124,10 +143,30 @@ class Quickdraw::Loader
 		end
 	end
 
-	private def boot
+	# Loads config and runs its before_forking callbacks, then the setup of
+	# `group`, if given. Every process that runs tests forks from one that has
+	# done this.
+	def self.boot(group: nil)
 		require File.expand_path(CONFIG_PATH) if File.exist?(CONFIG_PATH)
 		Quickdraw::Config.before_forking_callbacks.each(&:call)
+
+		if group
+			definition = Quickdraw::Config.groups.find { |it| it.name == group }
+			raise "There’s no #{group} group in #{CONFIG_PATH}." unless definition
+
+			definition.setup&.call
+		end
+
 		Process.warmup if Process.respond_to?(:warmup)
+	end
+
+	# Closed afterwards, so workers, which fork later, don't hold it open.
+	private def report(message)
+		data = Marshal.dump(message)
+		@report.write([data.bytesize].pack("N"), data)
+		@report.close
+	rescue Errno::EPIPE
+		nil
 	end
 
 	# Keyed by both expanded and real paths, since `require` may resolve symlinks.
@@ -147,6 +186,6 @@ class Quickdraw::Loader
 		ENV["QUICKDRAW_WORKER"] = index.to_s
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:).call
+		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile).call
 	end
 end

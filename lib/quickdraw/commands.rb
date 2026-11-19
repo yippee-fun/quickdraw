@@ -9,12 +9,16 @@ module Quickdraw::Commands
 	autoload :History, "quickdraw/commands/history"
 	autoload :Counterpart, "quickdraw/commands/counterpart"
 	autoload :Completions, "quickdraw/commands/completions"
+	autoload :Flaky, "quickdraw/commands/flaky"
+	autoload :Bisect, "quickdraw/commands/bisect"
 
 	# Name, constant, arguments and summary, in the order --help lists them.
 	LIST = [
 		["init", :Init, "", "Create config/quickdraw.rb and an example test"],
 		["doctor", :Doctor, "", "Check that this machine and project are ready to run tests"],
 		["history", :History, "", "Recent runs, and the slowest and flakiest tests"],
+		["flaky", :Flaky, " [--runs N] …", "Run tests many times in different orders to find flaky ones"],
+		["bisect", :Bisect, " PATH:LINE", "Find the tests a failing test depends on running before it"],
 		["counterpart", :Counterpart, " PATH", "The test file for a source file, or the source file for a test"],
 		["completions", :Completions, " SHELL", "Print completions for bash, zsh or fish"],
 	].freeze

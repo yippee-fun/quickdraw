@@ -17,7 +17,7 @@ class Quickdraw::History
 
 	TABLES = ["runs", "tests", "results", "files"].freeze
 
-	SCHEMA_VERSION = 5
+	SCHEMA_VERSION = 7
 	KEPT_RUNS = 100
 
 	# Weight of the latest run in each test's rolling average duration.
@@ -53,6 +53,11 @@ class Quickdraw::History
 			processes INTEGER NOT NULL,
 			git_sha TEXT,
 			git_branch TEXT,
+			-- The commit, plus a hash of uncommitted changes when there are any, so
+			-- runs of the same code can be compared.
+			code TEXT,
+			-- Set for the runs of one `quickdraw flaky` scan, from QUICKDRAW_SCAN.
+			scan TEXT,
 			duration REAL NOT NULL,
 			tests INTEGER NOT NULL,
 			failed INTEGER NOT NULL,
@@ -108,7 +113,11 @@ class Quickdraw::History
 			gc REAL,
 			allocations INTEGER,
 			assertions INTEGER,
+			-- The worker process (each replacement gets a new one), its slot (its
+			-- QUICKDRAW_WORKER number, which replacements share), and the test's
+			-- position in the order that process ran tests.
 			worker INTEGER NOT NULL,
+			slot INTEGER NOT NULL,
 			sequence INTEGER NOT NULL,
 			details TEXT,
 			PRIMARY KEY (run_id, test_id)
@@ -124,10 +133,10 @@ class Quickdraw::History
 
 	INSERT_RUN = <<~SQL
 		INSERT INTO runs (
-			started_at, finished_at, seed, processes, git_sha, git_branch, duration, tests, failed, errored, passed,
+			started_at, finished_at, seed, processes, git_sha, git_branch, code, scan, duration, tests, failed, errored, passed,
 			selection, worker_choice, test_time, cpu_time, longest_test
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	SQL
 
 	CPU = Quickdraw::STATS.index("cpu")
@@ -164,30 +173,33 @@ class Quickdraw::History
 		WHERE results.run_id = :run_id AND results.test_id = tests.id
 	SQL
 
-	Record = Data.define(:key, :path, :test, :result, :worker, :sequence)
+	Record = Data.define(:key, :path, :test, :result, :worker, :slot, :sequence)
 	KnownTest = Data.define(:id, :path, :line, :average_duration)
 
 	RunSummary = Data.define(:finished_at, :seed, :processes, :worker_choice, :git_sha, :git_branch, :duration, :tests, :failed, :errored, :passed)
 	SlowTest = Data.define(:path, :line, :class_name, :description, :average_duration)
 	FlakyTest = Data.define(:path, :line, :class_name, :description, :runs, :failures)
+	OrderedTest = Data.define(:path, :line, :class_name, :description)
+	Outcome = Data.define(:run_id, :test_id, :path, :line, :class_name, :description, :status, :seed)
+	FailureOrder = Data.define(:run_id, :seed, :slot, :before, :test)
 
 	FLAKY_TESTS = <<~SQL
 		WITH recent AS (
-			SELECT results.test_id, runs.git_sha, results.status IN ('failed', 'errored', 'crashed') AS failed
+			SELECT results.test_id, runs.code, results.status IN ('failed', 'errored', 'crashed') AS failed
 			FROM results JOIN runs ON runs.id = results.run_id
 			WHERE results.run_id IN (SELECT id FROM runs ORDER BY id DESC LIMIT ?)
 				AND results.status IN ('passed', 'failed', 'errored', 'crashed')
 		),
-		-- GROUP BY puts runs without a git_sha together.
+		-- Runs of the same code where a test both passed and failed. GROUP BY puts
+		-- runs outside git together.
 		flaky AS (
-			SELECT DISTINCT test_id FROM recent
-			GROUP BY test_id, git_sha
+			SELECT test_id, COUNT(*) AS runs, SUM(failed) AS failures FROM recent
+			GROUP BY test_id, code
 			HAVING MIN(failed) = 0 AND MAX(failed) = 1
 		)
-		SELECT tests.path, tests.line, tests.class_name, tests.description, COUNT(*) AS runs, SUM(recent.failed) AS failures
-		FROM recent JOIN tests ON tests.id = recent.test_id
-		WHERE recent.test_id IN (SELECT test_id FROM flaky)
-		GROUP BY recent.test_id
+		SELECT tests.path, tests.line, tests.class_name, tests.description, SUM(flaky.runs), SUM(flaky.failures) AS failures
+		FROM flaky JOIN tests ON tests.id = flaky.test_id
+		GROUP BY flaky.test_id
 		ORDER BY failures DESC, tests.path, tests.line
 	SQL
 
@@ -198,6 +210,7 @@ class Quickdraw::History
 		require "json"
 		require "fileutils"
 		require "time"
+		require "digest"
 
 		@path = path
 
@@ -316,6 +329,48 @@ class Quickdraw::History
 		raise Error, error.message
 	end
 
+	# The last run in which the test at `path:line` (or the nearest above it)
+	# failed, with the tests its worker process ran before it, in order: what a
+	# failure that depends on order depends on. Nil if it hasn't failed.
+	def failure_order(path, line)
+		# Every test on that line, since tests generated in a loop share one.
+		run_id, worker, slot, sequence, seed = @db.get_first_row(<<~SQL, [path, path, line])
+			SELECT results.run_id, results.worker, results.slot, results.sequence, runs.seed
+			FROM results
+				JOIN runs ON runs.id = results.run_id
+				JOIN tests ON tests.id = results.test_id
+			WHERE tests.path = ?
+				AND tests.line = (SELECT max(line) FROM tests WHERE path = ? AND line <= ?)
+				AND results.status IN ('failed', 'errored', 'crashed')
+			ORDER BY results.run_id DESC LIMIT 1
+		SQL
+		return unless run_id
+
+		tests = @db.execute(<<~SQL, [run_id, worker, sequence]).map { |row| OrderedTest.new(*row) }
+			SELECT tests.path, tests.line, tests.class_name, tests.description
+			FROM results JOIN tests ON tests.id = results.test_id
+			WHERE results.run_id = ? AND results.worker = ? AND results.sequence <= ?
+			ORDER BY results.sequence
+		SQL
+
+		FailureOrder.new(run_id:, seed:, slot:, before: tests[...-1], test: tests.last)
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
+	# Each test's results in the `quickdraw flaky` scan's runs after the run
+	# with the id `after`, with the run's seed.
+	def outcomes(scan:, after:)
+		@db.execute(<<~SQL, [scan, after]).map { |row| Outcome.new(*row) }
+			SELECT runs.id, tests.id, tests.path, tests.line, tests.class_name, tests.description, results.status, runs.seed
+			FROM results JOIN tests ON tests.id = results.test_id JOIN runs ON runs.id = results.run_id
+			WHERE runs.scan = ? AND runs.id > ?
+			ORDER BY results.run_id
+		SQL
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
 	# The tests with the longest average duration, longest first.
 	def slowest_tests(limit:)
 		@db.execute(<<~SQL, [limit]).map { |row| SlowTest.new(*row) }
@@ -327,8 +382,8 @@ class Quickdraw::History
 		raise Error, error.message
 	end
 
-	# Tests that both passed and failed on the same commit within the last
-	# `within` runs, with how many of those runs they ran and failed in.
+	# Tests that both passed and failed on the same code (see #git_revision)
+	# within the last `within` runs, counting only the runs of code they did both on.
 	def flaky_tests(within:)
 		@db.execute(FLAKY_TESTS, [within]).map { |row| FlakyTest.new(*row) }
 	rescue SQLite3::Exception => error
@@ -338,7 +393,7 @@ class Quickdraw::History
 	# `records` are History::Record; `load_errors` are [path, error] pairs;
 	# `loaded_paths` are the files that loaded. `passed` is the run's outcome.
 	def record_run(started_at:, finished_at:, seed:, processes:, worker_choice:, selection:, passed:, records:, loaded_paths:, load_errors:)
-		sha, branch = @revision.value
+		sha, branch, code = @revision.value
 		statuses = records.map { |record| status(record.result) }
 		counts = statuses.tally
 		durations = records.filter_map { |record| record.result["duration"] }
@@ -351,6 +406,8 @@ class Quickdraw::History
 				processes,
 				sha,
 				branch,
+				code,
+				ENV["QUICKDRAW_SCAN"],
 				finished_at - started_at,
 				records.size,
 				counts.fetch("failed", 0),
@@ -468,6 +525,7 @@ class Quickdraw::History
 			*(result["stats"] || Array.new(Quickdraw::STATS.size)),
 			result["assertions"],
 			record.worker,
+			record.slot,
 			record.sequence,
 			details,
 		]
@@ -521,10 +579,32 @@ class Quickdraw::History
 		time.utc.strftime("%Y-%m-%dT%H:%M:%S.%LZ")
 	end
 
+	# The commit, branch and code: the commit plus a hash of what's changed since,
+	# from the moment the run started. Changes are tracked files' differences and
+	# untracked Ruby files. Other untracked files are left out, since reports and
+	# other output would make every run look like different code.
 	private def git_revision
 		output = IO.popen(["git", "rev-parse", "HEAD", "--abbrev-ref", "HEAD"], err: File::NULL, &:read)
-		$?.success? ? output.split("\n", 2).map(&:strip) : [nil, nil]
+		return [nil, nil, nil] unless $?.success?
+
+		sha, branch = output.split("\n", 2).map(&:strip)
+		diff = IO.popen(["git", "diff", "HEAD", "--binary", "--no-ext-diff", "--no-color"], err: File::NULL, &:read)
+		untracked = IO.popen(["git", "ls-files", "--others", "--exclude-standard", "-z", "--", "*.rb"], err: File::NULL, &:read)
+		return [sha, branch, sha] if diff.empty? && untracked.empty?
+
+		digest = Digest::SHA256.new
+		digest << diff
+
+		untracked.split("\0").sort.each do |path|
+			digest << "\0#{path}\0" << File.binread(path)
+		rescue SystemCallError
+			nil
+		end
+
+		code = "#{sha}+#{digest.hexdigest[0, 12]}"
+
+		[sha, branch, code]
 	rescue Errno::ENOENT
-		[nil, nil]
+		[nil, nil, nil]
 	end
 end

@@ -25,6 +25,8 @@ quickdraw  (coordinator — never loads user code)
 - Loaders and workers run a core-only runtime: `IO.pipe` + `Marshal`, no `socket`, `json` or `io/console`. Workers ship strings; formatting and diffing happen in the coordinator.
 - Ruby::Box is an optional extra layer (e.g. for assertions that need prism in a worker), switched on by the coordinator setting `RUBY_BOX=1` for loaders.
 - Groups isolate tests that need different requires or a different Gemfile. Each group has its own loader; the coordinator keeps at most N workers busy across all groups.
+  - **Done, for requires:** `config.group :browser, "test/browser/**/*.test.rb" { require "playwright" }`. The first loader boots config and reports which groups it defines. The coordinator then forks a loader for each group with selected files, which boots config, runs the group's block after the before_forking callbacks, and forks its own workers. Workers start in proportion to each group's files. A worker whose group runs out of work stops and another starts in its slot in the group with the most work left per worker, so slots (and per-worker databases) stay within N. A group whose setup raises reports its files as not loaded, with the error, and its slots go to the other groups. `bisect` replays a group's tests in a loader for that group.
+  - **Still to do:** a group with its own Gemfile, which needs its loader started with `exec` and `BUNDLE_GEMFILE`, since Bundler can't be unloaded, with channels passed as inherited file descriptors. Also, when config fails to boot, every file reports the same error; one problem would be clearer for a large suite.
 - The loader boots shared helpers once, then forks. Workers load test files lazily with `load(path, Module.new)` and report each file's test list to the coordinator. Loading runs in parallel, the first test starts straight away, and each file's top-level constants stay scoped to that file.
 - The unit of work is a batch of tests from one file. Batches start at one test and double while the file's tests fit a 20ms budget, so a slow file never hands all its tests to one worker. Workers prefer files they've already loaded.
 - Once every file is loaded, an idle worker steals from the file with the most estimated time left, loading it first if the remaining time is worth more than twice the load time.
@@ -130,8 +132,11 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
     - A timed-out test's `defer` blocks (and so its `tmpdir`) don't run, because the worker exits mid-test.
     - A message half-written by a dead worker, whose pipe a child process holds open, blocks the coordinator. Reading needs non-blocking framing.
 - **Per-test output capture:** collect what each test prints and show it with that test's failure, as pytest does, instead of interleaving it on the terminal. Workers flush after every test (done), so a crash no longer loses earlier tests' output.
-- **Flaky detection:** retry failures in a fresh worker; a test that passes on retry is reported as flaky, not green. Flake scores tracked across runs.
-- **Order bisection:** we record each worker's exact test sequence, so a failure that only happens in a suite run can be replayed serially and delta-debugged down to the minimal polluting test(s). `quickdraw bisect <test>`.
+- **Flaky detection:**
+  - `quickdraw flaky [--runs N]` (done) runs the selection N times with new seeds and lists tests that passed in some runs and failed in others, with the failing seeds.
+  - `quickdraw history` (done) lists tests that passed and failed on the same code across recent runs.
+  - Still to do: retry failures in a fresh worker during a normal run, reporting a test that passes on retry as flaky rather than green.
+- **Order bisection** (done): `quickdraw bisect PATH:LINE` takes the last run where the test failed and the tests its worker ran before it, from history. It checks the test passes alone and fails after them, then replays halves until the fewest that still make it fail are left. Replays run in a worker forked from a loader that boots config once, as in a run, with the run's seed. Still to do: failures that need tests from both halves are reported as the whole remaining set, not narrowed further (ddmin).
 - **Leak detection:** snapshot global state around tests — globals, new constants, `ENV`, `Time` stubs, live threads, open files, temp files — and blame the test that leaked.
 - **Stress modes:** `--repeat N`, run each test many times across random workers, randomised `TZ` and locale.
 - Tests with zero assertions are flagged.
@@ -178,10 +183,9 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 - **Subcommands** (done):
   - `init` creates config, an example test when there are none, and ignores `.quickdraw/` in git.
   - `doctor` checks Ruby, fork, cores, file descriptors, test files, how long config takes to boot, run history, listen and `.gitignore`.
-  - `history` lists recent runs, the slowest tests, and flaky tests: those that passed and failed on the same commit. Still to do: uncommitted changes don't change the commit, so a test that fails while you edit and then passes looks flaky. Recording a hash of the working tree's diff with each run would fix it.
+  - `history` lists recent runs, the slowest tests, and flaky tests: those that passed and failed on the same code. Each run records its code as the commit plus a hash of uncommitted changes (tracked files' differences and untracked Ruby files), so a test that fails while you edit and then passes isn't flaky.
   - `counterpart PATH` prints a source file's test or a test's source file; `exe/qc` opens it in `$EDITOR`.
-
-  Still to do: `bisect`, `flaky` and `profile`.
+  - `flaky` and `bisect`: see Reliability.
 - Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached.
 - The seed and worker sequences are always printed or recorded, so every run is reproducible.
 
@@ -258,8 +262,8 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 Slow suites are rarely one slow test. Usually it's a small cost paid by every test: password hashing at full cost, a factory that builds a whole object graph, debug-level logging, a `before` hook that resets too much. Quickdraw should find these on its own.
 
 - **Always on, core only:** each test event carries wall time, CPU time (`CLOCK_PROCESS_CPUTIME_ID`), GC time and allocation deltas (`GC.stat`), split into setup/hooks, body and teardown. Wall time far above CPU time means waiting (IO, sleep, network). A one-line summary flags when hooks or GC dominate.
-- **Profile mode (`quickdraw profile`):** signal-based stack sampling in every worker, merged in the coordinator into one profile of the whole suite. A sampler thread using `Thread#backtrace_locations` doesn't work: CPU-bound code holds the GVL, so it got 7 samples in 0.9s. Sampling needs either a profiler gem (only in profile mode) or a small Quickdraw C extension.
-- **Shared-cost report:** finds frames that appear in most tests and ranks them by total suite time, e.g. "`create(:user)` → `BCrypt::Password.create`: in 92% of tests, 31ms each, 4m14s total, from spec/support/auth.rb:12". It estimates the saving if that cost were removed.
+- **Profile mode** (done, `--profile`): a sampler thread in each worker records the main thread's stack while tests run, using `Thread#backtrace_locations`, so it's core Ruby only. A waiting thread only gets the GVL every timeslice (100ms by default, so about 8 samples a second of CPU-bound code), so `--profile` restarts Ruby with `RUBY_THREAD_TIMESLICE=1`, which gives about 90 a second for CPU-bound code and far more for code that waits. Ruby 3.3 ignores the setting. Since samples come at uneven rates, each is weighted by the time since the previous one. Same-named methods are told apart by the line of their `def`, since labels don't name classes in a test file's anonymous scope. Samples are merged in the coordinator into one profile of the suite.
+- **Shared-cost report** (done): methods ranked by their share of all samples, with their share as the innermost frame and how many tests they ran in, so a cost in most tests stands out. Still to do: the estimated saving in seconds, and grouping by call path ("`create(:user)` → `BCrypt::Password.create`").
 - **Framework-aware counters, when the framework is present:** SQL queries and time per test (ActiveSupport notifications), factories built per test, real outbound HTTP, `sleep` calls.
 - **Boot profile:** `require` time by file and gem, and time to load each test file.
 - **GC advice:** GC's share of the run and suggested heap settings.
@@ -292,7 +296,7 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 1. Quick fixes: the CI `-t` flag, `--max`/`--efficiency` discarding their result, unprinted seed, the prism/refract break, the undefined `message` in `Runner#work`, dead autoloads.
 2. Coordinator/loader split: core-only runtime, batched streaming events, crash recovery, SQLite run history (done). Still to do: hang timeouts.
 3. Reporters (human, agent, JSON, GitHub Actions, JUnit) and selection (done). Still to do: an HTML report.
-4. Groups (`setup:`, `gemfile:`).
+4. Groups: setup blocks (done), then Gemfiles.
 5. Quickdraw's own syntax and failure output: `describe` blocks, skipped and pending tests, structured diffs, the failing source line (done). Still to do: a fuller assertion set. (Running Minitest and RSpec suites is deferred; see Compatibility.)
 6. Flaky detection, order bisection, leak detection.
 7. Coverage, impact analysis, interactive watch mode, sharding.

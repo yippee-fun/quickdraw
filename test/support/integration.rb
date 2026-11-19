@@ -9,7 +9,7 @@ module Integration
 
 	# `output` is stdout then stderr. `summary` is the "N tests · …" line. They're
 	# members, rather than methods, so pattern matching can use them.
-	Result = Data.define(:stdout, :stderr, :output, :summary, :status, :duration) do
+	Result = Data.define(:stdout, :stderr, :output, :summary, :status, :exit_status, :duration) do
 		def success? = status.success?
 	end
 
@@ -87,7 +87,7 @@ module Integration
 			kill_group(pid)
 			output = "#{stdout.force_encoding(Encoding::UTF_8)}#{stderr.force_encoding(Encoding::UTF_8)}"
 
-			Result.new(stdout:, stderr:, output:, summary: output[/^\d+ tests? ·.*$/], status:, duration: now - started_at)
+			Result.new(stdout:, stderr:, output:, summary: output[/^\d+ tests? ·.*$/], status:, exit_status: status.exitstatus, duration: now - started_at)
 		ensure
 			stdout_reader&.close
 			stderr_reader&.close

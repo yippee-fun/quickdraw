@@ -25,6 +25,7 @@ class Quickdraw::Worker
 			@stats = Array.new(Quickdraw::STATS.size, 0)
 			@duration = nil
 			@skipped = nil
+			@profile = nil
 		end
 
 		# Records the wall time of a phase of the test. Only the wall clock is read,
@@ -74,6 +75,9 @@ class Quickdraw::Worker
 			@skipped = { "pending" => true, "reason" => nil }
 		end
 
+		# From Sampler#record, with --profile.
+		attr_writer :profile
+
 		def to_h
 			{
 				"assertions" => @assertions,
@@ -82,6 +86,7 @@ class Quickdraw::Worker
 				"skipped" => @skipped,
 				"stats" => @stats,
 				"duration" => @duration,
+				"profile" => @profile,
 			}
 		end
 
@@ -95,17 +100,20 @@ class Quickdraw::Worker
 	end
 
 	# `timeouts` is false where the worker shares a process with the coordinator,
-	# since timing out exits the worker's process.
-	def initialize(channel, test_files, seed, timeouts: true)
+	# since timing out exits the worker's process. `profile` samples tests.
+	def initialize(channel, test_files, seed, timeouts: true, profile: false)
 		@channel = channel
 		@test_files = test_files
 		@seed = seed
 		@timeouts = timeouts
+		@profile = profile
 		@files = {}
 		@file_seeds = {}
 	end
 
 	def call
+		@sampler = Quickdraw::Sampler.new if @profile
+
 		if @timeouts
 			@watchdog = Quickdraw::Watchdog.new do |seconds, threads|
 				@channel.write([:timeout, seconds, threads])
@@ -191,7 +199,7 @@ class Quickdraw::Worker
 			seconds = definition.timeout || Quickdraw::Config.timeout
 
 			if @watchdog
-				overran = @watchdog.watch(seconds) { test.run }
+				overran = @watchdog.watch(seconds) { run_test(test, recorder) }
 
 				if overran
 					recorder.error!({
@@ -201,7 +209,7 @@ class Quickdraw::Worker
 					})
 				end
 			else
-				test.run
+				run_test(test, recorder)
 			end
 		rescue Quickdraw::Interrupted
 			raise
@@ -211,6 +219,14 @@ class Quickdraw::Worker
 
 		flush_output
 		recorder.to_h
+	end
+
+	private def run_test(test, recorder)
+		if @sampler
+			_, recorder.profile = @sampler.record { test.run }
+		else
+			test.run
+		end
 	end
 
 	# Workers start unbuffered, but a test or config can replace $stdout. Without

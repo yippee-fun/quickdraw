@@ -78,7 +78,7 @@ class Quickdraw::Commands::History
 		width = counts.map(&:size).max
 
 		@io.puts
-		@io.puts "#{bold('Flaky tests')} #{dim('· passed and failed on the same commit')}"
+		@io.puts "#{bold('Flaky tests')} #{dim('· passed and failed on the same code')}"
 		tests.zip(counts) { |test, count| @io.puts "  #{yellow(count.ljust(width))}  #{location(test)}" }
 	end
 

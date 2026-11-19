@@ -109,6 +109,29 @@ class HistoryCommandTest < Quickdraw::Test
 		refute_includes result.stdout, "Flaky tests"
 	end
 
+	test "doesn't count a test that failed, then passed after an uncommitted change, as flaky", timeout: 30 do
+		test_file = <<~RUBY
+			class A < Quickdraw::Test
+				test("fixed") { refute ENV["QUICKDRAW_FIXTURE_FAIL"] }
+			end
+		RUBY
+		project = project("a.test.rb" => test_file)
+
+		git(project, "init", "--quiet")
+		git(project, "add", "a.test.rb")
+		git(project, "commit", "--quiet", "--no-verify", "-m", "Add a test")
+		project.run("-p", "1", env: { "QUICKDRAW_FIXTURE_FAIL" => "1" })
+		project.write("a.test.rb" => "#{test_file}# Fixed\n")
+		project.run("-p", "1")
+		project.run("-p", "1")
+
+		refute_includes project.run("history").stdout, "Flaky tests"
+
+		# The same uncommitted code, passing and failing, is flaky.
+		project.run("-p", "1", env: { "QUICKDRAW_FIXTURE_FAIL" => "1" })
+		assert_includes project.run("history").stdout, "failed 1 of 3  a.test.rb:2 A › fixed"
+	end
+
 	private def git(project, *)
 		system("git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false", *, exception: true)
 	end

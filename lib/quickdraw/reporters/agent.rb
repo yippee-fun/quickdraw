@@ -10,11 +10,13 @@ class Quickdraw::Reporters::Agent
 
 	FULL_PROBLEMS = 10
 	BACKTRACE_LIMIT = 8
+	PROFILE_LIMIT = 10
 
 	def initialize(io: $stdout, backtrace: false)
 		@io = io
 		@backtrace = backtrace
 		@problems = []
+		@profile = Quickdraw::Profile.new
 	end
 
 	def start(processes:, worker_choice:, seed:, estimate: nil)
@@ -24,6 +26,7 @@ class Quickdraw::Reporters::Agent
 
 	def result(path, test, result)
 		@problems << [path, test, result] if result["errors"].any? || result["failures"].any?
+		@profile.record(result)
 	end
 
 	def load_failed(path, error)
@@ -33,6 +36,7 @@ class Quickdraw::Reporters::Agent
 	def tick = nil
 
 	def finish(outcome)
+		print_profile if @profile.any?
 		@problems.first(FULL_PROBLEMS).each { |problem| print_problem(*problem) }
 
 		if (rest = @problems.drop(FULL_PROBLEMS)).any?
@@ -62,6 +66,16 @@ class Quickdraw::Reporters::Agent
 
 		@io.puts "#{outcome.passed? ? 'PASSED' : 'FAILED'}: #{counts} in #{format('%.2f', outcome.duration)}s (seed #{@seed})"
 		@io.puts "Rerun the failures with: #{Quickdraw::Reporters.command} --failed" if @problems.any?
+	end
+
+	private def print_profile
+		@io.puts "Where test time goes (share of the time sampled, share with the method innermost, tests it ran in):"
+
+		@profile.top(PROFILE_LIMIT).each do |method|
+			@io.puts "- #{(method.share * 100).round}%, #{(method.self_share * 100).round}% self, #{pluralize(method.tests, 'test')}: #{method.label} (#{[relative(method.path), method.line].compact.join(':')})"
+		end
+
+		@io.puts
 	end
 
 	private def print_problem(path, test, result)
