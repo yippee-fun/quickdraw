@@ -39,6 +39,22 @@ class MutatorTest < Quickdraw::Test
 		]
 	end
 
+	test "keeps the encoding the source declares, and shows the change in UTF-8" do
+		source = "# encoding: iso-8859-1\nclass Example\n\tdef call(a) = a ? \"caf\xE9\" : \"th\xE9\"\nend\n"
+
+		assert_equal changes(source), [
+			["replaced the body with nil", "def call(a) = nil"],
+			["negated the condition", "def call(a) = !(a) ? \"café\" : \"thé\""],
+		]
+		assert_equal mutants(source).map { |mutant| mutant.source.encoding }.uniq, [Encoding::ISO_8859_1]
+	end
+
+	test "labels methods in UTF-8 whatever the source's encoding" do
+		source = "# encoding: iso-8859-1\nclass Example\n\tdef caf\xE9(a) = a + 1\nend\n"
+
+		assert_equal mutants(source).map { |mutant| mutant.subject.label }.uniq, ["Example#café"]
+	end
+
 	test "skips mutations that can't change behaviour or only break the method" do
 		source = <<~RUBY
 			module Example

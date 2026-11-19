@@ -119,7 +119,7 @@ class Quickdraw::Commands::Mutate
 
 		subjects = mutants.map(&:subject).uniq(&:id)
 		baselines, @broken = runner.baseline(test_files.map { |path| File.expand_path(path) }, subjects)
-		warn "#{list(@broken.map { |path| relative(path) })} failed to load or crashed, so #{@broken.one? ? 'its' : 'their'} tests don’t count." if @broken.any?
+		warn "#{list(@broken.map { |path| relative(path) })} failed to load, crashed or timed out, so #{@broken.one? ? 'its' : 'their'} tests don’t count." if @broken.any?
 
 		failing = baselines.select { |baseline| baseline.status in "failed" | "errored" }
 		if failing.any?
@@ -175,7 +175,7 @@ class Quickdraw::Commands::Mutate
 	private def exit_status
 		if @interrupted then 130
 		elsif @score && @score < @threshold then 1
-		elsif @errors.any? || @broken.any? then 1
+		elsif @errors.any? || @broken.any? || @missing.any? then 1
 		else 0
 		end
 	end
@@ -238,6 +238,7 @@ class Quickdraw::Commands::Mutate
 			"survived" => @survived.size,
 			"uncovered" => @uncovered.size,
 			"errors" => @errors.size,
+			"missing" => missing_mutants,
 			"duration" => @duration.round(3),
 			"interrupted" => !!@interrupted,
 			"survivors" => @survived.map do |job, _outcome|
@@ -254,6 +255,7 @@ class Quickdraw::Commands::Mutate
 				}
 			end,
 			"uncovered_lines" => @uncovered.group_by { |mutant| relative(mutant.subject.path) }.transform_values { |list| list.map(&:line).uniq.sort },
+			"missing_methods" => @missing.map { |subject| { "path" => relative(subject.path), "line" => subject.line, "method" => subject.label } },
 		})
 	end
 
@@ -268,6 +270,9 @@ class Quickdraw::Commands::Mutate
 			messages << case status
 			in "unapplied" then "#{pluralize(errors.size, 'mutant')} couldn’t be applied, such as at #{relative(job.mutant.subject.path)}:#{job.mutant.line}: #{reason}"
 			in "lost" then "#{pluralize(errors.size, 'mutant')} didn’t finish, since the worker running #{errors.one? ? 'it' : 'them'} exited."
+			in "unloaded"
+				paths = errors.map { |_job, (_status, path)| relative(path) }.uniq
+				"#{pluralize(errors.size, 'mutant')} didn’t run every test that runs #{errors.one? ? 'it' : 'them'}, since #{list(paths)} loaded in one worker but failed to load in another."
 			end
 		end
 

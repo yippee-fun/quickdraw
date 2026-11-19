@@ -48,6 +48,8 @@ class Quickdraw::Mutation::Mutator
 		result = Prism.parse(@source, filepath: @path)
 		raise SyntaxError, result.errors.first.message if result.failure?
 
+		# As its magic comment says, so mutants parse and evaluate without it.
+		@source = @source.dup.force_encoding(result.source.encoding)
 		@line_starts = result.source.offsets
 		@frozen_string_literal = result.magic_comments.any? do |comment|
 			comment.key.tr("-", "_").casecmp?("frozen_string_literal") && comment.value.casecmp?("true")
@@ -188,7 +190,7 @@ class Quickdraw::Mutation::Mutator
 		return if @seen.key?(source)
 
 		@seen[source] = true
-		result = Prism.parse(source)
+		result = Prism.parse(source, encoding: @source.encoding)
 		# Such as an endless method whose heredoc's body is after its end, or
 		# removing a local variable's only assignment, which only breaks the
 		# code that reads it.
@@ -208,8 +210,8 @@ class Quickdraw::Mutation::Mutator
 			description:,
 			source:,
 			frozen_string_literal: @frozen_string_literal,
-			before: @source.byteslice(line_start, line_end - line_start).chomp,
-			after: replace(location, replacement, within: line_start, to: line_end).chomp,
+			before: Quickdraw.utf8(@source.byteslice(line_start, line_end - line_start).chomp),
+			after: Quickdraw.utf8(replace(location, replacement, within: line_start, to: line_end).chomp),
 		)
 	end
 

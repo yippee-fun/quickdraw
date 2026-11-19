@@ -10,6 +10,9 @@ class Quickdraw::Worker
 	# How often to check that a fork running mutation tests is still alive.
 	FORK_CHECK_INTERVAL = 0.1
 
+	# How long past its tests' timeouts to wait for a baseline fork before killing it.
+	BASELINE_GRACE = 5
+
 	class Recorder
 		PHASE_INDICES = Quickdraw::PHASES.each_with_index.to_h.freeze
 		CPU = Quickdraw::STATS.index("cpu")
@@ -315,9 +318,14 @@ class Quickdraw::Worker
 	# Runs the file's tests unmutated, tracing what they run of `subjects` (see
 	# Mutation::Tracer), in a fork so that what they leave behind, such as
 	# memoized values, can't reach mutants. Returns the ids of the subjects
-	# traced and each test's result with its "lines", or nil if the fork died.
+	# traced and each test's result with its "lines", or nil if the fork died
+	# or took longer than all its tests' timeouts, which a test holding the GVL
+	# keeps the fork's watchdog from noticing.
 	private def baseline(path, subjects)
-		in_fork do
+		timeouts = @files.fetch(path).map { |test| test.timeout || Quickdraw::Config.timeout }
+		seconds = (timeouts.sum + BASELINE_GRACE unless timeouts.include?(nil))
+
+		outcome = in_fork(seconds) do
 			# Its thread didn't survive the fork.
 			@watchdog &&= Quickdraw::Watchdog.new { nil }
 			tracer = Quickdraw::Mutation::Tracer.new
@@ -330,6 +338,8 @@ class Quickdraw::Worker
 
 			[traced, results]
 		end
+
+		outcome unless outcome == :timeout
 	end
 
 	# Runs `tests`, as [path, index], against `mutant` in a fork until one fails.
@@ -352,7 +362,7 @@ class Quickdraw::Worker
 	# Returns what the block returns in a fork of this worker, so what it changes
 	# dies with the fork. Nil if the fork exits first, or :timeout once it's
 	# taken `seconds`, which kills it.
-	private def in_fork(seconds = nil)
+	private def in_fork(seconds)
 		# So a property's failing case is neither replayed in the fork nor saved
 		# from it, where it would change other mutants' runs.
 		Quickdraw::Property.directory = File::NULL
@@ -374,7 +384,7 @@ class Quickdraw::Worker
 		# can hold open after the fork has gone.
 		until reader.wait_readable(deadline ? (deadline - now).clamp(0, FORK_CHECK_INTERVAL) : FORK_CHECK_INTERVAL)
 			return :timeout if deadline && now >= deadline
-			next unless Process.wait2(pid, Process::WNOHANG)
+			next unless exited?(pid)
 
 			pid = nil
 			return unless reader.wait_readable(0)
@@ -397,8 +407,21 @@ class Quickdraw::Worker
 				nil
 			end
 
-			Process.wait(pid)
+			begin
+				Process.wait(pid)
+			rescue Errno::ECHILD
+				# Already reaped, as for exited?.
+				nil
+			end
 		end
+	end
+
+	# Reaps the fork if it has exited. Config that ignores SIGCHLD, or reaps in
+	# a handler, can have reaped it already.
+	private def exited?(pid)
+		!!Process.wait2(pid, Process::WNOHANG)
+	rescue Errno::ECHILD
+		true
 	end
 
 	private def run_mutant(mutant, tests)

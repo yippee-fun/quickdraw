@@ -64,7 +64,8 @@ class Quickdraw::Mutation::Runner
 
 	# Loads and runs every test in `paths` unmutated, tracing `subjects`, spread
 	# across the workers. Returns the Baselines, and the paths whose tests
-	# couldn't run because they failed to load or crashed their process.
+	# couldn't run because they failed to load, crashed their process or
+	# timed out.
 	def baseline(paths, subjects)
 		queue = Thread::Queue.new(paths).close
 
@@ -102,7 +103,7 @@ class Quickdraw::Mutation::Runner
 		[results.flat_map(&:first), results.flat_map(&:last)]
 	end
 
-	# Runs each Job, yielding it and its outcome (see Worker#mutate) as it
+	# Runs each Job, yielding it and its outcome (see Slot#mutate) as it
 	# finishes, or ["lost"] if the worker running it exited.
 	def call(jobs)
 		queue = Thread::Queue.new(jobs).close
@@ -187,7 +188,7 @@ class Quickdraw::Mutation::Runner
 		end
 
 		# The ids of the subjects traced, and each test's result, in order (see
-		# Worker#baseline). Nil if the tests crashed their process.
+		# Worker#baseline). Nil if the tests crashed their process or timed out.
 		def baseline(path, subjects)
 			@channel.write([:baseline, path, subjects])
 
@@ -197,10 +198,19 @@ class Quickdraw::Mutation::Runner
 			end
 		end
 
+		# The outcome, as Worker#mutate gives it, but ["unloaded", path] rather
+		# than ["survived"] if a test file that ran the mutant unmutated, in
+		# another worker, failed to load in this one, so its tests didn't run.
 		def mutate(job)
-			tests = job.tests.select { |test| load(test.path) }
+			tests, unloaded = job.tests.partition { |test| load(test.path) }
+			return ["unloaded", unloaded.first.path] if tests.empty?
+
 			@channel.write([:mutant, job.mutant, tests.map { |test| [test.path, test.index] }, job.seconds])
-			expect(:mutant).last
+
+			case expect(:mutant).last
+			in ["survived"] if unloaded.any? then ["unloaded", unloaded.first.path]
+			in outcome then outcome
+			end
 		rescue Gone
 			["lost"]
 		end

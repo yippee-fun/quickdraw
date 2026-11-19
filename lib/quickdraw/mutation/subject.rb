@@ -34,15 +34,17 @@ Quickdraw::Mutation::Subject = Data.define(:id, :path, :line, :nesting, :name, :
 		nil
 	end
 
+	# As Ruby finds it: in the scopes around it, innermost first, then in the
+	# innermost one's ancestors, then in Object.
 	private def lexical(scopes, name)
-		scope = scopes.reverse_each.find { |it| it.const_defined?(name, false) }
-		scope ? scope.const_get(name, false) : Object.const_get(name)
+		scope = scopes.drop(1).reverse_each.find { |it| it.const_defined?(name, false) }
+		scope ? scope.const_get(name, false) : scopes.last.const_get(name)
 	end
 
 	# As a backtrace would name it, e.g. Admin::User#name or Admin::User.find.
 	def label
 		owners = nesting.filter_map { |_keyword, name| name.delete_prefix("::") unless name == "<< self" }
 		separator = (singleton || (nesting.last in ["class", "<< self"])) ? "." : "#"
-		owners.empty? ? name.to_s : "#{owners.join('::')}#{separator}#{name}"
+		Quickdraw.utf8(owners.empty? ? name.to_s : "#{owners.join('::')}#{separator}#{name}")
 	end
 end

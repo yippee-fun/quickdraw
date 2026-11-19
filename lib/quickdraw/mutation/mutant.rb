@@ -29,7 +29,8 @@ Quickdraw::Mutation::Mutant = Data.define(:id, :subject, :line, :last_line, :cov
 			first_line -= 1
 		end
 
-		TOPLEVEL_BINDING.eval(wrapped, subject.path, first_line)
+		# In the source's encoding, which an ASCII-only method loses when wrapped.
+		TOPLEVEL_BINDING.eval(wrapped.force_encoding(source.encoding), subject.path, first_line)
 		owner.__send__(visibility, name) unless visibility == :public
 		owner.__send__(:module_function, name) if function
 	end

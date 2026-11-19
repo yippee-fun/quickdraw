@@ -144,7 +144,7 @@ class MutateTest < Quickdraw::Test
 			"test/crash.test.rb" => "require_relative '../lib/crash'\nclass CrashTest < Quickdraw::Test\n\ttest('crashes') { fork { sleep 30 }; Crash.one; exit!(1) }\nend\n",
 		).run("mutate", "lib", "--format", "agent")
 
-		match { result => { exit_status: 1, stdout: /MUTATION SCORE: 100%/, stderr: /failed to load or crashed/ } }
+		match { result => { exit_status: 1, stdout: /MUTATION SCORE: 100%/, stderr: /failed to load, crashed or timed out/ } }
 		assert_includes result.stderr, "test/broken.test.rb"
 		assert_includes result.stderr, "test/crash.test.rb"
 	end
@@ -281,6 +281,107 @@ class MutateTest < Quickdraw::Test
 
 		assert result.success?
 		assert_includes result.stdout, "MUTATION SCORE: 100% (6 of 6 killed)"
+	end
+
+	test "finds a class named within one around it through that class's ancestors", timeout: 30 do
+		result = project(
+			"lib/shapes.rb" => <<~RUBY,
+				class Base
+					module Inner; end
+				end
+
+				class Derived < Base
+					class Inner::Child
+						def self.double(n) = n * 2
+					end
+				end
+			RUBY
+			"test/shapes.test.rb" => <<~RUBY,
+				require_relative "../lib/shapes"
+				class ShapesTest < Quickdraw::Test
+					test("doubles") { assert_equal Base::Inner::Child.double(3), 6 }
+				end
+			RUBY
+		).run("mutate", "lib/shapes.rb", "--format", "agent")
+
+		assert result.success?
+		assert_includes result.stdout, "MUTATION SCORE: 100% (4 of 4 killed)"
+	end
+
+	test "mutates methods in files with another encoding", timeout: 30 do
+		result = project(
+			"lib/menu.rb" => "# encoding: iso-8859-1\n# frozen_string_literal: true\nmodule Menu\n\tdef self.item(hot) = hot ? \"caf\xE9\" : \"th\xE9\"\n\tdef self.acute?(word) = !word.ascii_only? && word.match?(/\\xE9/)\nend\n",
+			"test/menu.test.rb" => <<~RUBY,
+				require_relative "../lib/menu"
+				class MenuTest < Quickdraw::Test
+					test("hot") { assert_equal Menu.item(true).encode("UTF-8"), "café" }
+					test("cold") { assert_equal Menu.item(false).encode("UTF-8"), "thé" }
+					test("acute") { assert Menu.acute?(Menu.item(true)) }
+				test("plain") { refute Menu.acute?("tea") }
+				test("diaeresis") { refute Menu.acute?("na\\xEFve".dup.force_encoding("ISO-8859-1")) }
+				end
+			RUBY
+		).run("mutate", "lib/menu.rb", "--format", "agent")
+
+		assert result.success?
+		assert_includes result.stdout, "MUTATION SCORE: 100% (5 of 5 killed)"
+	end
+
+	test "fails, in every format, when a method is replaced before its tests run", timeout: 30 do
+		project = project(
+			"lib/pricing.rb" => PRICING,
+			"test/pricing.test.rb" => "#{STRONG}\nShop::Pricing.class_eval { def discount(total) = (total > 100) ? total / 10 : 0 }\n",
+		)
+
+		agent = project.run("mutate", "lib/pricing.rb", "--format", "agent")
+		match { agent => { exit_status: 1, stdout: %r{^Couldn’t find Shop::Pricing#discount \(lib/pricing.rb:5\) once tests had loaded, so 9 mutants didn’t run\.$} } }
+
+		require "json"
+		json = project.run("mutate", "lib/pricing.rb", "--format", "json")
+		assert_equal json.exit_status, 1
+		match { JSON.parse(json.stdout, symbolize_names: true) => { missing: 9, missing_methods: [{ path: "lib/pricing.rb", line: 5, method: "Shop::Pricing#discount" }] } }
+	end
+
+	test "fails when a test file that ran a mutant unmutated doesn't load in the worker running it", timeout: 30 do
+		result = project(
+			"lib/pricing.rb" => PRICING,
+			# Loads in the first worker only.
+			"test/pricing.test.rb" => "File.open(File.join(__dir__, 'loaded'), File::CREAT | File::EXCL) {}\n#{STRONG}",
+		).run("mutate", "lib/pricing.rb", "-p", "2", "--format", "agent")
+
+		assert_equal result.exit_status, 1
+		assert_includes result.stdout, "test/pricing.test.rb loaded in one worker but failed to load in another."
+		refute_includes result.stdout, "SURVIVED"
+	end
+
+	test "times out tests that keep their watchdog from running before mutating", timeout: 30 do
+		result = project(
+			"lib/pricing.rb" => PRICING,
+			"test/pricing.test.rb" => <<~RUBY,
+				require_relative "../lib/pricing"
+				class PricingTest < Quickdraw::Test
+					# As a test stuck in native code that holds the GVL does.
+					test("hangs", timeout: 0.1) do
+						Thread.list.each { |thread| thread.kill unless thread == Thread.current }
+						Shop::Pricing.new.discount(5)
+						sleep
+					end
+				end
+			RUBY
+		).run("mutate", "lib/pricing.rb", "--format", "agent", timeout: 20)
+
+		match { result => { exit_status: 1, stderr: %r{test/pricing.test.rb failed to load, crashed or timed out} } }
+	end
+
+	test "runs mutants when config ignores SIGCHLD", timeout: 30 do
+		result = project(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.after_forking { trap(:CHLD, 'IGNORE') } }\n",
+			"lib/pricing.rb" => PRICING,
+			"test/pricing.test.rb" => STRONG,
+		).run("mutate", "lib/pricing.rb", "--format", "agent")
+
+		assert result.success?
+		assert_includes result.stdout, "MUTATION SCORE: 100% (9 of 9 killed)"
 	end
 
 	test "stops on Ctrl-C and reports what finished", timeout: 30 do
