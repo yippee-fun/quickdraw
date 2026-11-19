@@ -179,7 +179,7 @@ class CLITest < Quickdraw::Test
 			"slow.test.rb" => "class B < Quickdraw::Test; test('slow') { sleep 0.5; puts 'slow finished'; assert true }; end\n",
 		).run("-p", "2", "--no-history", "--no-capture")
 
-		failure = result.stdout.index("✗ fails.test.rb:1 A › fails")
+		failure = result.stdout.index("FAIL fails  A · fails.test.rb:1")
 		assert_operator failure, :<, result.stdout.index("slow finished")
 		assert_includes result.stdout, "1 problem\n  ✗ fails.test.rb:1 A › fails\n"
 	end

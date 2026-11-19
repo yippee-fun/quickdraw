@@ -48,6 +48,9 @@ class Quickdraw::Outcome
 	# A CoverageReport with --coverage, or nil.
 	attr_accessor :coverage
 
+	# Whether the run is recorded in history, which --failed and bisect read.
+	attr_accessor :recorded
+
 	# 130 is what shells report for a process stopped by Ctrl-C.
 	def exit_status
 		if @interrupted then 130

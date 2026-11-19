@@ -103,7 +103,7 @@ class RetriesTest < Quickdraw::Test
 
 	test "history lists a test that passed on retry as flaky, and suggests bisecting it", timeout: 30 do
 		project = project(FIRST_RUN_FAILS)
-		assert_includes project.run("-p", "1", "--format", "human").output, "Find which: quickdraw bisect once.test.rb:2"
+		assert_includes project.run("-p", "1", "--format", "human").output, "⌕ quickdraw bisect once.test.rb:2"
 
 		flaky = project.run("history").output[/^Flaky tests.*\z/m]
 		assert_includes flaky, "once.test.rb:2 Once › fails the first time"

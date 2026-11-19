@@ -374,6 +374,7 @@ class Quickdraw::Coordinator
 
 		@outcome.interrupted = @interrupted
 		@outcome.coverage = @coverage
+		@outcome.recorded = !@history.nil?
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
 		@outcome.processes_failed = processes_failed

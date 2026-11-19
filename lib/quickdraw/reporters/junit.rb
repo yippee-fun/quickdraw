@@ -96,7 +96,8 @@ class Quickdraw::Reporters::JUnit
 
 	# For the message attribute, which CI dashboards show as a summary.
 	private def one_line(text)
-		plain(text).lines.map(&:strip).reject(&:empty?).join(" ")[0, 200]
+		# Without assert_equal's label padding, but with the values' own spaces.
+		plain(text).lines.map { |line| line.strip.sub(/\A(Expected|Actual) +/, '\1 ') }.reject(&:empty?).join(" ")[0, 200]
 	end
 
 	private def text(value)

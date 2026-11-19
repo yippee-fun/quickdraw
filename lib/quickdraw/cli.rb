@@ -226,8 +226,7 @@ class Quickdraw::CLI
 
 			parser.on(
 				"--retry N", Integer,
-				"Retry each failure up to N times in a fresh worker (default 1, 0 to turn off).",
-				"A test that passes on retry is flaky, which still fails the run",
+				"Retry each failure up to N times in a fresh worker (default 1, 0 to turn off). A test that passes on retry is flaky, which still fails the run",
 			) do |it|
 				usage_error "--retry needs 0 or more, not #{it}." if it.negative?
 				options[:retries] = it
@@ -314,7 +313,7 @@ class Quickdraw::CLI
 			end
 
 			parser.on("-h", "--help", "Print this help") do
-				puts parser
+				puts help_text(parser)
 				exit
 			end
 
@@ -413,6 +412,50 @@ class Quickdraw::CLI
 	private def bold(text, io = $stdout) = style(text, 1, io)
 	private def dim(text, io = $stdout) = style(text, 2, io)
 	private def red(text, io = $stdout) = style(text, 31, io)
+
+	HELP_WIDTH = 100
+
+	# Descriptions wrapped to the terminal under their column, with the options
+	# they describe highlighted.
+	private def help_text(parser)
+		column = 4 + parser.summary_width + 1
+		width = [terminal_columns || HELP_WIDTH, HELP_WIDTH].min
+
+		# Too narrow for two columns, descriptions go under what they describe.
+		narrow = width - column < 30
+
+		parser.help.lines(chomp: true).flat_map do |line|
+			next [line] unless line.start_with?("    ") && line.size > column && line[column - 1] == " "
+
+			head = line[0, column]
+			option = cyan(head.rstrip) unless head.strip.empty?
+
+			if narrow
+				[*option, *wrap(line[column..], [width - 8, 20].max).map { |text| "        #{text}" }]
+			else
+				lines = wrap(line[column..], width - column)
+				first = option ? "#{option}#{' ' * (column - head.rstrip.size)}" : head
+				["#{first}#{lines.first}", *lines.drop(1).map { |text| "#{' ' * column}#{text}" }]
+			end
+		end.join("\n")
+	end
+
+	private def wrap(text, width)
+		text.split.each_with_object([+""]) do |word, lines|
+			lines << +"" if !lines.last.empty? && lines.last.size + word.size + 1 > width
+			lines.last << " " unless lines.last.empty?
+			lines.last << word
+		end
+	end
+
+	private def terminal_columns
+		require "io/console"
+		$stdout.winsize[1]
+	rescue LoadError, SystemCallError, NoMethodError
+		nil
+	end
+
+	private def cyan(text, io = $stdout) = style(text, 36, io)
 
 	private def style(text, code, io)
 		(io.tty? && !ENV.key?("NO_COLOR")) ? "\e[#{code}m#{text}\e[0m" : text

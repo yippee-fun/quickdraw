@@ -48,7 +48,7 @@ class AroundTestIntegrationTest < Quickdraw::Test
 		result = run_with("{ |_test, _run| nil }")
 
 		refute result.success?
-		refute_includes result.stdout, "ran"
+		refute_match result.stdout, /^ran$/
 		assert_includes result.output, "An around_test callback in config didn’t call run, so the test didn’t run."
 	end
 end

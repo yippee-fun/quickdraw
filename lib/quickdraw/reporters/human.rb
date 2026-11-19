@@ -14,6 +14,9 @@ class Quickdraw::Reporters::Human
 	COVERAGE_LIMIT = 10
 	PROGRESS_INTERVAL = 0.1
 	BAR_WIDTH = 24
+	# Lines shown either side of a failing line.
+	CODE_FRAME_CONTEXT = 1
+	RULE_WIDTH = 72
 
 	def initialize(io: $stdout, backtrace: false, timings: false)
 		@io = io
@@ -91,21 +94,55 @@ class Quickdraw::Reporters::Human
 		print_coverage(outcome.coverage) if outcome.coverage
 
 		@io.puts
-		@io.puts [
+		@io.puts dim("─" * rule_width)
+		row "Tests", counts_line(outcome)
+		row "Run", "#{pluralize(@processes, 'worker')} (#{@worker_choice}) · seed #{@seed} · #{dim("#{Quickdraw::Reporters.command} --seed #{@seed}")}"
+		print_timing_summary(outcome.duration) unless outcome.interrupted
+		@io.puts
+		@io.puts status_line(outcome)
+	end
+
+	# Each count in the colour of what it means.
+	private def counts_line(outcome)
+		errored = outcome.errored + outcome.load_errors
+
+		[
 			pluralize(outcome.tests, "test"),
 			pluralize(outcome.assertions, "assertion"),
-			("#{outcome.failed} failed" if outcome.failed > 0),
-			("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}" if outcome.flaky > 0),
-			("#{outcome.skipped} skipped" if outcome.skipped > 0),
-			("#{outcome.pending} pending" if outcome.pending > 0),
-			("#{outcome.errored + outcome.load_errors} errored" if outcome.errored + outcome.load_errors > 0),
-			("#{outcome.not_run} not run" if outcome.not_run > 0),
-			("#{pluralize(outcome.unloaded_files, 'file')} not loaded" if outcome.unloaded_files > 0),
-			("#{outcome.without_assertions} without assertions" if outcome.without_assertions > 0),
-			format("%.2fs", outcome.duration),
-		].compact.join(" · ")
-		print_timing_summary(outcome.duration) unless outcome.interrupted
-		@io.puts dim("Seed #{@seed} · #{pluralize(@processes, 'worker')} (#{@worker_choice}) · #{Quickdraw::Reporters.command} --seed #{@seed}")
+			(red("#{outcome.failed} failed") if outcome.failed > 0),
+			(yellow("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}") if outcome.flaky > 0),
+			(dim("#{outcome.skipped} skipped") if outcome.skipped > 0),
+			(dim("#{outcome.pending} pending") if outcome.pending > 0),
+			(red("#{errored} errored") if errored > 0),
+			(yellow("#{outcome.not_run} not run") if outcome.not_run > 0),
+			(yellow("#{pluralize(outcome.unloaded_files, 'file')} not loaded") if outcome.unloaded_files > 0),
+			(yellow("#{outcome.without_assertions} without assertions") if outcome.without_assertions > 0),
+			dim(format("%.2fs", outcome.duration)),
+		].compact.join(dim(" · "))
+	end
+
+	private def status_line(outcome)
+		if outcome.interrupted
+			label("INTERRUPTED", 43)
+		elsif outcome.passed?
+			label("PASSED", 42)
+		elsif @problems.any?
+			# --failed reads history, so the hint is for runs that record it.
+			rerun = dim(" · ↻ #{Quickdraw::Reporters.command} --failed") if outcome.recorded
+			"#{label('FAILED', 41)} #{pluralize(@problems.size, 'problem')}#{rerun}"
+		else
+			label("FAILED", 41)
+		end
+	end
+
+	# A labelled line of the summary, with the labels in a column.
+	private def row(label, text)
+		@io.puts "  #{dim(label.ljust(7))} #{text}"
+	end
+
+	private def rule_width
+		_rows, columns = terminal_size
+		columns ? [columns, RULE_WIDTH].min : RULE_WIDTH
 	end
 
 	private def print_timing_summary(elapsed)
@@ -114,9 +151,8 @@ class Quickdraw::Reporters::Human
 		timings = @timings
 		utilization = timings.utilization(elapsed:, processes: @processes)
 
-		@io.puts dim([
-			"Test time #{seconds(timings.test_time)}",
-			phase_breakdown(timings),
+		row "Spent", dim([
+			"#{seconds(timings.test_time)} in tests: #{phase_breakdown(timings)}",
 			"waiting #{percent(timings.waiting_share)}",
 			"GC #{percent(timings.gc_share)}",
 			"#{delimit(timings.allocations_per_test)} allocations per test",
@@ -126,7 +162,7 @@ class Quickdraw::Reporters::Human
 		counts = timings.counts_per_test
 		unless counts.empty?
 			per_test = counts.map { |name, count, time| "#{format('%.1f', count)} #{name}#{" (#{seconds(time)})" if time > 0}" }
-			@io.puts dim("Per test #{per_test.join(' · ')}")
+			row "Counts", "#{per_test.join(dim(' · '))} #{dim('per test')}"
 		end
 
 		return if timings.test_time < HINT_THRESHOLD
@@ -266,15 +302,9 @@ class Quickdraw::Reporters::Human
 		@io.puts
 
 		@set_aside.sort_by { |path, test, _| [path, test["line"]] }.each do |path, test, skipped|
-			label = if skipped["pending"]
-				"pending"
-			elsif (reason = skipped["reason"])
-				"skipped: #{reason}"
-			else
-				"skipped"
-			end
-
-			@io.puts dim("○ #{path}:#{test['line']} #{name_of(test)} (#{label})")
+			kind = skipped["pending"] ? "○ pending" : "↷ skipped"
+			reason = " — #{skipped['reason']}" if skipped["reason"]
+			@io.puts "#{dim(kind)}  #{name_of(test)}#{dim("#{reason}  #{path}:#{test['line']}")}"
 		end
 	end
 
@@ -295,30 +325,21 @@ class Quickdraw::Reporters::Human
 		@io.puts
 
 		if test
-			@io.puts "#{marker(result)} #{bold("#{path}:#{test['line']}")} #{name_of(test)}"
+			@io.puts "#{badge(result)} #{bold(test['description'] || "line #{test['line']}")}  #{dim([test['class_name'], "#{path}:#{test['line']}"].compact.join(' · '))}"
 		else
-			@io.puts "#{marker(result)} #{bold(path)} could not be loaded"
+			@io.puts "#{badge(result)} #{bold(path)} could not be loaded"
 		end
 
 		result["failures"].each do |failure|
 			failure_path = relative(failure["path"])
-			code = source_line(failure_path, failure["line"]) if failure["line"] > 0
-			@io.puts "  #{dim("#{failure_path}:#{failure['line']}")}#{"  #{code}" if code}"
 			@io.puts
-			@io.puts indent(clean(failure["message"]), 4)
+			@io.puts "  #{cyan("#{failure_path}:#{failure['line']}")}" unless failure_path == path
+			print_code_frame(failure_path, failure["line"])
+			@io.puts
+			@io.puts indent(clean(failure["message"]).chomp, 4)
 		end
 
-		result["errors"].each do |error|
-			first_line, *rest = clean(error["message"]).lines(chomp: true)
-			@io.puts "  #{red(error['name'])}: #{first_line}"
-			rest.each { |line| @io.puts "    #{line}" }
-			backtrace(error["backtrace"]).each { |frame| @io.puts "    #{dim(relative(frame))}" }
-
-			if (details = error["details"])
-				@io.puts
-				@io.puts indent(relative_paths(clean(details)), 4)
-			end
-		end
+		result["errors"].each { |error| print_error(error) }
 
 		if (output = result["output"])
 			@io.puts
@@ -329,19 +350,89 @@ class Quickdraw::Reporters::Human
 		if result["passed_on_retry"]
 			@io.puts
 			@io.puts "  #{yellow(flaky_explanation(result))}"
-			@io.puts "  #{dim("Find which: #{bisect_command(path, test)}")}" if result["in_history"]
+			@io.puts "  #{dim("⌕ #{bisect_command(path, test)}")}" if result["in_history"]
 		end
 
 		@io.puts
-		@io.puts "  #{dim("Rerun: #{rerun_command(path, test)}")}"
+		@io.puts "  #{dim("↻ #{rerun_command(path, test)}")}"
+	end
+
+	# The message, then the code where it was raised, then the rest of the backtrace.
+	private def print_error(error)
+		first_line, *rest = clean(error["message"]).lines(chomp: true)
+		@io.puts
+		@io.puts "  #{red("#{error['name']}:")} #{first_line}"
+		rest.each { |line| @io.puts "  #{line}" }
+
+		# Only the test's own frames: when Quickdraw raised, they say nothing more.
+		frames = error["backtrace"]
+		frames = frames.reject { |frame| frame.start_with?(LIBRARY) }.take_while { |frame| !frame.start_with?(EXECUTABLES) } unless @backtrace
+		frames = frames.map { |frame| relative(frame.scrub) }
+
+		# The first frame of the project's own code, which a gem's error was raised from.
+		shown = frames.find do |frame|
+			frame_path, = frame_location(frame)
+			frame_path && !frame_path.start_with?("/", "vendor/") && source_lines(frame_path)
+		end
+
+		if shown
+			frame_path, line = frame_location(shown)
+			@io.puts
+			@io.puts "  #{cyan("#{frame_path}:#{line}")} #{dim(shown[/:in [`'](.*)'\z/, 1]&.then { |name| "in #{name}" }.to_s)}"
+			print_code_frame(frame_path, line)
+			frames -= [shown]
+		end
+
+		if frames.any?
+			@io.puts
+			frames.each { |frame| @io.puts "  #{dim(frame)}" }
+		end
+
+		if (details = error["details"])
+			@io.puts
+			@io.puts indent(relative_paths(clean(details)), 4)
+		end
+	end
+
+	# The line, with the lines around it, numbered, and indented as little as
+	# they allow.
+	private def print_code_frame(path, line)
+		lines = source_lines(path)
+		return @io.puts "  #{dim("#{path}:#{line}")}" unless lines && line.between?(1, lines.size)
+
+		first = [line - CODE_FRAME_CONTEXT, 1].max
+		last = [line + CODE_FRAME_CONTEXT, lines.size].min
+		numbers = (first..last)
+		code = numbers.to_h { |number| [number, lines[number - 1].gsub("\t", "  ")] }
+		margin = code.values.reject { |text| text.strip.empty? }.map { |text| text[/\A */].size }.min || 0
+		width = numbers.last.to_s.size
+
+		numbers.each do |number|
+			text = code[number][margin..].to_s
+
+			if number == line
+				@io.puts "  #{red("▸ #{number.to_s.rjust(width)} │")} #{text}"
+			else
+				@io.puts "  #{dim("  #{number.to_s.rjust(width)} │ #{text}")}"
+			end
+		end
+	end
+
+	private def badge(result)
+		case Quickdraw::Outcome.status(result)
+		in "flaky" then label("FLAKY", 43)
+		in "errored" then label("ERROR", 41)
+		in "failed" then label("FAIL", 41)
+		end
+	end
+
+	# Dark text on a coloured background, or just the text without colour.
+	private def label(text, background)
+		@color ? "\e[1;30;#{background}m #{text} \e[0m" : text
 	end
 
 	private def marker(result)
 		result["passed_on_retry"] ? yellow("~") : red("✗")
-	end
-
-	private def backtrace(frames)
-		@backtrace ? frames : user_backtrace(frames)
 	end
 
 	# Printed as soon as it happens, so there's something to look at while the
@@ -460,6 +551,7 @@ class Quickdraw::Reporters::Human
 	private def red(text) = style(text, 31)
 	private def green(text) = style(text, 32)
 	private def yellow(text) = style(text, 33)
+	private def cyan(text) = style(text, 36)
 	private def bold(text) = style(text, 1)
 	private def dim(text) = style(text, 2)
 

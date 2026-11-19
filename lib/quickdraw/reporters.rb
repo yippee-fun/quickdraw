@@ -95,16 +95,19 @@ module Quickdraw::Reporters
 		# The stripped source at `line` of `path`, or nil if it can't be read or
 		# is blank. Read as UTF-8 whatever the locale, as Ruby reads source files.
 		private def source_line(path, line)
+			code = source_lines(path)&.[](line - 1)&.strip
+			code unless code.nil? || code.empty?
+		end
+
+		# The lines of `path`, or nil if it can't be read.
+		private def source_lines(path)
 			@source_lines ||= {}
 
-			lines = @source_lines.fetch(path) do
-				@source_lines[path] = File.readlines(path, encoding: Encoding::UTF_8).map(&:scrub)
+			@source_lines.fetch(path) do
+				@source_lines[path] = File.readlines(path, chomp: true, encoding: Encoding::UTF_8).map(&:scrub)
 			rescue SystemCallError
 				@source_lines[path] = nil
 			end
-
-			code = lines&.[](line - 1)&.strip
-			code unless code.nil? || code.empty?
 		end
 
 		private def rerun_command(path, test)

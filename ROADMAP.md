@@ -313,4 +313,4 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 8. Suite profiling: always-on timings and GC/CPU counters per test phase, then profile mode with the shared-cost report.
 9. Browser testing.
 10. Property-based testing (done), then mutation testing (which builds on per-test coverage), then fuzzing.
-11. A nicer-looking CLI and reports: the live display, the problem reports and the summary.
+11. A nicer-looking CLI and reports. Done: problems open with a FAIL, ERROR or FLAKY badge and the test's name, show the failing line in a numbered code frame (for errors, the first line of the project's code in the backtrace), short values as aligned Expected and Actual lines, and diffs under a coloured legend; the summary has labelled rows and ends with a PASSED or FAILED badge; help wraps to the terminal with highlighted options. Still to do: the live display while tests run, and the other commands' output (history, flaky, bisect, doctor).

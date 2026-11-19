@@ -10,26 +10,14 @@ module Quickdraw::Assertions
 				[Quickdraw::Inspector.pretty(expected), Quickdraw::Inspector.pretty(actual)]
 			end
 
-			if expected_text.include?("\n") || actual_text.include?("\n") || (String === actual && String === expected)
+			if expected_text.include?("\n") || actual_text.include?("\n")
 				diff = Quickdraw::Diff.diff(expected_text, actual_text)
-
-				unless diff.empty?
-					next <<~MESSAGE
-						\e[34mDiff (expected vs actual):\e[0m
-
-						#{diff}
-					MESSAGE
-				end
+				next "#{Quickdraw::Diff::LEGEND}\n\n#{diff}\n" unless diff.empty?
 			end
 
 			<<~MESSAGE
-				\e[34mActual:\e[0m
-
-				#{actual.inspect}
-
-				\e[34mExpected:\e[0m
-
-				#{expected.inspect}
+				\e[2mExpected\e[0m  \e[32m#{expected.inspect}\e[0m
+				\e[2mActual\e[0m    \e[31m#{actual.inspect}\e[0m
 			MESSAGE
 		end
 	end
@@ -81,13 +69,7 @@ module Quickdraw::Assertions
 			assert(normalized_actual == normalized_expected) do
 				diff = Quickdraw::Diff.diff(expected, actual)
 
-				unless diff.empty?
-					next <<~MESSAGE
-						\e[34mDiff (expected vs actual):\e[0m
-
-						#{diff}
-					MESSAGE
-				end
+				next "#{Quickdraw::Diff::LEGEND}\n\n#{diff}\n" unless diff.empty?
 
 				<<~MESSAGE
 					\e[34mActual Ruby:\e[0m

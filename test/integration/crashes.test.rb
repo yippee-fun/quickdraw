@@ -119,7 +119,7 @@ class CrashesTest < Quickdraw::Test
 		).run("-p", "2", "--no-history", "test.test.rb")
 
 		refute result.success?
-		assert_includes result.output, "✗ test.test.rb could not be loaded\n  RuntimeError: boot failed\n    config/quickdraw.rb:4"
+		assert_includes result.output, "ERROR test.test.rb could not be loaded\n\n  RuntimeError: boot failed\n\n  config/quickdraw.rb:4 in "
 		match { result => { summary: /\A0 tests · 0 assertions · 1 errored/ } }
 		assert(result.duration < 5) { "took #{result.duration}s" }
 	end

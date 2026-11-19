@@ -231,7 +231,7 @@ class GroupsTest < Quickdraw::Test
 		).run("-p", "2", "--no-history")
 
 		refute result.success?
-		assert_includes result.output, "✗ test/broken/page.test.rb could not be loaded\n  RuntimeError: The broken group’s setup failed: no browser installed\n    config/quickdraw.rb:2"
+		assert_includes result.output, "ERROR test/broken/page.test.rb could not be loaded\n\n  RuntimeError: The broken group’s setup failed: no browser installed\n\n  config/quickdraw.rb:2 in "
 		refute_includes result.output, "lib/quickdraw"
 		match { result => { summary: /\A1 test · 1 assertion · 1 errored/ } }
 	end

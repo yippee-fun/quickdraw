@@ -77,7 +77,7 @@ class OutputTest < Quickdraw::Test
 		RUBY
 
 		assert_includes result.stdout, "Quickdraw::WorkerCrashed: The worker process exited unexpectedly.\n\n  Output\n    before crashing\n"
-		assert_match result.stdout, /Quickdraw::Timeout: .*\n(?:    .*\n)*\n  Output\n    before hanging\n/
+		assert_match result.stdout, /Quickdraw::Timeout: .*\n(?:(?:  .*)?\n)*  Output\n    before hanging\n/
 		match { result => { summary: /\A3 tests · 1 assertion · 2 errored/ } }
 	end
 

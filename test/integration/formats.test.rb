@@ -142,7 +142,7 @@ class FormatsTest < Quickdraw::Test
 		summary = File.join(project.directory, "summary.md")
 		result = project.run("-p", "1", "--no-history", env: { "GITHUB_ACTIONS" => "true", "GITHUB_STEP_SUMMARY" => summary })
 
-		assert_includes result.output, "::error file=shapes.test.rb,line=5,title=Shapes › computes area::Actual:%0A"
+		assert_includes result.output, "::error file=shapes.test.rb,line=5,title=Shapes › computes area::Expected  7%0AActual    6"
 		assert_includes result.output, "::error file=shapes.test.rb,line=2,title=Shapes › raises in a helper::NoMethodError"
 		assert_includes File.read(summary), "| 3 | 1 | 1 | 0 | 1 | 0 |"
 	end
@@ -155,7 +155,7 @@ class FormatsTest < Quickdraw::Test
 
 		assert_includes xml, %(<testsuites name="quickdraw" tests="3" failures="1" errors="1")
 		assert_includes xml, %(<testcase name="passes" classname="Shapes" file="shapes.test.rb" line="12")
-		assert_includes xml, %(<failure message="Actual: 6 Expected: 7">)
+		assert_includes xml, %(<failure message="Expected 7 Actual 6">)
 		assert_includes xml, %(<error type="NoMethodError")
 	end
 end

@@ -74,7 +74,7 @@ class Quickdraw::Reporters::Agent
 		].compact.join(", ")
 
 		@io.puts "#{outcome.passed? ? 'PASSED' : 'FAILED'}: #{counts} in #{format('%.2f', outcome.duration)}s (seed #{@seed})"
-		@io.puts "Rerun the failures with: #{Quickdraw::Reporters.command} --failed" if @problems.any?
+		@io.puts "Rerun the failures with: #{Quickdraw::Reporters.command} --failed" if @problems.any? && outcome.recorded
 	end
 
 	# Uncovered lines as path:ranges, which is what an agent writing tests needs.

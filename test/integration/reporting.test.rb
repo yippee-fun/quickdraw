@@ -10,7 +10,7 @@ class ReportingTest < Quickdraw::Test
 
 		assert result.success?
 		match { result => { summary: /\A1 test · 1 assertion · / } }
-		assert_match result.output, /^Seed 7 · 1 worker \(manual\) · (bundle exec )?quickdraw --seed 7$/
+		assert_match result.output, /^  Run     1 worker \(manual\) · seed 7 · (bundle exec )?quickdraw --seed 7$/
 	end
 
 	test "reports failures with the failing line, then exits unsuccessfully", timeout: 20 do
@@ -24,7 +24,7 @@ class ReportingTest < Quickdraw::Test
 
 		refute result.success?
 		assert_includes result.output, "✗ a.test.rb:2 A › compares strings"
-		assert_includes result.output, "a.test.rb:3"
+		assert_includes result.output, %(  ▸ 3 │   assert_equal "hello\\nworld", "hello\\nthere"\n)
 		assert_includes result.output, "- there\n    + world"
 	end
 
@@ -53,8 +53,8 @@ class ReportingTest < Quickdraw::Test
 		RUBY
 
 		assert result.success?
-		assert_includes result.output, "○ a.test.rb:2 A › to write later (pending)"
-		assert_includes result.output, "○ a.test.rb:3 A › skips (skipped: needs a network)"
+		assert_includes result.output, "○ pending  A › to write later  a.test.rb:2"
+		assert_includes result.output, "↷ skipped  A › skips — needs a network  a.test.rb:3"
 		match { result => { summary: /\A3 tests · 1 assertion · 1 skipped · 1 pending/ } }
 	end
 
@@ -67,7 +67,7 @@ class ReportingTest < Quickdraw::Test
 
 		human = project.run("-p", "1", "--no-history")
 		assert human.success?
-		assert_includes human.output, "(skipped: caf�)"
+		assert_includes human.output, "↷ skipped  A › skips — caf�  a.test.rb:2"
 
 		json = project.run("-p", "1", "--no-history", "--format", "json")
 		assert json.success?
@@ -86,7 +86,7 @@ class ReportingTest < Quickdraw::Test
 			end
 		RUBY
 
-		assert_includes result.output, "○ a.test.rb:6 A › to write later (pending)"
+		assert_includes result.output, "○ pending  A › to write later  a.test.rb:6"
 		assert_includes result.output, "✗ a.test.rb:7 A › runs"
 		assert_includes result.output, "RuntimeError: no fixtures"
 		match { result => { summary: /\A2 tests · 0 assertions · 1 pending · 1 errored/ } }
@@ -106,7 +106,7 @@ class ReportingTest < Quickdraw::Test
 		RUBY
 
 		assert_includes result.output, "✗ a.test.rb:4 Shapes › squares › #area › multiplies"
-		assert_includes result.output, "a.test.rb:5  assert_equal 2 * 2, 5"
+		assert_includes result.output, "  ▸ 5 │   assert_equal 2 * 2, 5\n"
 	end
 
 	test "--failed doesn't rerun skipped or pending tests", timeout: 30 do
