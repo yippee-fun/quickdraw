@@ -44,7 +44,7 @@ class Quickdraw::Reporters::Human
 		@profile.record(result)
 
 		case Quickdraw::Outcome.status(result)
-		in "failed" | "errored" then problem(path, test, result)
+		in "failed" | "errored" | "flaky" then problem(path, test, result)
 		in "skipped" | "pending" then @set_aside << [path, test, result["skipped"]]
 		in "passed" then nil
 		end
@@ -95,6 +95,7 @@ class Quickdraw::Reporters::Human
 			pluralize(outcome.tests, "test"),
 			pluralize(outcome.assertions, "assertion"),
 			("#{outcome.failed} failed" if outcome.failed > 0),
+			("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}" if outcome.flaky > 0),
 			("#{outcome.skipped} skipped" if outcome.skipped > 0),
 			("#{outcome.pending} pending" if outcome.pending > 0),
 			("#{outcome.errored + outcome.load_errors} errored" if outcome.errored + outcome.load_errors > 0),
@@ -294,15 +295,15 @@ class Quickdraw::Reporters::Human
 		@io.puts
 
 		if test
-			@io.puts "#{red('✗')} #{bold("#{path}:#{test['line']}")} #{name_of(test)}"
+			@io.puts "#{marker(result)} #{bold("#{path}:#{test['line']}")} #{name_of(test)}"
 		else
-			@io.puts "#{red('✗')} #{bold(path)} could not be loaded"
+			@io.puts "#{marker(result)} #{bold(path)} could not be loaded"
 		end
 
 		result["failures"].each do |failure|
-			path = relative(failure["path"])
-			code = source_line(path, failure["line"]) if failure["line"] > 0
-			@io.puts "  #{dim("#{path}:#{failure['line']}")}#{"  #{code}" if code}"
+			failure_path = relative(failure["path"])
+			code = source_line(failure_path, failure["line"]) if failure["line"] > 0
+			@io.puts "  #{dim("#{failure_path}:#{failure['line']}")}#{"  #{code}" if code}"
 			@io.puts
 			@io.puts indent(clean(failure["message"]), 4)
 		end
@@ -325,8 +326,18 @@ class Quickdraw::Reporters::Human
 			@io.puts indent(clean(output).chomp, 4)
 		end
 
+		if result["passed_on_retry"]
+			@io.puts
+			@io.puts "  #{yellow(flaky_explanation(result))}"
+			@io.puts "  #{dim("Find which: #{bisect_command(path, test)}")}" if result["in_history"]
+		end
+
 		@io.puts
 		@io.puts "  #{dim("Rerun: #{rerun_command(path, test)}")}"
+	end
+
+	private def marker(result)
+		result["passed_on_retry"] ? yellow("~") : red("✗")
 	end
 
 	private def backtrace(frames)
@@ -347,8 +358,8 @@ class Quickdraw::Reporters::Human
 		@io.puts
 		@io.puts bold(pluralize(@problems.size, "problem"))
 
-		@problems.each do |path, test, _result|
-			@io.puts test ? "  #{red('✗')} #{path}:#{test['line']} #{name_of(test)}" : "  #{red('✗')} #{path} could not be loaded"
+		@problems.each do |path, test, result|
+			@io.puts test ? "  #{marker(result)} #{path}:#{test['line']} #{name_of(test)}#{dim(' (flaky)') if result['passed_on_retry']}" : "  #{marker(result)} #{path} could not be loaded"
 		end
 	end
 

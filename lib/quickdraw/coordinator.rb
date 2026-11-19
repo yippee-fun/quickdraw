@@ -14,6 +14,15 @@ class Quickdraw::Coordinator
 	# Channels kept for replacing workers that crash.
 	SPARE_CHANNELS = 4
 
+	# Retries in a run, each in a fresh worker. More failures than this suggest
+	# broken code rather than flaky tests, and each needs a channel.
+	RETRY_LIMIT = 10
+
+	# A failed test waiting to be retried. Its first result is held until a retry
+	# passes or none are left. `placement` is [process, slot, sequence] from the
+	# run that failed, which bisect replays.
+	Retry = Struct.new(:file, :index, :result, :placement, :attempts, :refreshing)
+
 	# How often to check for workers that died without closing their pipes, or
 	# whose tests are stuck where the watchdog can't stop them, in seconds.
 	LIVENESS_INTERVAL = 1
@@ -165,6 +174,8 @@ class Quickdraw::Coordinator
 			@pid = nil
 			@sequence = 0
 			@timeout = nil
+			@fresh = true
+			@retrying = nil
 			@last_message_at = now
 		end
 
@@ -172,6 +183,12 @@ class Quickdraw::Coordinator
 
 		def group = @loader.group
 		attr_accessor :loading, :batch, :started, :idle, :pid
+
+		# Whether it has yet to run a test, so it can retry one.
+		attr_accessor :fresh
+
+		# The Retry it's loading a file for, or running.
+		attr_accessor :retrying
 
 		# [seconds, thread backtraces] once the worker reports a test timed out.
 		attr_accessor :timeout
@@ -217,8 +234,12 @@ class Quickdraw::Coordinator
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: false, leaks: nil
+		capture: false, leaks: nil, retries: 0, allow_flaky: false
 	)
+		@retries = retries
+		@pending_retries = []
+		@retries_started = 0
+		@outcome = Quickdraw::Outcome.new(allow_flaky:)
 		@capture = capture
 		@leaks = leaks
 		@seed = seed
@@ -232,7 +253,6 @@ class Quickdraw::Coordinator
 		@abandoned = []
 		@abandoned_output_paths = []
 		@selected = 0
-		@outcome = Quickdraw::Outcome.new
 		@selection = selection
 		@reporter = reporter
 		@history_path = history_path
@@ -257,6 +277,8 @@ class Quickdraw::Coordinator
 	def call
 		started_at = Time.now
 		@forking = Process.respond_to?(:fork)
+		# A retry needs a fresh worker, which needs fork.
+		@retries = 0 unless @forking
 		@test_files = @unloaded.map(&:first)
 		@workers = {}
 		@process_count = 0
@@ -290,6 +312,7 @@ class Quickdraw::Coordinator
 		groups_reported(groups) unless @interrupted
 
 		load_plan
+		# Retries get the channels left over, so a low file limit costs retries, not workers.
 		@processes, @worker_choice = @forking ? choose_processes([@loaders[nil].spares.size - SPARE_CHANNELS, 1].max) : [1, "default"]
 		@free_slots = Array.new(@processes) { |slot| slot }
 
@@ -345,6 +368,10 @@ class Quickdraw::Coordinator
 		wait_for_teardown if @interrupted
 		processes_failed = !@interrupted && @loaders.each_value.any? { |loader| loader.pid && !loader.status&.success? }
 
+		# Stopped before they could be retried.
+		@pending_retries.each { |attempt| report_failure(attempt) }
+		@pending_retries.clear
+
 		@outcome.interrupted = @interrupted
 		@outcome.coverage = @coverage
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
@@ -384,7 +411,9 @@ class Quickdraw::Coordinator
 		# The worker shows what's left of it as it exits, unless it's killed first.
 		@abandoned_output_paths << worker.output_path if worker.output_path
 
-		if (path = worker.loading)
+		if (attempt = worker.retrying)
+			@pending_retries << attempt
+		elsif (path = worker.loading)
 			@unloaded.unshift([path, display_path(path)]) unless @files.key?(path)
 		elsif (batch = worker.batch)
 			file, indices = batch
@@ -396,7 +425,7 @@ class Quickdraw::Coordinator
 	# plus spares for replacing workers that crash. The loader for tests in no
 	# group starts first, before the worker count is chosen, and reports groups.
 	private def start_loader(group)
-		capacity = @forking ? channel_capacity((@processes || @max_processes) + SPARE_CHANNELS) : 1
+		capacity = @forking ? channel_capacity((@processes || @max_processes) + spare_channels) : 1
 		coordinator_channels, worker_channels = Array.new(capacity) { Quickdraw::Channel.pair }.transpose
 
 		unless @forking
@@ -691,7 +720,19 @@ class Quickdraw::Coordinator
 
 	private def work_left?(group)
 		@unloaded.any? { |_path, display_path| @group_of[display_path] == group } ||
-			@files.each_value.any? { |file| file.pending.any? && @group_of[file.display_path] == group }
+			@files.each_value.any? { |file| file.pending.any? && @group_of[file.display_path] == group } ||
+			@pending_retries.any? { |attempt| @group_of[attempt.file.display_path] == group }
+	end
+
+	# Each retry needs a channel for the fresh worker it runs in, and another for
+	# the worker that replaces it.
+	private def spare_channels
+		@fail_fast ? SPARE_CHANNELS : SPARE_CHANNELS + (RETRY_LIMIT * @retries * 2)
+	end
+
+	# Whether the loader can start a worker for each one leaving it, plus one.
+	private def spare_for?(loader)
+		loader.spares.size > @leaving.each_value.count { |_worker, destination| destination.equal?(loader) }
 	end
 
 	# Each worker needs four file descriptors. Raises the soft limit if needed,
@@ -785,7 +826,15 @@ class Quickdraw::Coordinator
 			worker.loading = nil
 			worker.loaded[path] = false
 			worker.idle = true
-			load_failed(path, error) unless @files.key?(path)
+
+			if (attempt = worker.retrying)
+				worker.retrying = nil
+				# Whatever the file did before it raised is still there.
+				worker.fresh = false
+				retried(attempt, nil)
+			elsif !@files.key?(path)
+				load_failed(path, error)
+			end
 		in [:result, index, result]
 			record(worker, index, result)
 		in [:covered, path, sources]
@@ -839,8 +888,63 @@ class Quickdraw::Coordinator
 
 		worker.batch = nil if indices.empty?
 		to_seconds(result)
+
+		if (attempt = worker.retrying)
+			worker.retrying = nil
+			retried(attempt, result)
+			# History doesn't record retries, so tests that ran after one couldn't
+			# be bisected.
+			retire(worker)
+			return
+		end
+
 		file.record(result["duration"])
-		report(worker, file, index, result)
+
+		if retry?(result)
+			@pending_retries << Retry.new(file:, index:, result:, placement: placement(worker), attempts: 0, refreshing: false)
+		else
+			report(file, index, result, placement(worker))
+		end
+	end
+
+	# Failures are retried in a fresh worker, unless the run is stopping at the
+	# first problem, or so many have failed that the code is probably broken.
+	private def retry?(result)
+		@retries > 0 && !@fail_fast && failed?(result) && (@retries_started += 1) <= RETRY_LIMIT
+	end
+
+	private def failed?(result)
+		result["failures"].any? || result["errors"].any?
+	end
+
+	# A retry's result, or nil if its file failed to load. The first result is
+	# reported, marked as flaky if a retry passed.
+	private def retried(attempt, result)
+		attempt.attempts += 1
+
+		if result && Quickdraw::Outcome.status(result) == "passed"
+			report(attempt.file, attempt.index, attempt.result.merge("passed_on_retry" => attempt.attempts, "in_history" => !@history.nil?), attempt.placement)
+		elsif attempt.attempts < @retries && !@stopping
+			attempt.refreshing = false
+			@pending_retries << attempt
+		else
+			report_failure(attempt)
+		end
+	end
+
+	# Replaces the worker in its slot, if there's a channel for another.
+	# Otherwise it carries on, rather than leave tests without a worker.
+	private def retire(worker)
+		move(worker, worker.loader) if spare_for?(worker.loader)
+	end
+
+	private def report_failure(attempt)
+		report(attempt.file, attempt.index, attempt.result, attempt.placement)
+	end
+
+	# Where a test ran, for history: [process, slot, sequence].
+	private def placement(worker)
+		[worker.process, worker.slot, worker.next_sequence]
 	end
 
 	ALLOCATIONS = Quickdraw::STATS.index("allocations")
@@ -851,10 +955,10 @@ class Quickdraw::Coordinator
 		result["stats"] = result["stats"].each_with_index.map { |value, index| (index == ALLOCATIONS) ? value : value / 1e9 }
 	end
 
-	private def report(worker, file, index, result)
+	private def report(file, index, result, (process, slot, sequence))
 		@outcome.record(result)
 		@reporter.result(file.display_path, file.tests[index], result)
-		@stopping = true if @fail_fast && (result["failures"].any? || result["errors"].any?)
+		@stopping = true if @fail_fast && failed?(result)
 
 		if @history
 			@records << Quickdraw::History::Record.new(
@@ -862,9 +966,9 @@ class Quickdraw::Coordinator
 				path: file.display_path,
 				test: file.tests[index],
 				result:,
-				worker: worker.process,
-				slot: worker.slot,
-				sequence: worker.next_sequence,
+				worker: process,
+				slot:,
+				sequence:,
 			)
 		end
 	end
@@ -895,7 +999,12 @@ class Quickdraw::Coordinator
 			}
 		end
 
-		if (path = worker.loading)
+		if (attempt = worker.retrying)
+			# Final, since the loader's exit status now shows a failure. Shown with
+			# the first result, so the run's failure is explained.
+			errors = [*attempt.result["errors"], crash.merge("message" => "When retried in a fresh worker: #{crash['message']}")]
+			report(attempt.file, attempt.index, attempt.result.merge("errors" => errors), attempt.placement)
+		elsif (path = worker.loading)
 			if (file = @files[path])
 				# It loaded elsewhere but crashed this worker, so don't let it take more.
 				file.unstealable = true
@@ -908,9 +1017,9 @@ class Quickdraw::Coordinator
 			if worker.started
 				index, *rest = indices
 				file.pending.unshift(*rest)
-				report(worker, file, index, {
+				report(file, index, {
 					"assertions" => 0, "failures" => [], "errors" => [crash], "duration" => nil, "output" => output
-				})
+				}, placement(worker))
 			else
 				file.pending.unshift(*indices)
 			end
@@ -932,7 +1041,16 @@ class Quickdraw::Coordinator
 		end
 
 		idle.each do |worker|
-			if (file = own_file(worker))
+			if worker.retrying
+				run_retry(worker)
+			elsif worker.fresh && (attempt = take_retry(worker.group))
+				worker.retrying = attempt
+				load(worker, attempt.file.path)
+			elsif spare_for?(worker.loader) && (attempt = @pending_retries.find { |it| !it.refreshing && @group_of[it.file.display_path] == worker.group })
+				# A fresh worker starts in its slot once this one exits.
+				attempt.refreshing = true
+				move(worker, worker.loader)
+			elsif (file = own_file(worker))
 				run_batch(worker, file)
 			elsif (path = next_unloaded(worker.group))
 				load(worker, path)
@@ -1037,12 +1155,30 @@ class Quickdraw::Coordinator
 		worker.batch = [file, indices.dup]
 		worker.started = false
 		worker.idle = false
+		worker.fresh = false
 		crashed(worker) unless worker.channel.write([:run, file.path, indices])
+	end
+
+	# The worker has loaded the file for its retry, and nothing else.
+	private def run_retry(worker)
+		attempt = worker.retrying
+		worker.batch = [attempt.file, [attempt.index]]
+		worker.started = false
+		worker.idle = false
+		worker.fresh = false
+		crashed(worker) unless worker.channel.write([:run, attempt.file.path, [attempt.index]])
+	end
+
+	private def take_retry(group)
+		index = @pending_retries.index { |attempt| @group_of[attempt.file.display_path] == group } or return
+		@pending_retries.delete_at(index)
 	end
 
 	private def load(worker, path)
 		worker.loading = path
 		worker.idle = false
+		# Loading a file runs its top-level code, which a retry shouldn't follow.
+		worker.fresh = false unless worker.retrying
 		crashed(worker) unless worker.channel.write([:load, path])
 	end
 

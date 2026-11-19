@@ -6,7 +6,7 @@
 class Quickdraw::Commands::Bisect
 	include Quickdraw::Commands::Output
 
-	FAILED = ["failed", "errored", "crashed"].freeze
+	FAILED = ["failed", "errored", "crashed", "flaky"].freeze
 
 	def initialize(args, io: $stdout)
 		@args = args

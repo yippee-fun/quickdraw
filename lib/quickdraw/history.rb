@@ -176,7 +176,7 @@ class Quickdraw::History
 				ELSE tests.average_duration * (1 - :smoothing) + results.duration * :smoothing
 			END,
 			runs = tests.runs + 1,
-			failures = tests.failures + (results.status IN ('failed', 'errored', 'crashed')),
+			failures = tests.failures + (results.status IN ('failed', 'errored', 'crashed', 'flaky')),
 			last_status = results.status,
 			last_run_id = :run_id
 		FROM results
@@ -195,17 +195,19 @@ class Quickdraw::History
 
 	FLAKY_TESTS = <<~SQL
 		WITH recent AS (
-			SELECT results.test_id, runs.code, results.status IN ('failed', 'errored', 'crashed') AS failed
+			SELECT results.test_id, runs.code,
+				results.status IN ('failed', 'errored', 'crashed', 'flaky') AS failed,
+				results.status = 'flaky' AS passed_on_retry
 			FROM results JOIN runs ON runs.id = results.run_id
 			WHERE results.run_id IN (SELECT id FROM runs ORDER BY id DESC LIMIT ?)
-				AND results.status IN ('passed', 'failed', 'errored', 'crashed')
+				AND results.status IN ('passed', 'failed', 'errored', 'crashed', 'flaky')
 		),
-		-- Runs of the same code where a test both passed and failed. GROUP BY puts
-		-- runs outside git together.
+		-- Runs of the same code where a test both passed and failed, or passed when
+		-- retried. GROUP BY puts runs outside git together.
 		flaky AS (
 			SELECT test_id, COUNT(*) AS runs, SUM(failed) AS failures FROM recent
 			GROUP BY test_id, code
-			HAVING MIN(failed) = 0 AND MAX(failed) = 1
+			HAVING (MIN(failed) = 0 AND MAX(failed) = 1) OR MAX(passed_on_retry) = 1
 		)
 		SELECT tests.path, tests.line, tests.class_name, tests.description, SUM(flaky.runs), SUM(flaky.failures) AS failures
 		FROM flaky JOIN tests ON tests.id = flaky.test_id
@@ -475,7 +477,7 @@ class Quickdraw::History
 				JOIN tests ON tests.id = results.test_id
 			WHERE tests.path = ?
 				AND tests.line = (SELECT max(line) FROM tests WHERE path = ? AND line <= ?)
-				AND results.status IN ('failed', 'errored', 'crashed')
+				AND results.status IN ('failed', 'errored', 'crashed', 'flaky')
 			ORDER BY results.run_id DESC LIMIT 1
 		SQL
 		return unless run_id
@@ -587,7 +589,7 @@ class Quickdraw::History
 				ENV["QUICKDRAW_SCAN"],
 				finished_at - started_at,
 				records.size,
-				counts.fetch("failed", 0),
+				counts.fetch("failed", 0) + counts.fetch("flaky", 0),
 				counts.fetch("errored", 0) + counts.fetch("crashed", 0) + load_errors.size,
 				passed ? 1 : 0,
 				selection,

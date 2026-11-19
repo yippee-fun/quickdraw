@@ -27,6 +27,7 @@ class Quickdraw::Reporters::JUnit
 	def tick = nil
 
 	def finish(outcome)
+		@allow_flaky = outcome.allow_flaky
 		all = @suites.values.flatten(1)
 
 		xml = +%(<?xml version="1.0" encoding="UTF-8"?>\n)
@@ -47,9 +48,18 @@ class Quickdraw::Reporters::JUnit
 	end
 
 	private def counts(cases)
-		statuses = cases.map { |_test, result| Quickdraw::Outcome.status(result) }.tally
+		statuses = cases.map { |_test, result| junit_status(result) }.tally
 		skipped = statuses.fetch("skipped", 0) + statuses.fetch("pending", 0)
 		%(tests="#{cases.size}" failures="#{statuses.fetch('failed', 0)}" errors="#{statuses.fetch('errored', 0)}" skipped="#{skipped}")
+	end
+
+	# A flaky test counts as its failure or error, unless flaky tests are allowed.
+	private def junit_status(result)
+		case Quickdraw::Outcome.status(result)
+		in "flaky" if @allow_flaky then "passed"
+		in "flaky" then result["errors"].any? ? "errored" : "failed"
+		in status then status
+		end
 	end
 
 	private def test_case(file, test, result)
@@ -58,6 +68,9 @@ class Quickdraw::Reporters::JUnit
 		attributes = %(name="#{attribute(name)}" classname="#{attribute(class_name)}" file="#{attribute(file)}" line="#{test&.fetch('line') || 1}" time="#{format('%.6f', result['duration'] || 0)}")
 
 		failure_texts = result["failures"].map { |failure| "#{relative(failure['path'])}:#{failure['line']}\n#{plain(failure['message'])}" }
+		flaky_text = flaky_explanation(result) if result["passed_on_retry"]
+		# A passing test's flakyFailure and flakyError are Surefire's, which CI systems show.
+		error_element, failure_element = (flaky_text && @allow_flaky) ? ["flakyError", "flakyFailure"] : ["error", "failure"]
 
 		problem = if (error = result["errors"].first)
 			body = [
@@ -65,11 +78,12 @@ class Quickdraw::Reporters::JUnit
 				*user_backtrace(error["backtrace"]).map { |frame| relative(frame) },
 				*result["errors"].drop(1).map { |other| "#{other['name']}: #{plain(other['message'])}" },
 				*failure_texts,
+				*flaky_text,
 			].join("\n")
 
-			%(      <error type="#{attribute(error['name'])}" message="#{attribute(one_line(error['message']))}">#{text(body)}</error>\n)
+			%(      <#{error_element} type="#{attribute(error['name'])}" message="#{attribute(one_line(error['message']))}">#{text(body)}</#{error_element}>\n)
 		elsif (failure = result["failures"].first)
-			%(      <failure message="#{attribute(one_line(failure['message']))}">#{text(failure_texts.join("\n\n"))}</failure>\n)
+			%(      <#{failure_element} message="#{attribute(one_line(failure['message']))}">#{text([*failure_texts, *flaky_text].join("\n\n"))}</#{failure_element}>\n)
 		elsif (skipped = result["skipped"])
 			%(      <skipped message="#{attribute(skipped['pending'] ? 'pending' : skipped['reason'].to_s)}"/>\n)
 		end

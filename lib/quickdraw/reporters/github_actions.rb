@@ -47,7 +47,12 @@ class Quickdraw::Reporters::GitHubActions
 	private def annotate(path, test, result)
 		file, line = location(path, test, result)
 		title = test ? name_of(test) : "#{path} could not be loaded"
-		@io.puts "::error file=#{property(file)},line=#{line},title=#{property(title)}::#{data(message(result))}"
+
+		if result["passed_on_retry"]
+			@io.puts "::warning file=#{property(file)},line=#{line},title=#{property("#{title} (flaky)")}::#{data("#{message(result)}\n\n#{flaky_explanation(result)}")}"
+		else
+			@io.puts "::error file=#{property(file)},line=#{line},title=#{property(title)}::#{data(message(result))}"
+		end
 	end
 
 	# Where the problem is: the failing assertion, or the first user frame of an
@@ -75,15 +80,15 @@ class Quickdraw::Reporters::GitHubActions
 		lines = []
 		lines << "### #{outcome.passed? ? '✅ Tests passed' : '❌ Tests failed'}"
 		lines << ""
-		lines << "| Tests | Passed | Failed | Errored | Skipped | Not run | Time |"
-		lines << "|---|---|---|---|---|---|---|"
-		lines << "| #{outcome.tests} | #{outcome.passed} | #{outcome.failed} | #{outcome.errored + outcome.load_errors} | " \
+		lines << "| Tests | Passed | Failed | Flaky | Errored | Skipped | Not run | Time |"
+		lines << "|---|---|---|---|---|---|---|---|"
+		lines << "| #{outcome.tests} | #{outcome.passed} | #{outcome.failed} | #{outcome.flaky} | #{outcome.errored + outcome.load_errors} | " \
 			"#{outcome.skipped + outcome.pending} | #{outcome.not_run} | #{format('%.2f', outcome.duration)}s |"
 
 		if @problems.any?
 			lines << ""
-			@problems.each do |path, test, _result|
-				lines << "- `#{test ? "#{path}:#{test['line']}" : path}` #{test ? name_of(test) : 'could not be loaded'}"
+			@problems.each do |path, test, result|
+				lines << "- `#{test ? "#{path}:#{test['line']}" : path}` #{test ? name_of(test) : 'could not be loaded'}#{' (flaky)' if result['passed_on_retry']}"
 			end
 		end
 

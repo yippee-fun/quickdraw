@@ -1,6 +1,6 @@
 # Quickdraw Roadmap
 
-Goal: the best test runner for Ruby in every dimension — speed, CLI, reports, reliability tooling — that runs its own syntax, Minitest and RSpec suites.
+Goal: the best test runner for Ruby in every dimension — speed, CLI, reports, reliability tooling, for tests written in its own syntax.
 
 Everything in this repo is a prototype and open to redesign.
 
@@ -33,7 +33,6 @@ quickdraw  (coordinator — never loads user code)
 - Once every file is loaded, an idle worker steals from the file with the most estimated time left, loading it first if the remaining time is worth more than twice the load time.
 - The coordinator knows each batch's order, so a worker crash names the in-flight test and requeues the rest of the batch.
 - Timing history will seed the batch sizes and file order (slowest first).
-- RSpec groups with `before(:context)` still need to stay in one worker.
 - Every test has a stable id (`path:line` + name) used for filtering, history, retries and bisection.
 - Worker control channel: assign batch, cancel, dump thread backtraces, replay an exact sequence.
 
@@ -143,7 +142,8 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 - **Flaky detection:**
   - `quickdraw flaky [--runs N]` (done) runs the selection N times with new seeds and lists tests that passed in some runs and failed in others, with the failing seeds.
   - `quickdraw history` (done) lists tests that passed and failed on the same code across recent runs.
-  - Still to do: retry failures in a fresh worker during a normal run, reporting a test that passes on retry as flaky rather than green.
+  - Retries (done): a failure is retried up to `--retry N` times (default 1) in a fresh worker, started in the slot of an idle one, that has loaded only the failing test's file. Its first result is held until a retry passes, and then reported as flaky, with a `bisect` command. Flaky tests fail the run unless `--allow-flaky`. History keeps where the first run happened, so `bisect` and `qt history` work on flaky tests. Up to 10 tests a run are retried, with channels reserved for their workers. Off with `--fail-fast`, in `qt flaky` runs, and without fork.
+  - Still to do: retrying crashes and timeouts, which may be flaky too; JUnit's `rerunFailure` elements for each failed retry.
 - **Order bisection** (done): `quickdraw bisect PATH:LINE` takes the last run where the test failed and the tests its worker ran before it, from history. It checks the test passes alone and fails after them, then replays halves until the fewest that still make it fail are left. Replays run in a worker forked from a loader that boots config once, as in a run, with the run's seed. Still to do: failures that need tests from both halves are reported as the whole remaining set, not narrowed further (ddmin).
 - **Leak detection:** snapshot global state around tests — globals, new constants, `ENV`, `Time` stubs, live threads, open files, temp files — and blame the test that leaked.
   - Done, after every test, as warnings (`--leaks fail` makes them errors, `--leaks off` skips them), for about 0.6μs per test:
@@ -177,7 +177,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 
 ## CLI
 
-- `quickdraw` with no arguments discovers Quickdraw, Minitest and RSpec tests.
+- `quickdraw` with no arguments runs every `*.test.rb` file.
 - **Selection** (done; #47, #13, #17, #16):
   - `path:line[:line…]` runs the test starting nearest at or above each line, as `rails test` does.
   - `--name` and `--exclude` take a string or `/regex/flags`.
@@ -204,15 +204,9 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 - Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached. For now, `--no-capture -p 1` gives it the terminal, though its timeout still applies.
 - The seed and worker sequences are always printed or recorded, so every run is reproducible.
 
-## Compatibility (deferred)
+## Not planned
 
-Deferred: Quickdraw's own syntax and runner come first. When this resumes, the design is a small framework adapter interface in core (which files an adapter owns, preparing the loader, listing a file's tests, running one test), with Quickdraw's own syntax as the first adapter, and separate `quickdraw-minitest` and `quickdraw-rspec` gems hosting the real frameworks, so teams with large existing suites can adopt Quickdraw as their runner without rewriting tests.
-
-- Run the real frameworks, with Quickdraw scheduling and reporting:
-  - **Minitest:** run each `Minitest::Runnable` method the way Minitest does, suppress `autorun`, and honour plugins and Rails' `parallelize_*` hooks.
-  - **RSpec:** schedule whole top-level groups via `group.run(reporter)` so `before(:context)` and `around` behave natively.
-- Use the framework's native seed and filters. Record assignment and order for replay.
-- An optional Prism-based rewriter to migrate RSpec or Minitest to Quickdraw syntax.
+- Running Minitest and RSpec suites. Quickdraw runs tests written in its own syntax.
 
 ## Rails
 
@@ -242,7 +236,6 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
   - SQL queries and time per test, from Active Support notifications (done), and likely N+1 queries;
   - factory_bot factories run per test (done);
   - log level warnings when debug logging is slowing the suite.
-- **Running existing suites:** both `rails test`-style Minitest suites and `rspec-rails` suites run through the real frameworks (see Compatibility), with `bin/rails test` file and line arguments accepted as-is.
 
 ## Native syntax
 
@@ -315,9 +308,9 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 2. Coordinator/loader split: core-only runtime, batched streaming events, crash recovery, SQLite run history (done). Still to do: hang timeouts.
 3. Reporters (human, agent, JSON, GitHub Actions, JUnit) and selection (done). Still to do: an HTML report.
 4. Groups: setup blocks (done), then Gemfiles (done).
-5. Quickdraw's own syntax and failure output: `describe` blocks, skipped and pending tests, structured diffs, the failing source line (done). Still to do: a fuller assertion set. (Running Minitest and RSpec suites is deferred; see Compatibility.)
-6. Flaky detection, order bisection, leak detection.
+5. Quickdraw's own syntax and failure output: `describe` blocks, skipped and pending tests, structured diffs, the failing source line (done). Still to do: a fuller assertion set.6. Flaky detection, order bisection, leak detection.
 7. Coverage, impact analysis, interactive watch mode, sharding.
 8. Suite profiling: always-on timings and GC/CPU counters per test phase, then profile mode with the shared-cost report.
 9. Browser testing.
 10. Property-based testing (done), then mutation testing (which builds on per-test coverage), then fuzzing.
+11. A nicer-looking CLI and reports: the live display, the problem reports and the summary.

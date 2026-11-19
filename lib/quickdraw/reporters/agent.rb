@@ -65,6 +65,7 @@ class Quickdraw::Reporters::Agent
 			pluralize(outcome.tests, "test"),
 			"#{outcome.passed} passed",
 			("#{outcome.failed} failed" if outcome.failed > 0),
+			("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}" if outcome.flaky > 0),
 			("#{outcome.skipped} skipped" if outcome.skipped > 0),
 			("#{outcome.pending} pending" if outcome.pending > 0),
 			("#{outcome.errored + outcome.load_errors} errored" if outcome.errored + outcome.load_errors > 0),
@@ -137,6 +138,10 @@ class Quickdraw::Reporters::Agent
 			shown.each { |line| @io.puts "    #{line}" }
 		end
 
+		if result["passed_on_retry"]
+			@io.puts "  #{flaky_explanation(result)}#{" Find which with: #{bisect_command(path, test)}" if result['in_history']}"
+		end
+
 		@io.puts "  Rerun: #{rerun_command(path, test)}"
 		@io.puts
 	end
@@ -153,7 +158,12 @@ class Quickdraw::Reporters::Agent
 	end
 
 	private def heading(path, test, result)
-		kind = result["errors"].any? ? "ERROR" : "FAILED"
+		kind = case Quickdraw::Outcome.status(result)
+		in "flaky" then "FLAKY"
+		in "errored" then "ERROR"
+		in "failed" then "FAILED"
+		end
+
 		test ? "#{kind} #{path}:#{test['line']} #{name_of(test)}" : "#{kind} #{path} could not be loaded"
 	end
 

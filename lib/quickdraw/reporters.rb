@@ -110,5 +110,15 @@ module Quickdraw::Reporters
 		private def rerun_command(path, test)
 			"#{Quickdraw::Reporters.command} #{shell_quote(test ? "#{path}:#{test['line']}" : path)}"
 		end
+
+		# For a test that failed, then passed when retried.
+		private def flaky_explanation(result)
+			retries = result.fetch("passed_on_retry")
+			"Passed when retried in a fresh worker#{" (retry #{retries})" if retries > 1}, so it’s flaky or depends on tests that ran before it."
+		end
+
+		private def bisect_command(path, test)
+			"#{Quickdraw::Reporters.command} bisect #{shell_quote("#{path}:#{test['line']}")}"
+		end
 	end
 end

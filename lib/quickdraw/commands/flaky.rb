@@ -7,7 +7,7 @@ class Quickdraw::Commands::Flaky
 	include Quickdraw::Commands::Output
 
 	DEFAULT_RUNS = 10
-	FAILED = ["failed", "errored", "crashed"].freeze
+	FAILED = ["failed", "errored", "crashed", "flaky"].freeze
 	COUNTED = [*FAILED, "passed"].freeze
 
 	def initialize(args, io: $stdout)
@@ -77,8 +77,9 @@ class Quickdraw::Commands::Flaky
 		pid = Process.fork do
 			$stdout.reopen(File::NULL)
 			ENV["QUICKDRAW_SCAN"] = scan
-			# Before any --, after which everything is a path.
-			Quickdraw::CLI.new(@args.dup.insert(@args.index("--") || @args.size, "--seed", seed.to_s)).call
+			# Before any --, after which everything is a path. Without retries, so each
+			# run counts a test once.
+			Quickdraw::CLI.new(@args.dup.insert(@args.index("--") || @args.size, "--seed", seed.to_s, "--retry", "0")).call
 		end
 
 		Process.wait2(pid).last

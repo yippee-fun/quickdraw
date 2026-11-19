@@ -9,7 +9,7 @@ class AroundTestIntegrationTest < Quickdraw::Test
 		project(
 			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.around_test #{callback} }\n",
 			"t.test.rb" => test_source,
-		).run("-p", "1", "--no-history", "--no-capture", "--format", "human")
+		).run("-p", "1", "--no-history", "--no-capture", "--retry", "0", "--format", "human")
 	end
 
 	test "wraps setup and teardown, and sees the test's exceptions", timeout: 20 do

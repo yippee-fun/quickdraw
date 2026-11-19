@@ -33,6 +33,7 @@ class Quickdraw::Reporters::JSON
 			"errors" => result["errors"].map { |error| serialize_error(error) },
 			"output" => result["output"]&.then { |output| plain(output) },
 			"leaks" => result["leaks"],
+			"passed_on_retry" => result["passed_on_retry"],
 		)
 	end
 
@@ -50,6 +51,7 @@ class Quickdraw::Reporters::JSON
 			"tests" => outcome.tests,
 			"assertions" => outcome.assertions,
 			"failed" => outcome.failed,
+			"flaky" => outcome.flaky,
 			"skipped" => outcome.skipped,
 			"pending" => outcome.pending,
 			"errored" => outcome.errored,

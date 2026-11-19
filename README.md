@@ -121,6 +121,7 @@ Leaks are listed as warnings after the run. `--leaks fail` makes them errors, an
 
 Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That's how it orders slow files first, tunes the worker count, and knows what failed. `--no-history` turns it off.
 
+- A test that fails is retried once in a fresh worker, one that has loaded no other test files. If it passes there, it's reported as flaky: it failed because of a test that ran before it, or it's flaky by nature. Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
 - `qt history` lists recent runs, the slowest tests, and flaky tests: those that both passed and failed on the same code.
 - `qt flaky --runs 20` runs the tests 20 times in different orders and lists the ones that sometimes fail.
 - `qt bisect test/user.test.rb:12` takes the last run where that test failed and replays the tests that ran before it in the same worker, in halves, to find which one it depends on.

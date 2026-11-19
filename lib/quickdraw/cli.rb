@@ -61,6 +61,8 @@ class Quickdraw::CLI
 			outputs: [],
 			capture: true,
 			leaks: "warn",
+			retries: 1,
+			allow_flaky: false,
 		}
 
 		parser = option_parser(options)
@@ -220,6 +222,19 @@ class Quickdraw::CLI
 
 			parser.on("--fail-fast", "Stop starting tests after the first failure or error") do
 				options[:fail_fast] = true
+			end
+
+			parser.on(
+				"--retry N", Integer,
+				"Retry each failure up to N times in a fresh worker (default 1, 0 to turn off).",
+				"A test that passes on retry is flaky, which still fails the run",
+			) do |it|
+				usage_error "--retry needs 0 or more, not #{it}." if it.negative?
+				options[:retries] = it
+			end
+
+			parser.on("--allow-flaky", "Pass the run when every failure passed on retry") do
+				options[:allow_flaky] = true
 			end
 
 			parser.on("-s N", "--seed N", Integer, "Order tests and seed rand with N (or set SEED)") do |it|
@@ -485,6 +500,8 @@ class Quickdraw::CLI
 			coverage: options[:coverage],
 			capture: options[:capture],
 			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
+			retries: options[:retries],
+			allow_flaky: options[:allow_flaky],
 		).call
 	end
 

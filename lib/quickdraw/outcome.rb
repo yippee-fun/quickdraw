@@ -3,9 +3,12 @@
 # The tally of a run, kept by the coordinator and handed to reporters when it
 # finishes. Whether the run passed is decided here, not by any reporter.
 class Quickdraw::Outcome
-	# A test result's status: errored, failed, pending, skipped or passed.
+	# A test result's status: flaky (it failed, then passed when retried in a
+	# fresh worker), errored, failed, pending, skipped or passed.
 	def self.status(result)
-		if result["errors"].any?
+		if result["passed_on_retry"]
+			"flaky"
+		elsif result["errors"].any?
 			"errored"
 		elsif result["failures"].any?
 			"failed"
@@ -16,9 +19,12 @@ class Quickdraw::Outcome
 		end
 	end
 
-	def initialize
+	# With `allow_flaky`, flaky tests don't fail the run.
+	def initialize(allow_flaky: false)
+		@allow_flaky = allow_flaky
 		@tests = 0
 		@assertions = 0
+		@flaky = 0
 		@failed = 0
 		@errored = 0
 		@skipped = 0
@@ -33,7 +39,7 @@ class Quickdraw::Outcome
 		@interrupted = false
 	end
 
-	attr_reader :tests, :assertions, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions
+	attr_reader :tests, :assertions, :flaky, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions, :allow_flaky
 	# `not_run` counts tests in loaded files. Files never loaded (e.g. after
 	# --fail-fast stopped the run) are counted in `unloaded_files`, since their
 	# tests are unknown.
@@ -55,6 +61,7 @@ class Quickdraw::Outcome
 		@assertions += result["assertions"]
 
 		case self.class.status(result)
+		in "flaky" then @flaky += 1
 		in "errored" then @errored += 1
 		in "failed" then @failed += 1
 		in "skipped" then @skipped += 1
@@ -68,11 +75,11 @@ class Quickdraw::Outcome
 	end
 
 	def passed
-		@tests - @failed - @errored - @skipped - @pending
+		@tests - @flaky - @failed - @errored - @skipped - @pending
 	end
 
 	def passed?
-		@failed == 0 && @errored == 0 && @load_errors == 0 && @not_run == 0 && @unloaded_files == 0 &&
+		@failed == 0 && @errored == 0 && (@flaky == 0 || @allow_flaky) && @load_errors == 0 && @not_run == 0 && @unloaded_files == 0 &&
 			!@processes_failed && !@nothing_matched && !@interrupted
 	end
 end

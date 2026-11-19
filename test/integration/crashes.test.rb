@@ -34,7 +34,7 @@ class CrashesTest < Quickdraw::Test
 	end
 
 	test "stops replacing workers once its spares are used up", timeout: 20 do
-		result = project("crashes.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--seed", "1", "crashes.test.rb")
+		result = project("crashes.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--retry", "0", "--seed", "1", "crashes.test.rb")
 			class Crashes < Quickdraw::Test
 				10.times { |i| test("crash \#{i}") { exit!(1) } }
 			end
