@@ -173,7 +173,9 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 - Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached.
 - The seed and worker sequences are always printed or recorded, so every run is reproducible.
 
-## Compatibility
+## Compatibility (deferred)
+
+Deferred: Quickdraw's own syntax and runner come first. When this resumes, the design is a small framework adapter interface in core (which files an adapter owns, preparing the loader, listing a file's tests, running one test), with Quickdraw's own syntax as the first adapter, and separate `quickdraw-minitest` and `quickdraw-rspec` gems hosting the real frameworks, so teams with large existing suites can adopt Quickdraw as their runner without rewriting tests.
 
 - Run the real frameworks, with Quickdraw scheduling and reporting:
   - **Minitest:** run each `Minitest::Runnable` method the way Minitest does, suppress `autorun`, and honour plugins and Rails' `parallelize_*` hooks.
@@ -221,8 +223,10 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 - Table-driven tests.
 - Allocation and performance assertions.
 - Stubs and mocks that are always reset.
-- `describe` blocks for grouping, with names that nest into the test name (#52).
-- `test "name"` without a block is reported as pending, not passed. A test with a block must make at least one assertion (#58).
+- `describe` blocks for grouping, with names that nest into the test name (done). Each block is a subclass, so `setup`, helpers and `super` work as with any class.
+- `test "name"` without a block is reported as pending, and `skip "reason"` skips a test (done). Both are listed in the human output, counted everywhere, and ignored by `--failed`. Still to do: a test with a block must make at least one assertion (#58).
+- **Structured diffs** (done): `assert_equal` on multi-line values diffs `Quickdraw::Inspector.pretty` output, which expands hashes, arrays, sets, Data, Structs and plain objects one element per line.
+- `assert_in_delta` and `refute_in_delta` (done), reporting how far apart the values are.
 - Suite-level and per-file `before`/`after`/`around` hooks (#5).
 - Per-test isolation markers: "run alone in its worker" and "run in its own fork" (#56).
 - A per-test `seed` reader for property and fuzz tests (from #72).
@@ -277,7 +281,7 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 2. Coordinator/loader split: core-only runtime, batched streaming events, crash recovery, SQLite run history (done). Still to do: hang timeouts.
 3. Reporters (human, agent, JSON, GitHub Actions, JUnit) and selection (done). Still to do: an HTML report.
 4. Groups (`setup:`, `gemfile:`).
-5. Real Minitest, then real RSpec, then Rails integration (a database per worker, Rails hooks, per-worker resources), verified against real Rails apps.
+5. Quickdraw's own syntax and failure output: `describe` blocks, skipped and pending tests, structured diffs, the failing source line (done). Still to do: a fuller assertion set. (Running Minitest and RSpec suites is deferred; see Compatibility.)
 6. Flaky detection, order bisection, leak detection.
 7. Coverage, impact analysis, interactive watch mode, sharding.
 8. Suite profiling: always-on timings and GC/CPU counters per test phase, then profile mode with the shared-cost report.

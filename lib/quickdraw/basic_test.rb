@@ -1,9 +1,34 @@
 # frozen_string_literal: true
 
 class Quickdraw::BasicTest
-	# `timeout` is in seconds, overriding Quickdraw::Config.timeout for this test.
+	# Raised by #skip. An Exception rather than a StandardError, so a test's own
+	# `rescue => error` doesn't swallow it.
+	class Skip < Exception
+		def initialize(reason)
+			@reason = reason
+			super(reason || "Skipped")
+		end
+
+		attr_reader :reason
+	end
+
+	# Defines a test. Without a block, the test is pending: listed as still to
+	# write, but not a failure. `timeout` is in seconds, overriding
+	# Quickdraw::Config.timeout for this test.
 	def self.test(description = nil, timeout: nil, &block)
-		Quickdraw.register([self, description, block, timeout])
+		line = block ? block.source_location[1] : caller_locations(1, 1).first.lineno
+		Quickdraw.register(Quickdraw::Definition.new(test_class: self, description:, block:, timeout:, line:))
+	end
+
+	# Groups tests under a description, which prefixes their names. The group is
+	# a subclass, so it can define helpers and override setup, calling super.
+	def self.describe(description, &block)
+		parent_name = name || "(anonymous)"
+
+		Class.new(self) do
+			set_temporary_name("#{parent_name} › #{description}")
+			class_exec(&block)
+		end
 	end
 
 	def initialize(description:, block:, runner:)
@@ -13,19 +38,10 @@ class Quickdraw::BasicTest
 		@deferred = nil
 	end
 
-	def run
-		@runner.measure("setup") { setup }
-		around_test { @runner.measure("test") { instance_exec(&@block) } }
-	rescue Exception => error
-		error!(error)
-	ensure
-		begin
-			@runner.measure("teardown") { teardown }
-		rescue Exception => error
-			error!(error)
-		end
-
-		run_deferred
+	# Stops the test and reports it as skipped, with an optional reason.
+	# Assertions it already made still count.
+	def skip(reason = nil)
+		raise Skip.new(reason)
 	end
 
 	# Runs the block once the test and its teardown have finished, even if they
@@ -101,6 +117,23 @@ class Quickdraw::BasicTest
 	def setup = nil
 	def teardown = nil
 	def around_test = yield
+
+	def run
+		@runner.measure("setup") { setup }
+		around_test { @runner.measure("test") { instance_exec(&@block) } }
+	rescue Skip => skip
+		@runner.skip!(skip.reason)
+	rescue Exception => error
+		error!(error)
+	ensure
+		begin
+			@runner.measure("teardown") { teardown }
+		rescue Exception => error
+			error!(error)
+		end
+
+		run_deferred
+	end
 
 	private def run_deferred
 		@deferred&.reverse_each do |block|

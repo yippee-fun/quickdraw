@@ -43,9 +43,9 @@ class Quickdraw::Reporters::JUnit
 	end
 
 	private def counts(cases)
-		errors = cases.count { |_test, result| result["errors"].any? }
-		failures = cases.count { |_test, result| result["errors"].empty? && result["failures"].any? }
-		%(tests="#{cases.size}" failures="#{failures}" errors="#{errors}")
+		statuses = cases.map { |_test, result| Quickdraw::Outcome.status(result) }.tally
+		skipped = statuses.fetch("skipped", 0) + statuses.fetch("pending", 0)
+		%(tests="#{cases.size}" failures="#{statuses.fetch('failed', 0)}" errors="#{statuses.fetch('errored', 0)}" skipped="#{skipped}")
 	end
 
 	private def test_case(file, test, result)
@@ -66,6 +66,8 @@ class Quickdraw::Reporters::JUnit
 			%(      <error type="#{attribute(error['name'])}" message="#{attribute(one_line(error['message']))}">#{text(body)}</error>\n)
 		elsif (failure = result["failures"].first)
 			%(      <failure message="#{attribute(one_line(failure['message']))}">#{text(failure_texts.join("\n\n"))}</failure>\n)
+		elsif (skipped = result["skipped"])
+			%(      <skipped message="#{attribute(skipped['pending'] ? 'pending' : skipped['reason'].to_s)}"/>\n)
 		end
 
 		problem ? %(    <testcase #{attributes}>\n#{problem}    </testcase>\n) : %(    <testcase #{attributes}/>\n)

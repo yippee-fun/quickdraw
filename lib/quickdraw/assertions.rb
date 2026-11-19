@@ -3,8 +3,15 @@
 module Quickdraw::Assertions
 	def assert_equal(actual, expected)
 		assert(actual == expected) do
-			if actual.is_a?(String) && expected.is_a?(String)
-				diff = Quickdraw::Diff.diff(expected, actual)
+			# Strings diff by line as they are; anything else, one element per line.
+			expected_text, actual_text = if String === actual && String === expected
+				[expected, actual]
+			else
+				[Quickdraw::Inspector.pretty(expected), Quickdraw::Inspector.pretty(actual)]
+			end
+
+			if expected_text.include?("\n") || actual_text.include?("\n") || (String === actual && String === expected)
+				diff = Quickdraw::Diff.diff(expected_text, actual_text)
 
 				unless diff.empty?
 					next <<~MESSAGE
@@ -164,6 +171,23 @@ module Quickdraw::Assertions
 
 				#{pattern.inspect}
 			MESSAGE
+		end
+	end
+
+	# For floats, which are rarely exactly equal.
+	def assert_in_delta(actual, expected, delta = 0.001)
+		difference = (actual - expected).abs
+
+		assert(difference <= delta) do
+			"expected #{actual.inspect} to be within #{delta.inspect} of #{expected.inspect}, but it's #{difference.inspect} away"
+		end
+	end
+
+	def refute_in_delta(actual, expected, delta = 0.001)
+		difference = (actual - expected).abs
+
+		refute(difference <= delta) do
+			"expected #{actual.inspect} not to be within #{delta.inspect} of #{expected.inspect}, but it's #{difference.inspect} away"
 		end
 	end
 

@@ -11,10 +11,18 @@ class Runner
 		@successes = 0
 	end
 
-	attr_reader :failures, :successes, :errors
+	attr_reader :failures, :successes, :errors, :skipped
 
 	def failure!(failure)
 		@failures << failure
+	end
+
+	def skip!(reason)
+		@skipped = { "pending" => false, "reason" => reason }
+	end
+
+	def pending!
+		@skipped = { "pending" => true, "reason" => nil }
 	end
 
 	def success!(description)

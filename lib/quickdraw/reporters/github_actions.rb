@@ -63,9 +63,10 @@ class Quickdraw::Reporters::GitHubActions
 		lines = []
 		lines << "### #{outcome.passed? ? '✅ Tests passed' : '❌ Tests failed'}"
 		lines << ""
-		lines << "| Tests | Passed | Failed | Errored | Not run | Time |"
-		lines << "|---|---|---|---|---|---|"
-		lines << "| #{outcome.tests} | #{outcome.passed} | #{outcome.failed} | #{outcome.errored + outcome.load_errors} | #{outcome.not_run} | #{format('%.2f', outcome.duration)}s |"
+		lines << "| Tests | Passed | Failed | Errored | Skipped | Not run | Time |"
+		lines << "|---|---|---|---|---|---|---|"
+		lines << "| #{outcome.tests} | #{outcome.passed} | #{outcome.failed} | #{outcome.errored + outcome.load_errors} | " \
+			"#{outcome.skipped + outcome.pending} | #{outcome.not_run} | #{format('%.2f', outcome.duration)}s |"
 
 		if @problems.any?
 			lines << ""

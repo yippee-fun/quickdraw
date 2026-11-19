@@ -22,7 +22,8 @@ class Quickdraw::Reporters::JSON
 			"path" => path,
 			"line" => test["line"],
 			"name" => name_of(test),
-			"status" => status(result),
+			"status" => Quickdraw::Outcome.status(result),
+			"skip_reason" => result.dig("skipped", "reason"),
 			"duration" => result["duration"],
 			"assertions" => result["assertions"],
 			"failures" => result["failures"].map { |failure| failure.merge("message" => plain(failure["message"]), "path" => relative(failure["path"])) },
@@ -41,6 +42,8 @@ class Quickdraw::Reporters::JSON
 			"tests" => outcome.tests,
 			"assertions" => outcome.assertions,
 			"failed" => outcome.failed,
+			"skipped" => outcome.skipped,
+			"pending" => outcome.pending,
 			"errored" => outcome.errored,
 			"load_errors" => outcome.load_errors,
 			"not_run" => outcome.not_run,
@@ -48,13 +51,6 @@ class Quickdraw::Reporters::JSON
 			"without_assertions" => outcome.without_assertions,
 			"duration" => outcome.duration,
 		)
-	end
-
-	private def status(result)
-		if result["errors"].any? then "errored"
-		elsif result["failures"].any? then "failed"
-		else "passed"
-		end
 	end
 
 	private def serialize_error(error)

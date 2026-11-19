@@ -86,6 +86,21 @@ module Quickdraw::Reporters
 			text.gsub(/^(?=.)/, " " * spaces)
 		end
 
+		# The stripped source at `line` of `path`, or nil if it can't be read or
+		# is blank. Read as UTF-8 whatever the locale, as Ruby reads source files.
+		private def source_line(path, line)
+			@source_lines ||= {}
+
+			lines = @source_lines.fetch(path) do
+				@source_lines[path] = File.readlines(path, encoding: Encoding::UTF_8).map(&:scrub)
+			rescue SystemCallError
+				@source_lines[path] = nil
+			end
+
+			code = lines&.[](line - 1)&.strip
+			code unless code.nil? || code.empty?
+		end
+
 		private def rerun_command(path, test)
 			"#{Quickdraw::Reporters.command} #{shell_quote(test ? "#{path}:#{test['line']}" : path)}"
 		end

@@ -43,6 +43,85 @@ class ReportingTest < Quickdraw::Test
 		refute_includes result.output, "exe/"
 	end
 
+	test "lists pending and skipped tests, which don't fail the run", timeout: 20 do
+		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history")
+			class A < Quickdraw::Test
+				test "to write later"
+				test("skips") { skip "needs a network" }
+				test("passes") { assert true }
+			end
+		RUBY
+
+		assert result.success?
+		assert_includes result.output, "○ a.test.rb:2 A › to write later (pending)"
+		assert_includes result.output, "○ a.test.rb:3 A › skips (skipped: needs a network)"
+		match { result => { summary: /\A3 tests · 1 assertion · 1 skipped · 1 pending/ } }
+	end
+
+	test "reports a skip reason that isn't valid UTF-8", timeout: 20 do
+		project = project("a.test.rb" => <<~'RUBY')
+			class A < Quickdraw::Test
+				test("skips") { skip "caf\xE9".b }
+			end
+		RUBY
+
+		human = project.run("-p", "1", "--no-history")
+		assert human.success?
+		assert_includes human.output, "(skipped: caf�)"
+
+		json = project.run("-p", "1", "--no-history", "--format", "json")
+		assert json.success?
+		assert_includes json.output, %("skip_reason":"caf�")
+	end
+
+	test "doesn't construct pending tests, and reports a constructor's error as the test's", timeout: 20 do
+		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history")
+			class A < Quickdraw::Test
+				def initialize(...)
+					raise "no fixtures"
+				end
+
+				test "to write later"
+				test("runs") { assert true }
+			end
+		RUBY
+
+		assert_includes result.output, "○ a.test.rb:6 A › to write later (pending)"
+		assert_includes result.output, "✗ a.test.rb:7 A › runs"
+		assert_includes result.output, "RuntimeError: no fixtures"
+		match { result => { summary: /\A2 tests · 0 assertions · 1 pending · 1 errored/ } }
+	end
+
+	test "names tests in describe blocks after each group, and shows the failing line", timeout: 20 do
+		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history")
+			class Shapes < Quickdraw::Test
+				describe "squares" do
+					describe "#area" do
+						test "multiplies" do
+							assert_equal 2 * 2, 5
+						end
+					end
+				end
+			end
+		RUBY
+
+		assert_includes result.output, "✗ a.test.rb:4 Shapes › squares › #area › multiplies"
+		assert_includes result.output, "a.test.rb:5  assert_equal 2 * 2, 5"
+	end
+
+	test "--failed doesn't rerun skipped or pending tests", timeout: 30 do
+		project = project("a.test.rb" => <<~RUBY)
+			class A < Quickdraw::Test
+				test "to write later"
+				test("skips") { skip }
+				test("fails") { assert false }
+			end
+		RUBY
+
+		project.run("-p", "1")
+		match { project.run("-p", "1", "--failed") => { summary: /\A1 test · 1 assertion · 1 failed/ } }
+	end
+
 	test "reports a file that fails to load", timeout: 20 do
 		result = project("broken.test.rb" => "raise 'broken'\n").run("-p", "1", "--no-history")
 

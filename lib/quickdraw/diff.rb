@@ -2,6 +2,8 @@
 
 module Quickdraw
 	module Diff
+		MAX_MATCHES = 1_000_000
+
 		class << self
 			# Computes a diff between two strings.
 			# @param old_text [String] The original/baseline text (e.g., expected)
@@ -24,6 +26,16 @@ module Quickdraw
 			def patience_diff(old_lines, new_lines)
 				return additions(new_lines, 0) if old_lines.empty?
 				return deletions(old_lines, 0) if new_lines.empty?
+
+				prefix = 0
+				prefix += 1 while prefix < old_lines.size && prefix < new_lines.size && old_lines[prefix] == new_lines[prefix]
+				suffix = 0
+				suffix += 1 while suffix < old_lines.size - prefix && suffix < new_lines.size - prefix && old_lines[-1 - suffix] == new_lines[-1 - suffix]
+
+				if prefix > 0 || suffix > 0
+					middle = patience_diff(old_lines[prefix...(old_lines.size - suffix)], new_lines[prefix...(new_lines.size - suffix)])
+					return old_lines.first(prefix).map { |line| [:equal, line] } + middle + old_lines.last(suffix).map { |line| [:equal, line] }
+				end
 
 				# Find unique lines in both sequences
 				unique_old = find_unique_lines(old_lines)
@@ -165,24 +177,19 @@ module Quickdraw
 			def longest_common_subsequence(old_lines, new_lines)
 				return [] if old_lines.empty? || new_lines.empty?
 
-				# Build a hash of new_lines positions for quick lookup
-				new_positions = Hash.new { |h, k| h[k] = [] }
-				new_lines.each_with_index { |line, idx| new_positions[line] << idx }
+				new_positions = {}
+				new_lines.each_with_index { |line, idx| (new_positions[line] ||= []) << idx }
 
-				# Find matches
+				# Many repeated lines would make a quadratic number of matches.
+				return [] if old_lines.sum { |line| new_positions[line]&.size || 0 } > MAX_MATCHES
+
+				# Each old line's matches in descending order, so the increasing
+				# subsequence takes at most one of them.
 				matches = []
 				old_lines.each_with_index do |line, old_idx|
-					new_positions[line].each do |new_idx|
-						matches << [old_idx, new_idx]
-					end
+					new_positions[line]&.reverse_each { |new_idx| matches << [old_idx, new_idx] }
 				end
 
-				return [] if matches.empty?
-
-				# Sort by old position, then by new position
-				matches.sort!
-
-				# Find LIS by new position
 				lis_matches(matches)
 			end
 

@@ -157,7 +157,7 @@ class Quickdraw::History
 				ELSE tests.average_duration * (1 - :smoothing) + results.duration * :smoothing
 			END,
 			runs = tests.runs + 1,
-			failures = tests.failures + (results.status != 'passed'),
+			failures = tests.failures + (results.status IN ('failed', 'errored', 'crashed')),
 			last_status = results.status,
 			last_run_id = :run_id
 		FROM results
@@ -239,9 +239,10 @@ class Quickdraw::History
 		raise Error, error.message
 	end
 
-	# [key, path] for every test whose most recent result wasn't a pass.
+	# [key, path] for every test whose most recent result was a failure, an
+	# error or a crash. Skipped and pending tests aren't failing.
 	def failing_tests
-		@db.execute("SELECT key, path FROM tests WHERE last_status != 'passed'")
+		@db.execute("SELECT key, path FROM tests WHERE last_status NOT IN ('passed', 'skipped', 'pending')")
 	rescue SQLite3::Exception => error
 		raise Error, error.message
 	end
@@ -415,12 +416,8 @@ class Quickdraw::History
 	private def status(result)
 		if result["errors"].any? { |error| error["name"] == "Quickdraw::WorkerCrashed" }
 			"crashed"
-		elsif result["errors"].any?
-			"errored"
-		elsif result["failures"].any?
-			"failed"
 		else
-			"passed"
+			Quickdraw::Outcome.status(result)
 		end
 	end
 

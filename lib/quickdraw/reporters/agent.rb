@@ -15,7 +15,6 @@ class Quickdraw::Reporters::Agent
 		@io = io
 		@backtrace = backtrace
 		@problems = []
-		@sources = {}
 	end
 
 	def start(processes:, worker_choice:, seed:)
@@ -48,6 +47,8 @@ class Quickdraw::Reporters::Agent
 			pluralize(outcome.tests, "test"),
 			"#{outcome.passed} passed",
 			("#{outcome.failed} failed" if outcome.failed > 0),
+			("#{outcome.skipped} skipped" if outcome.skipped > 0),
+			("#{outcome.pending} pending" if outcome.pending > 0),
 			("#{outcome.errored + outcome.load_errors} errored" if outcome.errored + outcome.load_errors > 0),
 			("#{outcome.not_run} not run" if outcome.not_run > 0),
 			("#{pluralize(outcome.unloaded_files, 'file')} not loaded" if outcome.unloaded_files > 0),
@@ -89,15 +90,7 @@ class Quickdraw::Reporters::Agent
 
 	# "path:line: code", or just "path:line" if the line can't be read.
 	private def source(path, line)
-		code = (@sources[path] ||= read_lines(path))&.[](line - 1)&.strip
-		(code && !code.empty?) ? "#{path}:#{line}: #{code}" : "#{path}:#{line}"
-	end
-
-	# As UTF-8 whatever the locale, as Ruby reads source files.
-	private def read_lines(path)
-		File.readlines(path, encoding: Encoding::UTF_8).map(&:scrub)
-	rescue SystemCallError
-		nil
+		(code = source_line(path, line)) ? "#{path}:#{line}: #{code}" : "#{path}:#{line}"
 	end
 
 	# Without the blank lines that make messages readable in a terminal.

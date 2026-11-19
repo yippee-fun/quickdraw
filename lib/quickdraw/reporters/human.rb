@@ -8,6 +8,7 @@ class Quickdraw::Reporters::Human
 	# Below this much total test time, shares and hints are mostly noise.
 	HINT_THRESHOLD = 1.0
 	SLOWEST_LIMIT = 10
+	SET_ASIDE_LIMIT = 20
 
 	def initialize(io: $stdout, backtrace: false, timings: false)
 		@io = io
@@ -17,6 +18,7 @@ class Quickdraw::Reporters::Human
 		@color = io.tty? && !ENV.key?("NO_COLOR")
 		@live = io.tty?
 		@problems = []
+		@set_aside = []
 		@tests = 0
 		@last_progress_at = 0.0
 	end
@@ -30,7 +32,11 @@ class Quickdraw::Reporters::Human
 	def result(path, test, result)
 		@tests += 1
 		@timings.record(path, test, result)
-		@problems << [path, test, result] if result["errors"].any? || result["failures"].any?
+		case Quickdraw::Outcome.status(result)
+		in "failed" | "errored" then @problems << [path, test, result]
+		in "skipped" | "pending" then @set_aside << [path, test, result["skipped"]]
+		in "passed" then nil
+		end
 		progress
 	end
 
@@ -42,6 +48,7 @@ class Quickdraw::Reporters::Human
 		@io.print "\r\e[K" if @live
 
 		print_slowest if @show_timings
+		print_set_aside
 		@problems.each { |problem| print_problem(*problem) }
 
 		if outcome.processes_failed && @problems.empty?
@@ -64,6 +71,8 @@ class Quickdraw::Reporters::Human
 			pluralize(outcome.tests, "test"),
 			pluralize(outcome.assertions, "assertion"),
 			("#{outcome.failed} failed" if outcome.failed > 0),
+			("#{outcome.skipped} skipped" if outcome.skipped > 0),
+			("#{outcome.pending} pending" if outcome.pending > 0),
 			("#{outcome.errored + outcome.load_errors} errored" if outcome.errored + outcome.load_errors > 0),
 			("#{outcome.not_run} not run" if outcome.not_run > 0),
 			("#{pluralize(outcome.unloaded_files, 'file')} not loaded" if outcome.unloaded_files > 0),
@@ -166,6 +175,26 @@ class Quickdraw::Reporters::Human
 		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 	end
 
+	# Skipped and pending tests, above the problems so they don't push those out
+	# of view. Only listed when there are a few; otherwise the summary counts them.
+	private def print_set_aside
+		return if @set_aside.empty? || @set_aside.size > SET_ASIDE_LIMIT
+
+		@io.puts
+
+		@set_aside.sort_by { |path, test, _| [path, test["line"]] }.each do |path, test, skipped|
+			label = if skipped["pending"]
+				"pending"
+			elsif (reason = skipped["reason"])
+				"skipped: #{reason}"
+			else
+				"skipped"
+			end
+
+			@io.puts dim("○ #{path}:#{test['line']} #{name_of(test)} (#{label})")
+		end
+	end
+
 	private def print_problem(path, test, result)
 		@io.puts
 
@@ -176,7 +205,9 @@ class Quickdraw::Reporters::Human
 		end
 
 		result["failures"].each do |failure|
-			@io.puts "  #{dim("#{relative(failure['path'])}:#{failure['line']}")}"
+			path = relative(failure["path"])
+			code = source_line(path, failure["line"]) if failure["line"] > 0
+			@io.puts "  #{dim("#{path}:#{failure['line']}")}#{"  #{code}" if code}"
 			@io.puts
 			@io.puts indent(clean(failure["message"]), 4)
 		end

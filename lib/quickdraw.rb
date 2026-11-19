@@ -17,6 +17,7 @@ module Quickdraw
 
 	autoload :CLI, "quickdraw/cli"
 	autoload :Diff, "quickdraw/diff"
+	autoload :Inspector, "quickdraw/inspector"
 	autoload :Test, "quickdraw/test"
 	autoload :Timer, "quickdraw/timer"
 	autoload :Loader, "quickdraw/loader"
@@ -44,6 +45,10 @@ module Quickdraw
 	# result four times slower to send.
 	PHASES = ["setup", "test", "teardown"].freeze
 	STATS = [*PHASES, "cpu", "gc", "allocations"].freeze
+
+	# A test as a file defines it. `block` is nil for a pending test, which is
+	# why the line is kept separately.
+	Definition = Data.define(:test_class, :description, :block, :timeout, :line)
 
 	Null = Object.new.freeze
 	Error = Module.new

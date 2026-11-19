@@ -24,6 +24,7 @@ class Quickdraw::Worker
 			@errors = []
 			@stats = Array.new(Quickdraw::STATS.size, 0)
 			@duration = nil
+			@skipped = nil
 		end
 
 		# Records the wall time of a phase of the test. Only the wall clock is read,
@@ -65,8 +66,23 @@ class Quickdraw::Worker
 			@errors << error
 		end
 
+		def skip!(reason)
+			@skipped = { "pending" => false, "reason" => reason && Quickdraw.utf8(Quickdraw.plain_string(reason)) }
+		end
+
+		def pending!
+			@skipped = { "pending" => true, "reason" => nil }
+		end
+
 		def to_h
-			{ "assertions" => @assertions, "failures" => @failures, "errors" => @errors, "stats" => @stats, "duration" => @duration }
+			{
+				"assertions" => @assertions,
+				"failures" => @failures,
+				"errors" => @errors,
+				"skipped" => @skipped,
+				"stats" => @stats,
+				"duration" => @duration,
+			}
 		end
 
 		private def gc_milliseconds
@@ -111,7 +127,7 @@ class Quickdraw::Worker
 					# Seeded by test rather than by process, so `rand` in a test gives the
 					# same values for a given run seed whichever worker runs it.
 					Kernel.srand(file_seed + index)
-					@channel.write([:result, index, run(*tests[index])])
+					@channel.write([:result, index, run(tests[index])])
 				end
 
 				@channel.write([:ready, Process.pid])
@@ -151,22 +167,24 @@ class Quickdraw::Worker
 		[:load_failed, path, Quickdraw.serialize_error(error)]
 	end
 
-	private def describe((test_class, description, block, timeout))
+	private def describe(definition)
 		{
-			"description" => description&.then { |it| Quickdraw.utf8(Quickdraw.plain_string(it)).gsub(ANONYMOUS_MODULE, "") },
-			"line" => block.source_location[1],
-			"class_name" => test_class.name&.then { |it| Quickdraw.utf8(it).gsub(ANONYMOUS_MODULE, "") },
+			"description" => definition.description&.then { |it| Quickdraw.utf8(Quickdraw.plain_string(it)).gsub(ANONYMOUS_MODULE, "") },
+			"line" => definition.line,
+			"class_name" => definition.test_class.name&.then { |it| Quickdraw.utf8(it).gsub(ANONYMOUS_MODULE, "") },
 			# So the coordinator can kill a worker whose watchdog can't run.
-			"timeout" => (timeout || Quickdraw::Config.timeout if @timeouts),
+			"timeout" => (definition.timeout || Quickdraw::Config.timeout if @timeouts),
 		}
 	end
 
-	private def run(test_class, description, block, timeout)
+	private def run(definition)
 		recorder = Recorder.new
 
 		recorder.measure_test do
-			test = test_class.new(description:, block:, runner: recorder)
-			seconds = timeout || Quickdraw::Config.timeout
+			next recorder.pending! unless definition.block
+
+			test = definition.test_class.new(description: definition.description, block: definition.block, runner: recorder)
+			seconds = definition.timeout || Quickdraw::Config.timeout
 
 			if @watchdog
 				overran = @watchdog.watch(seconds) { test.run }
@@ -181,6 +199,8 @@ class Quickdraw::Worker
 			else
 				test.run
 			end
+		rescue Exception => error
+			recorder.error!(Quickdraw.serialize_error(error))
 		end
 
 		flush_output
