@@ -14,6 +14,8 @@ module Quickdraw
 	Box = (defined?(Ruby::Box) && ENV["RUBY_BOX"]) ? Ruby::Box.new : NoBox
 
 	LIB = __dir__
+	# Where Quickdraw runs, before a test can change directory.
+	ROOT = Dir.pwd
 
 	autoload :CLI, "quickdraw/cli"
 	autoload :Commands, "quickdraw/commands"
@@ -44,6 +46,10 @@ module Quickdraw
 	autoload :Filter, "quickdraw/filter"
 	autoload :WorkerTuner, "quickdraw/worker_tuner"
 	autoload :Assertions, "quickdraw/assertions"
+	autoload :Choices, "quickdraw/choices"
+	autoload :Generator, "quickdraw/generator"
+	autoload :Generators, "quickdraw/generators"
+	autoload :Property, "quickdraw/property"
 	autoload :Coordinator, "quickdraw/coordinator"
 	autoload :ArgumentError, "quickdraw/errors/argument_error"
 	autoload :Configuration, "quickdraw/configuration"

@@ -299,7 +299,7 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 
 ## Fuzzing, properties and mutation testing
 
-- **Property-based testing:** generators for core types and composable custom ones, shrinking to a minimal counterexample, and failing cases saved and replayed first on the next run. Properties run as ordinary tests, so they get parallelism and reporting for free.
+- **Property-based testing** (done): `check(array(integer)) { |list| … }` in any test. Generators for core types compose with `map`, `filter`, `flat_map` and `generator { |choices| … }`. Shrinking works on the sequence of choices that made a case, as Hypothesis does, so it works through composition: it deletes and zeroes spans of choices, lowers each choice by binary search, and lowers a length while deleting what it would have generated. A failing case is saved to `.quickdraw/properties/`, replayed first, and deleted once it passes. Cases come from the test's seed, so `--seed N` repeats them. 100 cases of small integer arrays take about 0.6ms. Properties run as ordinary tests, so they get parallelism and reporting for free. Still to do: a default case count in config, honouring `--no-history` for saved cases, shrink passes that move amounts between values (a sum over 9 can stop at `[5, 5]` rather than `[10]`) and sort them, reporting how cases were distributed, and stateful (model-based) properties.
 - **Fuzzing:** coverage-guided input generation, using the `Coverage` module as the feedback signal, with a saved corpus of interesting inputs. Runs as a long-lived mode across all cores.
 - **Mutation testing:** Prism-based mutators applied to the code under test. Uses the per-test coverage map to run only the tests that cover each mutation, fork-isolated per mutant, with surviving mutants reported as "this line isn't really tested". Incremental against a git base so it's practical in CI.
 
@@ -314,4 +314,4 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 7. Coverage, impact analysis, interactive watch mode, sharding.
 8. Suite profiling: always-on timings and GC/CPU counters per test phase, then profile mode with the shared-cost report.
 9. Browser testing.
-10. Property-based testing, then mutation testing (which builds on per-test coverage), then fuzzing.
+10. Property-based testing (done), then mutation testing (which builds on per-test coverage), then fuzzing.

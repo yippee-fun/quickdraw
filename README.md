@@ -50,6 +50,30 @@ end
 - **Timeouts:** tests time out after 300 seconds, or set one per test with `test "…", timeout: 5 do`.
 - **Scope:** methods and constants defined at the top of a test file are only visible to that file's tests.
 
+## Properties
+
+`check` runs a block with values from generators, 100 times by default, to test something that should hold for any input:
+
+```ruby
+class SortingTest < Quickdraw::Test
+  test "sorting is idempotent" do
+    check(array(integer)) { |list| assert_equal list.sort.sort, list.sort }
+  end
+
+  test "round trips through JSON" do
+    check(hash_of(string, nilable(integer)), cases: 500) do |hash|
+      assert_equal JSON.parse(JSON.generate(hash)), hash
+    end
+  end
+end
+```
+
+When a case fails, Quickdraw shrinks it to the simplest case it can find that fails in the same place, and reports it with the original and how many cases ran. The case is saved in `.quickdraw/properties/` and tried first next time, until it passes. Cases come from the run's seed, so `--seed N` repeats them.
+
+- **Generators:** `integer(-10..10)`, `float(0.0..1.0)`, `boolean`, `string` (any Unicode, or `string("a".."z", length: 1..8)`, or `string(:ascii)`), `symbol`, `array(integer, length: 0..5)`, `hash_of(symbol, integer)`, `fixed_hash(name: string, age: integer(0..))`, `tuple(integer, string)`, `one_of(:red, :green, integer)`, `constant(value)` and `nilable(string)`. Ranges can be open-ended.
+- **Your own:** `map`, `filter` and `flat_map` build generators from others, and `generator { |choices| User.new(name: choices.draw(string)) }` draws from several. They shrink as well as the built-in ones. Outside a test, call generators on `Quickdraw::Generators`.
+- **How many:** `cases: 1000`, or `seconds: 2` to stop sooner if time runs out. A property counts as one assertion.
+
 ## Running tests
 
 ```sh
