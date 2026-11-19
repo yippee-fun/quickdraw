@@ -88,7 +88,7 @@ qt --watch                 # run again when files change
 
 `quickdraw` and `qt` are the same command. `qt --help` lists every option.
 
-- **Workers:** Quickdraw chooses the number of workers from previous runs, exploring until it finds the fastest. Pass `-p N` to choose, `--max` for every core, or `--efficiency` for an Apple silicon Mac's efficiency cores.
+- **Workers:** Quickdraw chooses the number of workers from previous runs, exploring until it finds the fastest. Pass `-p N` to choose, `--max` for every core, or `--efficiency` for an Apple silicon Mac's efficiency cores. `--elastic` adds workers during a run while its tests mostly wait (on IO, the network or `sleep`) and the CPU is idle, which speeds up the first run of tests like that, before there's history to go on. It never adds workers to tests that keep the CPU busy, or when memory is short.
 - **Order:** tests run in a random order. The seed is printed after each run, and `--seed N` repeats it.
 - **Stopping:** `--fail-fast` stops starting tests after the first problem. Ctrl-C stops the run, lets running tests clean up, and reports what finished.
 - **Watch mode:** a changed test file reruns on its own, and a changed source file reruns its tests. Keys rerun everything, run only failures, or filter by path or name. Config stays booted between runs, so only the first waits for it (a Rails app's rerun takes about 100ms rather than 600ms). It boots again when `config/`, the Gemfile or a file it loaded changes, or a file is added to or deleted from an autoloaded directory.
@@ -164,6 +164,24 @@ Mutation score 90% · 18 killed · 2 survived
 ## Profiling
 
 `qt --profile` samples tests as they run and lists the methods that take the most test time, and how many tests they run in. A method that takes a large share across most tests is a cost they share, such as a slow factory or setup hook, which you can fix once. `qt -t` lists the slowest tests and files.
+
+## Timeline
+
+`qt --timeline` shows where workers' time went, for when they're less busy than they could be:
+
+```
+Timeline .quickdraw/timeline.html
+  0.21s booting · 0.37s running tests · 0.01s stopping
+  8 workers: 78% running tests · 7% between tests · 4% loading files · 3% starting · 8% idle at the end
+  For the last 0.12s, workers ran out of work while these ran:
+     0.31s  test/compiler.test.rb:178 CompilerTest › compiles a large template
+```
+
+- **Booting** is config loading, before any worker starts. Watch mode pays it only when config changes.
+- **Workers' time**, across every worker slot: running tests; between tests in a batch (sending results, checking for leaks, capturing output); loading test files; starting (forking, and your `after_forking` callbacks); waiting for work while others were busy; replacing workers (to move between groups, retry a failure or replace a crashed worker); and idle at the end.
+- **At the end:** once the first worker ran out of work, the tests that kept the run going, longest first. One long test there sets how long the run takes, and splitting it lets workers share it.
+
+`.quickdraw/timeline.html` charts each worker slot across the run. Hover over a part of it for the tests, file or phase it shows. Recording happens in the coordinator, at the cost of an array per test, and not at all without `--timeline`.
 
 ## Configuration
 

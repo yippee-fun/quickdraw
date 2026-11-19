@@ -46,6 +46,8 @@ class Quickdraw::CLI
 		options = {
 			backtrace: false,
 			timings: false,
+			timeline: false,
+			elastic: false,
 			profile: false,
 			coverage: false,
 			processes: nil,
@@ -104,6 +106,10 @@ class Quickdraw::CLI
 		paths = options[:outputs].filter_map(&:last)
 		if (duplicate = paths.find { |path| paths.count(path) > 1 })
 			usage_error "More than one format would write to #{duplicate}."
+		end
+
+		if options[:timeline] && paths.include?(File.expand_path(Quickdraw::Timeline::PATH))
+			usage_error "--timeline writes its chart to #{Quickdraw::Timeline::PATH}, so a format can’t write there too."
 		end
 
 		if options[:watch] && options[:outputs].any? { |format, path| format == "junit" && path.nil? }
@@ -256,6 +262,10 @@ class Quickdraw::CLI
 				options[:timings] = true
 			end
 
+			parser.on("--timeline", "Show how workers spent the run, and chart it in #{Quickdraw::Timeline::PATH}") do
+				options[:timeline] = true
+			end
+
 			parser.on("--profile", "Sample tests and list the methods that take the most of their time") do
 				options[:profile] = true
 			end
@@ -293,6 +303,10 @@ class Quickdraw::CLI
 
 			parser.on("-e", "--efficiency", "Run on efficiency cores (Apple silicon)") do
 				options[:efficiency] = true
+			end
+
+			parser.on("--elastic", "Add workers while tests leave CPU idle, unless the count is given") do
+				options[:elastic] = true
 			end
 
 			parser.separator ""
@@ -550,6 +564,8 @@ class Quickdraw::CLI
 			allow_flaky: options[:allow_flaky],
 			repeatable: !options[:changed],
 			warm_loaders: options[:warm_loaders],
+			timeline: options[:timeline],
+			elastic: options[:elastic],
 		).call
 	end
 

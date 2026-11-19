@@ -49,6 +49,10 @@ class Quickdraw::Outcome
 	# didn't finish (e.g. after Ctrl-C).
 	attr_accessor :files, :unfinished_files
 
+	# Workers added while running (see Elastic), and the seconds every worker
+	# was there for, counting added ones from when they were added.
+	attr_accessor :workers_added, :worker_time
+
 	# A CoverageReport with --coverage, or nil.
 	attr_accessor :coverage
 

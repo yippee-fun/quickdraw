@@ -126,7 +126,7 @@ class Quickdraw::Reporters::Human
 		row "Assertions", delimit(outcome.assertions)
 		print_timing_summary(outcome) unless outcome.interrupted
 		row "Seed", "#{@seed} #{dim("· #{Quickdraw::Reporters.command} --seed #{@seed}")}"
-		print_hints(outcome.duration) unless outcome.interrupted
+		print_hints(outcome) unless outcome.interrupted
 		@io.puts
 		@io.puts verdict(outcome)
 	end
@@ -214,7 +214,7 @@ class Quickdraw::Reporters::Human
 	private def print_timing_summary(outcome)
 		timings = @timings
 		elapsed = outcome.duration
-		utilization = timings.utilization(elapsed:, processes: @processes) if timings.count > 0
+		utilization = busy(outcome) if timings.count > 0
 		split = " (#{phase_breakdown(timings)})" if timings.count > 0 && (timings.setup_and_teardown_share >= 0.1 || timings.outside_phases_time / timings.count >= 0.001)
 
 		shares = if timings.count > 0
@@ -229,7 +229,9 @@ class Quickdraw::Reporters::Human
 
 		row "Duration", [format("%.2fs", elapsed), *shares.map { |share| dim(share) }].join(dim(" · ")) + comparison(outcome).to_s
 
-		row "Workers", "#{@processes} #{dim("(#{@worker_choice})#{" · busy #{percent(utilization)}" if utilization}")}"
+		added = outcome.workers_added.to_i
+		workers = (added > 0) ? "#{@processes + added} #{dim("(#{@processes} #{@worker_choice}, #{added} added as tests waited)")}" : "#{@processes} #{dim("(#{@worker_choice})")}"
+		row "Workers", "#{workers}#{dim(" · busy #{percent(utilization)}") if utilization}"
 
 		return if timings.count == 0
 
@@ -240,12 +242,22 @@ class Quickdraw::Reporters::Human
 		row "Per test", per_test.join(dim(" · "))
 	end
 
+	# The share of the workers' time spent running tests, counting workers added
+	# while running from when they were added.
+	private def busy(outcome)
+		worker_time = outcome.worker_time.to_f
+		return @timings.utilization(elapsed: outcome.duration, processes: @processes) unless worker_time > 0
+
+		(@timings.test_time / worker_time).clamp(0.0, 1.0)
+	end
+
 	# Below the rows, under their values.
-	private def print_hints(elapsed)
+	private def print_hints(outcome)
 		timings = @timings
+		elapsed = outcome.duration
 		return if timings.count == 0 || timings.test_time < HINT_THRESHOLD
 
-		utilization = timings.utilization(elapsed:, processes: @processes)
+		utilization = busy(outcome)
 
 		hints = []
 

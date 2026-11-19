@@ -215,6 +215,7 @@ class Quickdraw::Coordinator
 			@loading = nil
 			@batch = nil
 			@started = false
+			@ready = false
 			@idle = false
 			@pid = nil
 			@sequence = 0
@@ -228,6 +229,9 @@ class Quickdraw::Coordinator
 
 		def group = @loader.group
 		attr_accessor :loading, :batch, :started, :idle, :pid
+
+		# Whether it has said it's ready, once after starting.
+		attr_accessor :ready
 
 		# Whether it has yet to run a test, so it can retry one.
 		attr_accessor :fresh
@@ -278,12 +282,16 @@ class Quickdraw::Coordinator
 	# `capture` and `leaks` are for workers (see Worker#initialize). A selection
 	# that isn't `repeatable` (such as --changed) picks different tests from run
 	# to run, so it isn't compared with the last. In watch mode, `warm_loaders`
-	# are loaders that stay booted between runs.
+	# are loaders that stay booted between runs. With `timeline`, it records
+	# how workers spent the run (see Timeline). With `elastic`, a count that
+	# wasn't given grows while tests leave CPU idle (see Elastic).
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: false, leaks: nil, retries: 0, allow_flaky: false, warm_loaders: nil
+		capture: false, leaks: nil, retries: 0, allow_flaky: false, warm_loaders: nil, timeline: false, elastic: false
 	)
+		@timeline = Quickdraw::Timeline.new if timeline
+		@elastic_allowed = elastic
 		@warm_loaders = warm_loaders
 		@repeatable = repeatable
 		@retries = retries
@@ -368,6 +376,9 @@ class Quickdraw::Coordinator
 		# Retries get the channels left over, so a low file limit costs retries, not workers.
 		@processes, @worker_choice = @forking ? choose_processes([@loaders[nil].spares.size - SPARE_CHANNELS, 1].max) : [1, "default"]
 		@free_slots = Array.new(@processes) { |slot| slot }
+		# Including slots added while running, which started at @workers_added_at.
+		@slot_count = @processes
+		@workers_added_at = []
 
 		@reporter.start(processes: @processes, worker_choice: @worker_choice, seed: @seed, estimate:)
 		reporting_started_at = now
@@ -375,6 +386,7 @@ class Quickdraw::Coordinator
 		unless @interrupted
 			reported(@loaders[nil], report)
 			start_workers
+			start_elastic if @elastic_allowed && @forking && @worker_choice != "manual"
 		end
 
 		checked_at = now
@@ -411,6 +423,7 @@ class Quickdraw::Coordinator
 			end
 
 			dispatch
+			add_workers if @elastic&.due?
 			@reporter.tick(@progress)
 		end
 
@@ -436,18 +449,39 @@ class Quickdraw::Coordinator
 		@outcome.stopped_early = @stopping
 		# A filter that matches nothing is more likely a typo than a pass.
 		@outcome.nothing_matched = @filter.any? && @selected.zero? && @unloaded.empty?
-		@outcome.duration = now - reporting_started_at
+		finished_at = now
+		@outcome.duration = finished_at - reporting_started_at
+		@outcome.workers_added = @workers_added_at.size
+		@outcome.worker_time = (@processes * @outcome.duration) + @workers_added_at.sum { |added_at| finished_at - added_at }
 		# Before the report, which says where it is.
 		@coverage&.write
+		write_timeline if @timeline
 		@reporter.finish(@outcome)
 
 		# Written after the report, so it never delays the results.
 		save_history(started_at, @outcome.passed?)
 		@outcome
 	ensure
+		@elastic&.stop
 		trap("INT", previous_handler || "DEFAULT") if interrupt_reader
 		interrupt_reader&.close
 		interrupt_writer&.close
+	end
+
+	# Above a live display, through it, so it isn't written over; with a format
+	# other programs read on the terminal, to stderr.
+	private def write_timeline
+		@timeline.finish
+
+		begin
+			@timeline.write
+		rescue SystemCallError => error
+			warn "Quickdraw couldn’t write #{Quickdraw::Timeline::PATH} (#{error.message})."
+		end
+
+		io = @test_output_to_stderr ? $stderr : $stdout
+		summary = "\n#{@timeline.summary(color: io.tty? && !ENV.key?('NO_COLOR')).join("\n")}\n"
+		@reporter.live? ? @reporter.printed(summary) : io.print(summary)
 	end
 
 	# Results already sent are kept. Tests still running are counted as not run,
@@ -463,6 +497,7 @@ class Quickdraw::Coordinator
 	private def abandon(worker)
 		@workers.delete(worker.channel.reader)
 		worker.channel.close
+		@timeline&.exited(worker)
 		@abandoned << worker.pid if worker.pid
 		# The worker shows what's left of it as it exits, unless it's killed first.
 		@abandoned_output_paths << worker.output_path if worker.output_path
@@ -605,13 +640,54 @@ class Quickdraw::Coordinator
 		allocation
 	end
 
+	# Not where idle CPU can't be measured. A container's CPU quota limits the
+	# cores, since the machine's idle CPU isn't the container's to use.
+	private def start_elastic
+		idle_cpu = Quickdraw::IdleCPU.start or return
+		cores = [@cores, Quickdraw::Platform.cpu_quota].compact.min
+		@elastic = Quickdraw::Elastic.new(cores:, cpus: Quickdraw::Platform.cpu_cores, idle_cpu:)
+	end
+
+	# In new slots, up to the most workers a run may have, while channels are
+	# left for retries and replacing crashed workers.
+	private def add_workers
+		return if @stopping
+
+		wanted = @elastic.wanted(
+			workers: @workers.size,
+			starting: @workers.each_value.count { |worker| !worker.ready },
+			busy: @workers.each_value.count { |worker| worker.ready && !worker.idle },
+			waiting: waiting_tests,
+		)
+		# The tuner can choose more, from history.
+		count = [wanted, @max_processes - @slot_count].min
+		added = 0
+
+		while added < count && (loader = busiest_loader) && loader.spares.size > spare_channels
+			start_worker(loader, @slot_count)
+			@slot_count += 1
+			@workers_added_at << now
+			added += 1
+		end
+
+		@timeline&.add(added) if added > 0
+	end
+
+	# Tests not yet started, counting each file not yet loaded as an average one.
+	private def waiting_tests
+		per_file = @files.empty? ? 1.0 : @files.each_value.sum { |file| file.tests.size }.fdiv(@files.size)
+		@files.each_value.sum { |file| file.pending.size } + (@unloaded.size * per_file)
+	end
+
 	# Returns whether it started.
 	private def start_worker(loader, slot)
 		return false unless slot
 
 		index, channel = loader.spares.shift
 		if channel && (!@forking || loader.command("fork #{index} #{slot}"))
-			@workers[channel.reader] = Worker.new(channel, slot, @process_count += 1, loader)
+			worker = Worker.new(channel, slot, @process_count += 1, loader)
+			@workers[channel.reader] = worker
+			@timeline&.spawned(worker)
 			true
 		else
 			channel&.close
@@ -844,7 +920,7 @@ class Quickdraw::Coordinator
 			started_at:,
 			finished_at: Time.now,
 			seed: @seed,
-			processes: @processes,
+			processes: @slot_count,
 			worker_choice: @worker_choice,
 			selection: @selection,
 			passed:,
@@ -871,6 +947,7 @@ class Quickdraw::Coordinator
 
 	private def handle(worker, message)
 		worker.received_message
+		@timeline&.received(worker, message)
 
 		case message
 		in nil
@@ -886,6 +963,7 @@ class Quickdraw::Coordinator
 			@reporter.printed(output)
 		in [:ready, pid]
 			worker.pid = pid
+			worker.ready = true
 			worker.idle = true
 		in [:started]
 			worker.started = true
@@ -972,6 +1050,7 @@ class Quickdraw::Coordinator
 		end
 
 		file.record(result["duration"])
+		@elastic&.record(result)
 
 		if retry?(result)
 			@pending_retries << Retry.new(file:, index:, result:, placement: placement(worker), attempts: 0, refreshing: false)
@@ -1061,6 +1140,7 @@ class Quickdraw::Coordinator
 
 		@workers.delete(worker.channel.reader)
 		worker.channel.close
+		@timeline&.exited(worker)
 		output = Quickdraw::Capture.collect(worker.output_path) if worker.output_path
 
 		crash = if (timeout = worker.timeout)
@@ -1140,8 +1220,10 @@ class Quickdraw::Coordinator
 		return unless all_idle && @workers.each_value.all?(&:idle)
 
 		# Not done until they exit, after sending their coverage.
+		@timeline&.stopped
 		@workers.each_value do |worker|
 			worker.channel.write([:stop])
+			@timeline&.stopping(worker)
 			@leaving[worker.channel.reader] = [worker, nil]
 		end
 
@@ -1178,6 +1260,7 @@ class Quickdraw::Coordinator
 	# the slot's resources, such as a database.
 	private def move(worker, loader)
 		worker.channel.write([:stop])
+		@timeline&.stopping(worker)
 		@workers.delete(worker.channel.reader)
 		@leaving[worker.channel.reader] = [worker, loader]
 	end
@@ -1186,6 +1269,7 @@ class Quickdraw::Coordinator
 	private def left(reader)
 		worker, loader = @leaving.delete(reader)
 		worker.channel.close
+		@timeline&.exited(worker)
 
 		if loader && work_left?(loader.group)
 			start_worker(loader, worker.slot)
@@ -1274,6 +1358,7 @@ class Quickdraw::Coordinator
 		worker.started = false
 		worker.idle = false
 		worker.fresh = false
+		@timeline&.running(worker, file, indices)
 		crashed(worker) unless worker.channel.write([:run, file.path, indices])
 	end
 
@@ -1284,6 +1369,7 @@ class Quickdraw::Coordinator
 		worker.started = false
 		worker.idle = false
 		worker.fresh = false
+		@timeline&.running(worker, attempt.file, [attempt.index])
 		crashed(worker) unless worker.channel.write([:run, attempt.file.path, [attempt.index]])
 	end
 
@@ -1297,6 +1383,7 @@ class Quickdraw::Coordinator
 		worker.idle = false
 		# Loading a file runs its top-level code, which a retry shouldn't follow.
 		worker.fresh = false unless worker.retrying
+		@timeline&.loading(worker, display_path(path))
 		crashed(worker) unless worker.channel.write([:load, path])
 	end
 

@@ -106,7 +106,24 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
      - When a worker crashes and work remains, a replacement starts on one of 4 spare channels, in the same slot. It inherits `QUICKDRAW_WORKER`, so it reuses that slot's database and other resources.
      - A crashing test is reported once and never rerun. A file whose loading crashed a worker isn't handed to other workers. Spares are limited, so crashes can't loop.
      - Workers report their pid before `after_forking` runs, and the coordinator also watches the loader's pid. Processes that config or callbacks fork, and that keep pipes open, can no longer hang a run.
-  5. **Next — elastic workers:** use the same `fork` command to add workers when CPU is idle and work remains, or stop adding them when memory gets tight.
+  5. **Elastic workers** (done, opt-in with `--elastic`): the coordinator adds workers in new slots with the same `fork` command while tests leave CPU idle (`Elastic`).
+     - **When:** every worker is busy and none is starting; the run's tests spend more than half their time off the CPU (so contention can't pass for waiting) and use less than the core count; the machine has idle CPU beyond one CPU kept free, read since the last change (`/proc/stat` every 0.25s on Linux, a long-running `iostat -w 1` on macOS, nothing elsewhere); more than 20% of memory is available; and there's at least 0.25s of queued tests for each worker. It adds as many as the idle CPU covers, counting each worker as using at least 5% of a CPU, up to 3× the CPU count, keeping channels for retries and crash replacements.
+     - **History** records the most workers the run had, so the tuner starts the next run there.
+     - **Measured** on a shared 12-CPU M-series Mac with a load average of 12–35 from other work (medians; synthetic suites are 1,000 tests of 20ms each):
+
+       | Suite | Off | Elastic | Workers added |
+       |---|---|---|---|
+       | Sleeping tests, first run (no history) | 2.68s | **1.45s** | 28 |
+       | CPU-bound, first run | 4.45s | 4.23s (noise) | 0 |
+       | Half sleeping, half CPU, first run | 3.26s | 3.04s (noise) | 0 |
+       | Sleeping tests, with history (tuner at 42) | 0.59s | 0.58s | 0 |
+       | CPU-bound, with history | 3.76s | 4.36s (noise: tuner state, 0 added) | 0 |
+       | Phlex (1,964 tests), with history | 0.34s | 0.35s | 0 |
+       | Quickdraw's own suite (419 tests), with history | 21.68s | 21.75s | 0 |
+       | 25 trivial tests (cost of starting `iostat`) | 0.29s wall | 0.30s wall | 0 |
+
+       Once history exists, the tuner already picks the count, so elastic only helps a waiting-heavy suite's first run, a new selection (which starts at the core count), or one whose tests have started waiting more. On macOS it can't act until a second into the run.
+     - **Before making it the default:** measure on Linux, where it can act four times as often, and on a Rails app, where each new slot creates its databases; retire workers when the CPU is oversubscribed (suites that change from waiting to computing partway through); show added workers in the summary line (it's only in `--timeline` now).
   
   `-p`, `--max` and `--efficiency` still override all of this; the summary shows how the count was chosen.
 - Shared-memory queue (C extension): only worth it if profiling shows IPC is a meaningful share of runtime after batching.
@@ -175,7 +192,10 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - **`--format json`:** one event per line, with a failing test's output and any leaks. Anything printed outside tests (or with `--no-capture`) goes to stderr so the stream stays valid.
   
   Still to do: truncating large values with a pointer to the full detail, and possibly a `quickdraw mcp` server.
-- **Worker timeline:** utilisation per worker, to spot long poles and idle time.
+- **Worker timeline** (done): `--timeline` records, in the coordinator only, when each worker starts, loads a file, is given a batch, sends a result and stops (an array per event; nothing without the flag). Each worker slot's time splits into phases: running tests, between tests in a batch, loading files, starting (fork and `after_forking`), waiting for work, replacing workers (group moves, retries, crashes) and idle at the end. A test that crashed its worker counts as running until it exited. The summary gives booting, running and stopping times, the phase shares, and the tests still running once the first worker ran out of work (the long poles). `.quickdraw/timeline.html` is a Phlex-rendered Gantt chart per slot, with narrow neighbouring batches drawn as one block, the slow tests by name, and markers where workers were added.
+  - Cost, on 20,000 trivial tests with 8 workers: the run itself 0.25s → 0.26s (noise-level), and writing the chart (loading Phlex, rendering) about 0.1s after it.
+  - Measured with it on Phlex (8 workers, 1,964 tests): ~0.2s booting config, ~0.35s running; 78–82% of worker time running tests, 3–7% between tests, 3–4% loading files, 3–4% starting and 7–9% idle at the end, which is the slowest few tests (~0.3s each) finishing.
+  - Still to do: worker-side timestamps, so the coordinator's own delays (reading results under load) aren't counted against workers; the timeline in JSON for other tools.
 - **Invisible differences made visible:** when diffed lines differ only by whitespace, control or format characters (trailing tabs, U+200B), escape them in the diff (from #70).
 - `assert_equivalent_html` shows a diff of the prettified documents, not just both documents (from #55).
 
