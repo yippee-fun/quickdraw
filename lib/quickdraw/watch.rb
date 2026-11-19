@@ -9,6 +9,10 @@
 # come from a separate process running listen, and keys are read with the
 # terminal set by `stty`.
 class Quickdraw::Watch
+	# What running tests writes, such as logs and SQLite databases with their
+	# journals, which would otherwise start another run, and so on forever.
+	WRITTEN_BY_TESTS = %r{\A(?:log|storage)/|\.log\z|\.sqlite3}
+
 	# Prints "ready", then each batch of changed paths on a line, separated by
 	# NUL. Events are queued until then, so "ready" always comes first. The
 	# default FSEvents latency adds ~100ms to every change. Quickdraw's own
@@ -87,7 +91,7 @@ class Quickdraw::Watch
 		paths = line.chomp.split("\0")
 		paths.concat(@listener.gets.chomp.split("\0")) while @listener.wait_readable(0.05)
 		# What the default selection leaves out, such as installed gems, never runs.
-		paths = paths.uniq.grep_v(Quickdraw::CLI::IGNORED_DIRECTORIES)
+		paths = paths.uniq.grep_v(Quickdraw::CLI::IGNORED_DIRECTORIES).grep_v(WRITTEN_BY_TESTS)
 		return if paths.empty?
 
 		affected = affected_tests(paths)

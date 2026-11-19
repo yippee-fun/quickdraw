@@ -118,19 +118,27 @@ class Quickdraw::BasicTest
 	def teardown = nil
 	def around_test = yield
 
+	# Inside config's around_test callbacks (see Configuration#around_test), so
+	# they cover setup and teardown too, and see the test's exceptions.
 	def run
-		@runner.measure("setup") { setup }
-		around_test { @runner.measure("test") { instance_exec(&@block) } }
+		Quickdraw::Config.around(self) { run_test }
 	rescue Skip => skip
 		@runner.skip!(skip.reason)
 	rescue Quickdraw::Interrupted
 		raise
 	rescue Exception => error
 		error!(error)
+	end
+
+	private def run_test
+		@runner.measure("setup") { setup }
+		around_test { @runner.measure("test") { instance_exec(&@block) } }
 	ensure
 		# Cleanup carries on after Ctrl-C, which then stops the worker.
 		interrupted = nil
+		# Taken, so an around_test that runs the test again doesn't repeat them.
 		cleanups = [-> { @runner.measure("teardown") { teardown } }, *@deferred&.reverse]
+		@deferred = nil
 
 		cleanups.each do |cleanup|
 			cleanup.call

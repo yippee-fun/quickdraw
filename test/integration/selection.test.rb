@@ -114,8 +114,11 @@ class SelectionTest < Quickdraw::Test
 		RUBY
 
 		refute result.success?
-		assert_equal result.stdout.scan(/^ran .*$/).last, "ran fails"
-		match { result => { summary: /not run/ } }
+
+		# The order is random, so the failure can come anywhere, even last.
+		ran = result.stdout.scan(/^ran .*$/)
+		assert_equal ran.last, "ran fails"
+		assert_equal ran.size + result.summary[/(\d+) not run/, 1].to_i, 41
 	end
 
 	test "--fail-fast stops starting tests after the first problem", timeout: 20 do

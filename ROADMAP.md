@@ -213,16 +213,17 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 
 - **Detection:** a `config/environment.rb` and `rails` in the bundle switch on Rails support. `quickdraw init` writes the config.
 - **Booting:** the loader boots the app once in the test environment, with eager loading in CI. Workers fork from that and share it through copy-on-write. Whether to eager load locally is decided by measuring, as noted under Speed.
-- **A database per worker:**
-  - the loader disconnects Active Record before forking (`before_forking`);
-  - each worker connects to its own database, named with a suffix from `QUICKDRAW_WORKER` (`app_test-3`);
-  - this works for every database in `database.yml`, including multiple databases and SQLite files.
+- **`config.rails`** (done) boots the app in the loader and sets up the rest of this list that's marked done.
+- **A database per worker** (done):
+  - the loader disconnects Active Record before forking;
+  - each worker slot connects to its own databases, named as Rails' parallel tests name them (`app_test_3`), for every database in `database.yml`;
+  - when a worker starts, its databases are created and loaded from the schema, or emptied if the schema is unchanged, as Rails' `reconstruct_from_schema` does.
 - **Creating and keeping databases:**
-  - databases are created on first use by cloning the schema;
-  - they're kept between runs and only rebuilt when `schema.rb`/`structure.sql` or migrations change, tracked by checksum in run history;
+  - skip emptying when the database is already empty, to save time on worker start;
+  - two runs at once (watch mode and a manual run, say) share slot databases, as Rails' parallel tests do; a run should reserve its slots' databases, or use others;
   - the number of databases follows the worker count, and extras are left for reuse.
 - **Rails' own parallel testing:** Rails' process-based `parallelize` is replaced, since Quickdraw already forks. Its hooks (`parallelize_setup`, `parallelize_teardown`, `parallelize_before_fork`) still run at the matching points, so apps that use them keep working. Threaded `parallelize` is left alone.
-- **Isolation between tests:** transactional tests and fixtures work as normal. Fixtures load once per worker database and are reused across runs while the fixture files are unchanged.
+- **Isolation between tests:** each test runs in a transaction on every database, pinned so threads it starts share it, and rolled back afterwards (done, through `config.around_test`). Still to do: fixtures, loaded once per worker database and reused across runs while the fixture files are unchanged; and Rails test helpers such as time travel.
 - **Other per-worker resources:**
   - Active Storage and cache directories (`tmp/storage-3`);
   - Redis database numbers or key prefixes;
@@ -231,8 +232,8 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
   - each through a documented hook built on `QUICKDRAW_WORKER`.
 - **System tests:** a Puma server per worker on its own port, with Playwright browsers owned by the coordinator (see Browser testing).
 - **Framework-aware reporting:**
-  - SQL queries and time per test, from Active Support notifications, including likely N+1 queries;
-  - factories built per test;
+  - SQL queries and time per test, from Active Support notifications (done), and likely N+1 queries;
+  - factory_bot factories run per test (done);
   - log level warnings when debug logging is slowing the suite.
 - **Running existing suites:** both `rails test`-style Minitest suites and `rspec-rails` suites run through the real frameworks (see Compatibility), with `bin/rails test` file and line arguments accepted as-is.
 
@@ -274,7 +275,7 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 - **Always on, core only:** each test event carries wall time, CPU time (`CLOCK_PROCESS_CPUTIME_ID`), GC time and allocation deltas (`GC.stat`), split into setup/hooks, body and teardown. Wall time far above CPU time means waiting (IO, sleep, network). A one-line summary flags when hooks or GC dominate.
 - **Profile mode** (done, `--profile`): a sampler thread in each worker records the main thread's stack while tests run, using `Thread#backtrace_locations`, so it's core Ruby only. A waiting thread only gets the GVL every timeslice (100ms by default, so about 8 samples a second of CPU-bound code), so `--profile` restarts Ruby with `RUBY_THREAD_TIMESLICE=1`, which gives about 90 a second for CPU-bound code and far more for code that waits. Ruby 3.3 ignores the setting. Since samples come at uneven rates, each is weighted by the time since the previous one. Same-named methods are told apart by the line of their `def`, since labels don't name classes in a test file's anonymous scope. Samples are merged in the coordinator into one profile of the suite.
 - **Shared-cost report** (done): methods ranked by their share of all samples, with their share as the innermost frame and how many tests they ran in, so a cost in most tests stands out. Still to do: the estimated saving in seconds, and grouping by call path ("`create(:user)` → `BCrypt::Password.create`").
-- **Framework-aware counters, when the framework is present:** SQL queries and time per test (ActiveSupport notifications), factories built per test, real outbound HTTP, `sleep` calls.
+- **Counters:** `Quickdraw::Counters.add(name, seconds)` counts anything per test (done). Results carry each test's counts, and the summary shows them per test. `config.rails` counts SQL queries and factories (done). Still to do: real outbound HTTP and `sleep` calls.
 - **Boot profile:** `require` time by file and gem, and time to load each test file.
 - **GC advice:** GC's share of the run and suggested heap settings.
 - **Branch comparison:** "this branch made the suite 12% slower; most of it is `Foo#bar`", using run history.

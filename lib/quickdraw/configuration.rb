@@ -12,6 +12,7 @@ class Quickdraw::Configuration
 	def initialize
 		@before_forking_callbacks = []
 		@after_forking_callbacks = []
+		@around_test_callbacks = []
 		@groups = []
 		@timeout = 300
 	end
@@ -19,6 +20,29 @@ class Quickdraw::Configuration
 	attr_reader :before_forking_callbacks
 	attr_reader :after_forking_callbacks
 	attr_reader :groups
+
+	# Wraps every test, with its setup and teardown, in the block, which calls
+	# `run` to run it: `config.around_test { |test, run| transaction { run.call } }`.
+	# The first defined is outermost.
+	def around_test(&block)
+		@around_test_callbacks << block
+	end
+
+	# Runs the block inside the around_test callbacks, for `test`.
+	def around(test)
+		return yield if @around_test_callbacks.empty?
+
+		ran = false
+		run = -> { ran = true; yield }
+		@around_test_callbacks.reverse.reduce(run) { |inner, callback| -> { callback.call(test, inner) } }.call
+		raise "An around_test callback in config didn’t call run, so the test didn’t run." unless ran
+	end
+
+	# Boots the Rails app in config/environment.rb (or `environment`) for tests,
+	# with a database for each worker and each test in a transaction. See Quickdraw::Rails.
+	def rails(environment: "config/environment")
+		Quickdraw::Rails.setup(self, environment:)
+	end
 
 	# Seconds before a test times out, or nil for never. A test can set its own
 	# with `test("…", timeout: 5)`.

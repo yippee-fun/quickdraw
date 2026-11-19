@@ -37,6 +37,8 @@ module Quickdraw
 	autoload :Reporters, "quickdraw/reporters"
 	autoload :Outcome, "quickdraw/outcome"
 	autoload :Timings, "quickdraw/timings"
+	autoload :Counters, "quickdraw/counters"
+	autoload :Rails, "quickdraw/rails"
 	autoload :History, "quickdraw/history"
 	autoload :HistoryProcess, "quickdraw/history_process"
 	autoload :Filter, "quickdraw/filter"

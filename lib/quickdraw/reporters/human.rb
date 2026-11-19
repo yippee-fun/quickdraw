@@ -118,6 +118,12 @@ class Quickdraw::Reporters::Human
 			"workers running tests #{percent(utilization)}",
 		].join(" · "))
 
+		counts = timings.counts_per_test
+		unless counts.empty?
+			per_test = counts.map { |name, count, time| "#{format('%.1f', count)} #{name}#{" (#{seconds(time)})" if time > 0}" }
+			@io.puts dim("Per test #{per_test.join(' · ')}")
+		end
+
 		return if timings.test_time < HINT_THRESHOLD
 
 		hints = []

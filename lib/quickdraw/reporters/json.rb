@@ -26,6 +26,7 @@ class Quickdraw::Reporters::JSON
 			"skip_reason" => result.dig("skipped", "reason"),
 			"duration" => result["duration"],
 			"assertions" => result["assertions"],
+			"counts" => result["counts"]&.transform_values { |count, seconds| { "count" => count, "seconds" => seconds } },
 			"failures" => result["failures"].map { |failure| failure.merge("message" => plain(failure["message"]), "path" => relative(failure["path"])) },
 			"errors" => result["errors"].map { |error| serialize_error(error) },
 		)

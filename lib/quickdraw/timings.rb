@@ -15,6 +15,7 @@ class Quickdraw::Timings
 		@tests = []
 		@files = Hash.new { |hash, key| hash[key] = [0.0, 0] }
 		@totals = Array.new(Quickdraw::STATS.size, 0)
+		@counts = Hash.new { |hash, key| hash[key] = [0, 0.0] }
 	end
 
 	def record(path, test, result)
@@ -28,6 +29,20 @@ class Quickdraw::Timings
 		file[1] += 1
 
 		stats.each_with_index { |value, index| @totals[index] += value }
+
+		result["counts"]&.each do |name, (count, seconds)|
+			total = @counts[name]
+			total[0] += count
+			total[1] += seconds
+		end
+	end
+
+	# From Quickdraw::Counters: [name, count per test, seconds per test], most
+	# frequent first.
+	def counts_per_test
+		@counts
+			.map { |name, (count, seconds)| [name, count.fdiv(@tests.size), seconds / @tests.size] }
+			.sort_by { |_name, count, _seconds| -count }
 	end
 
 	def count = @tests.size

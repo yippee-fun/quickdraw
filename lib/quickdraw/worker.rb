@@ -26,6 +26,7 @@ class Quickdraw::Worker
 			@duration = nil
 			@skipped = nil
 			@profile = nil
+			@counts = nil
 		end
 
 		# Records the wall time of a phase of the test. Only the wall clock is read,
@@ -48,9 +49,11 @@ class Quickdraw::Worker
 			children = children_cpu
 			gc = gc_milliseconds
 			allocations = allocated_objects
+			Quickdraw::Counters.take
 
 			yield
 		ensure
+			@counts = Quickdraw::Counters.take
 			@duration = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - wall
 			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (children_cpu - children)
 			@stats[GC_TIME] = (gc_milliseconds - gc) * 1_000_000
@@ -90,6 +93,7 @@ class Quickdraw::Worker
 				"stats" => @stats,
 				"duration" => @duration,
 				"profile" => @profile,
+				"counts" => @counts,
 			}
 		end
 

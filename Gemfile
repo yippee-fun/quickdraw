@@ -12,6 +12,11 @@ if RUBY_ENGINE == "ruby"
 		gem "rubocop"
 		gem "covered"
 	end
+
+	group :test do
+		gem "railties", "~> 8.1"
+		gem "activerecord", "~> 8.1"
+	end
 end
 
 gem "refract"
