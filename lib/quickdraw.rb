@@ -43,6 +43,7 @@ module Quickdraw
 	autoload :Timings, "quickdraw/timings"
 	autoload :Counters, "quickdraw/counters"
 	autoload :Rails, "quickdraw/rails"
+	autoload :Browser, "quickdraw/browser"
 	autoload :History, "quickdraw/history"
 	autoload :HistoryProcess, "quickdraw/history_process"
 	autoload :Filter, "quickdraw/filter"

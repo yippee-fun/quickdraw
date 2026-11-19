@@ -249,6 +249,36 @@ They're Rails' own, and their assertions count as the test's. Time travels back,
 
 `assert_difference`, `assert_no_difference`, `assert_changes` and `assert_no_changes` work in any test, and take something to call, such as a lambda, rather than a string.
 
+## Browser testing
+
+Browser tests use [Playwright](https://playwright.dev), through the `playwright-ruby-client` gem, which needs to be in your bundle, with Puma to serve your app. `config.browser` runs the files matching its patterns in a group of their own, so other tests never load Playwright. The block returns the app they test:
+
+```ruby
+Quickdraw.configure do |config|
+  config.rails
+  config.browser("test/system/**/*.test.rb") { Rails.application }
+end
+```
+
+```ruby
+class SignupTest < Quickdraw::Test
+  include Quickdraw::Browser
+
+  test "signs up" do
+    visit "/signup"
+    page.get_by_label("Email").fill("ada@example.com")
+    page.get_by_role("button", name: "Sign up").click
+    assert_text "Welcome, Ada"
+  end
+end
+```
+
+- **Pages:** `page` is a Playwright page in a fresh browser context, like a private window, closed after the test. Each worker launches its own browser, and opens the next test's page while a test runs. `visit` takes paths relative to the app.
+- **The app:** each worker serves it with Puma, in the worker's threads. With `config.rails`, the page sees the records a test creates, and they're rolled back after it. What the app raises while serving the page is raised in the test.
+- **Waiting assertions:** `assert_text` and `refute_text` (a String or Regexp, `within:` an element), and `assert_selector` and `refute_selector` (with `text:` or `count:`) wait, in the browser, for the page to match. A browser test that calls `sleep` gets a warning, and the summary counts them.
+- **Failures:** a failed or errored test's screenshot, HTML and console log are saved in `.quickdraw/browser/`, and their paths are shown with it.
+- **Options:** `browser: "firefox"` or `"webkit"`, `headless: false`, `timeout:` in seconds for actions and assertions (5 by default), `port:` for a fixed port (plus the worker's number) rather than any free one, `launch:` and `context:` options for Playwright, and `driver:`, the Playwright command, which must be the version the gem needs. By default it's `PLAYWRIGHT_CLI_EXECUTABLE_PATH`, or `node_modules/.bin/playwright` if there is one, or `npx playwright@VERSION`. Install its browsers with `npx playwright@VERSION install chromium`.
+
 ## Commands
 
 - `qt init` sets a project up, with config and an example test.

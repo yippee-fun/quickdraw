@@ -47,6 +47,13 @@ class Quickdraw::Configuration
 		Quickdraw::Rails.setup(self, environment:, fixtures: fixtures && Array(fixtures), fixture_paths:)
 	end
 
+	# Runs the browser tests, the files matching `patterns`, in a group of their
+	# own. The block returns the Rack app they test, such as Rails.application,
+	# which each worker serves. See Quickdraw::Browser.prepare for the options.
+	def browser(*patterns, gemfile: nil, **, &app)
+		Quickdraw::Browser.configure(self, patterns, gemfile:, app:, **)
+	end
+
 	# Seconds before a test times out, or nil for never. A test can set its own
 	# with `test("…", timeout: 5)`.
 	attr_accessor :timeout

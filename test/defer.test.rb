@@ -45,6 +45,21 @@ class DeferTest < Quickdraw::Test
 		assert_equal order, [:teardown, :nested]
 	end
 
+	test "runs blocks deferred during cleanup" do
+		order = []
+
+		assert_test(passes: 1) do
+			defer do
+				order << :first
+				defer { order << :nested }
+			end
+
+			assert true
+		end
+
+		assert_equal order, [:first, :nested]
+	end
+
 	test "reports an error in a deferred block and still runs the others" do
 		ran = false
 

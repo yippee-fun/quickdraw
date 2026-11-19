@@ -234,10 +234,10 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 - **Other per-worker resources:**
   - Active Storage and cache directories (`tmp/storage-3`);
   - Redis database numbers or key prefixes;
-  - Capybara and Puma ports;
+  - Capybara ports (Puma's are done, by `config.browser`);
   - Elasticsearch/OpenSearch index prefixes;
   - each through a documented hook built on `QUICKDRAW_WORKER`.
-- **System tests:** a Puma server per worker on its own port, with Playwright browsers owned by the coordinator (see Browser testing).
+- **System tests** (done, by `config.browser { Rails.application }`; see Browser testing): a Puma server in each worker's threads, sharing the test's pinned transaction, so the page sees its records. Still to do: Rails' `ActionDispatch::SystemTestCase` suites.
 - **Framework-aware reporting:**
   - SQL queries and time per test, from Active Support notifications (done), and likely N+1 queries;
   - factory_bot factories run per test (done);
@@ -289,14 +289,16 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 
 ## Browser testing
 
-- **Built on Playwright:** Chromium, Firefox and WebKit, locators that wait automatically, and native traces.
-- **The coordinator owns the browsers.** It starts Playwright browser servers before tests begin and gives each worker a connection URL. Workers never pay browser startup, and browser processes never inherit user code.
-- **Isolation is a fresh browser context per test** (like incognito) rather than a new browser: milliseconds instead of seconds.
-- Each worker gets its own app server port and database, from the same per-worker setup as everything else.
-- **Waiting assertions** that retry until a timeout (e.g. "page has text"), plus a warning on `sleep` in browser tests, to remove the main source of flakiness.
-- **Failure artifacts:** screenshot, DOM snapshot, console log, network log and a Playwright trace. Full traces or video recorded only when a test is retried.
+- **Built on Playwright** (done): `config.browser("test/system/**/*.test.rb") { app }` runs the matching files in a `browser` group, which loads playwright-ruby-client and Puma, and tests `include Quickdraw::Browser` for `page`, `visit` and the assertions below (`lib/quickdraw/browser.rb`). Chromium, Firefox and WebKit, and Playwright's own locators that wait automatically. Still to do: native traces, and a test helper for each engine's install (`npx playwright install`).
+- **A browser per worker** (done), rather than the coordinator owning browser servers as first planned. Measured with Chromium's headless shell on an M-series Mac, a worker starts the driver in ~140ms and launches the browser in ~100–130ms, in the background while it loads test files; connecting to a shared `launch-server` takes ~50ms, but every worker's pages then share one browser process. Per test (a context, a page, a click and two waits), the shared browser was as fast or faster with 1–4 workers (83ms against 86ms, 99ms against 112ms) and slower with 8 (200ms against 153ms), so a browser per worker scales better with cores. It also keeps the coordinator free of browser code. (Measured on a busy machine; worth repeating.) The driver must match the gem's version exactly (a mismatched one fails with protocol errors), so the default is `npx playwright@<the gem's version>`, and a failure to start explains a mismatch.
+- **Isolation is a fresh browser context per test** (done), like incognito: a context takes ~1ms but its page ~30ms (a renderer process), the bulk of a browser test's overhead. Each worker opens the next test's page while a test runs, so a test that takes 30ms or more of its own waits ~1ms for its page; back-to-back trivial tests still wait ~30ms (measured 200 `visit` + `assert_text` tests with 1 worker: 9.5s without the spare page, 6.7s with one, 5.1s with two; two didn't help with 4 or more workers, which compete for the CPU, so there's one). Closing a context takes ~1.5ms. The summary counts `pages` per test with the time spent waiting for them.
+- Each worker gets its own app server (done): Puma in the worker's threads on any free port (or `port:` plus the worker's number), sharing the test's pinned transaction under `config.rails`. A test waits for the app to finish serving its page's requests (through `rack.response_finished`, so after the body and completion callbacks) before its transaction rolls back, and raises what the app raised while serving them, from Puma's `lowlevel_error_handler`. A request still running after the timeout stops the worker's later browser tests, since it may write outside any transaction. Still to do: without fork, every group's setup runs, so a run with no browser tests still loads Playwright; and concurrent runs in one checkout share `.quickdraw/browser/`, as they share history.
+- **Waiting assertions** (done): `assert_text`, `refute_text`, `assert_selector` and `refute_selector`, built on Playwright's `expect`, which retries in the browser rather than polling from Ruby. Failures show Playwright's call log and the page's accessibility tree. `sleep` in a browser test warns (in the test's output) and is counted (`sleeps` in the summary). Still to do: URL and title assertions, and showing the warning for passing tests too.
+- **Failure artifacts** (done): a screenshot, the HTML and the console log (with uncaught errors) in `.quickdraw/browser/`, saved when the test first fails or errors, while its page is open, and shown with the failure message or error details. The directory is emptied when the group boots. Still to do: network log and a Playwright trace; full traces or video recorded only when a test is retried; artifacts for a test that times out, since the watchdog exits the worker.
 - Run the same browser tests against several engines in one run, as groups.
-- **AI output:** the accessibility tree and the relevant DOM around the failed element, not just a screenshot path.
+- **AI output:** the accessibility tree and the relevant DOM around the failed element, not just a screenshot path. A waiting assertion's failure already includes Playwright's accessibility snapshot of what it waited on.
+- **Testing this:** `test/integration/browser.test.rb` needs playwright-ruby-client and Puma installed (outside Quickdraw's bundle), a matching driver and a browser, and skips with the reason otherwise; `PLAYWRIGHT_CLI_EXECUTABLE_PATH` and `QUICKDRAW_TEST_CHROMIUM` point it at them. CI doesn't run them yet.
+- **Known gems' issues:** playwright-ruby-client hangs reading the driver in the C locale, so browser workers set `Encoding.default_external` to UTF-8.
 - **Debugging:** `--headed` and pause-on-failure, which run that test serially with a visible browser.
 - Visual snapshot comparison, built on snapshot testing.
 - **Compatibility:** existing Capybara suites keep working with their current drivers; the Playwright driver gets the full feature set.
@@ -323,6 +325,6 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 5. Quickdraw's own syntax and failure output: `describe` blocks, skipped and pending tests, structured diffs, the failing source line (done). Still to do: a fuller assertion set.6. Flaky detection, order bisection, leak detection.
 7. Coverage, impact analysis, interactive watch mode, sharding.
 8. Suite profiling: always-on timings and GC/CPU counters per test phase, then profile mode with the shared-cost report.
-9. Browser testing.
+9. Browser testing: Playwright pages, per-worker browsers and app servers, waiting assertions and failure artifacts (done). Still to do: traces, `--headed`, several engines in one run, Capybara compatibility.
 10. Property-based testing (done), then mutation testing (done), then fuzzing.
-11. A nicer-looking CLI and reports. Done: problems open with a FAIL, ERROR or FLAKY badge and the test's name, show the failing line in a numbered code frame (for errors, the first line of the project's code in the backtrace), short values as aligned Expected and Actual lines, and diffs under a coloured legend; the summary has labelled rows and ends with a PASSED or FAILED badge; help wraps to the terminal with highlighted options. Still to do: the live display while tests run, and the other commands' output (history, flaky, bisect, doctor).
+11. A nicer-looking CLI and reports. Done: problems open with a FAIL, ERROR or FLAKY badge and the test's name, show the failing line in a numbered code frame (for errors, the first line of the project's code in the backtrace), short values as aligned Expected and Actual lines, and diffs under a coloured legend; the summary leads with a PASSED or FAILED badge; help wraps to the terminal with highlighted options; history, flaky, bisect, doctor and mutate share the style. Still to do: the live display while tests run.
