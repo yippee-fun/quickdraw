@@ -1,7 +1,15 @@
 # frozen_string_literal: true
 
 Quickdraw.configure do |config|
-	# config here
+	# Rails' test helpers, without an app. Only CRuby's bundle has Rails.
+	config.group :rails, "test/rails/**/*.test.rb" do
+		require "active_job"
+		require "action_mailer"
+		ActiveJob::Base.logger = Logger.new(nil)
+		ActionMailer::Base.delivery_method = :test
+	rescue LoadError
+		nil
+	end
 end
 
 class Runner
@@ -39,10 +47,10 @@ class Runner
 end
 
 class Quickdraw::Test
-	def assert_test(passes: 0, failures: 0, errors: 0, &block)
+	def assert_test(passes: 0, failures: 0, errors: 0, test_class: Quickdraw::Test, &block)
 		runner = Runner.new
 
-		Quickdraw::Test.new(description: nil, block:, runner:).run
+		test_class.new(description: nil, block:, runner:).run
 
 		assert_equal runner.successes, passes
 		assert_equal runner.failures.size, failures

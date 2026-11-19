@@ -40,9 +40,11 @@ class Quickdraw::Configuration
 	end
 
 	# Boots the Rails app in config/environment.rb (or `environment`) for tests,
-	# with a database for each worker and each test in a transaction. See Quickdraw::Rails.
-	def rails(environment: "config/environment")
-		Quickdraw::Rails.setup(self, environment:)
+	# with a database for each worker and each test in a transaction. Every test
+	# gets `fixtures` (:all, or a list of sets) from `fixture_paths`, as if
+	# Quickdraw::BasicTest declared them. See Quickdraw::Rails.
+	def rails(environment: "config/environment", fixtures: nil, fixture_paths: ["test/fixtures"])
+		Quickdraw::Rails.setup(self, environment:, fixtures: fixtures && Array(fixtures), fixture_paths:)
 	end
 
 	# Seconds before a test times out, or nil for never. A test can set its own

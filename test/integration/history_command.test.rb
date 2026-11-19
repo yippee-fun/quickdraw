@@ -64,7 +64,8 @@ class HistoryCommandTest < Quickdraw::Test
 		assert(result.success?) { result.output }
 		assert_includes result.stdout, "Recent runs"
 		assert_match result.stdout, /✓ +\d+s ago  2 tests +\S+  2 workers \(manual\) · seed \d+\n  ✓ +\d+s ago  2 tests +\S+  1 worker \(manual\)/
-		assert_match result.stdout, /Slowest tests\n +\S+ +\S+  slow  A · a\.test\.rb:3\n +\S+ +\S+  fast  A · a\.test\.rb:2\n/
+		# A test far faster than the slowest has too short a bar to draw.
+		assert_match result.stdout, /Slowest tests\n +\S+ +\S+  slow  A · a\.test\.rb:3\n +(?:\S+ +)?\S+  fast  A · a\.test\.rb:2\n/
 		refute_includes result.stdout, "Flaky tests"
 	end
 

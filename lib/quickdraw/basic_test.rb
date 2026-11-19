@@ -136,17 +136,22 @@ class Quickdraw::BasicTest
 	ensure
 		# Cleanup carries on after Ctrl-C, which then stops the worker.
 		interrupted = nil
-		# Taken, so an around_test that runs the test again doesn't repeat them.
-		cleanups = [-> { @runner.measure("teardown") { teardown } }, *@deferred&.reverse]
-		@deferred = nil
+		cleanups = [-> { @runner.measure("teardown") { teardown } }]
 
-		cleanups.each do |cleanup|
-			cleanup.call
-		rescue Exception => error
-			case error
-			in Quickdraw::Interrupted then interrupted = error
-			else error!(error)
+		# Deferred blocks are taken, so an around_test that runs the test again
+		# doesn't repeat them, including those teardown and cleanup defer.
+		until cleanups.empty?
+			cleanups.each do |cleanup|
+				cleanup.call
+			rescue Exception => error
+				case error
+				in Quickdraw::Interrupted then interrupted = error
+				else error!(error)
+				end
 			end
+
+			cleanups = @deferred&.reverse || []
+			@deferred = nil
 		end
 
 		raise interrupted if interrupted

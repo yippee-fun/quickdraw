@@ -219,6 +219,89 @@ module Quickdraw::Assertions
 		failure! { "expected block not to raise, but #{error.class.inspect} was raised" }
 	end
 
+	# Passes if the block changes the value of `expression`, which is called
+	# before and after it, by `difference`: `assert_difference(-> { User.count }) { … }`.
+	# For several expressions, an Array of them, or a Hash of each to its
+	# difference: `assert_difference(-> { User.count } => 1, -> { Post.count } => -1) { … }`.
+	# Returns what the block returns.
+	def assert_difference(expression, difference = 1)
+		differences = case expression
+			in Hash then expression
+			in Array then expression.to_h { |it| [it, difference] }
+			else { expression => difference }
+		end
+
+		before = differences.keys.map { |it| Quickdraw::Assertions.evaluate(it) }
+		result = yield
+
+		differences.each_with_index do |(expression, difference), index|
+			after = expression.call
+
+			# Rather than subtracting, which for floats can differ by a rounding error.
+			assert(after == before[index] + difference) do
+				"expected #{Quickdraw::Assertions.describe(expression)} to change by #{difference.inspect}, but it changed by #{(after - before[index]).inspect}, from #{before[index].inspect} to #{after.inspect}"
+			end
+		end
+
+		result
+	end
+
+	def assert_no_difference(expression, &)
+		raise ::ArgumentError, "assert_no_difference takes an expression or an Array of them, not a Hash." if Hash === expression
+
+		assert_difference(expression, 0, &)
+	end
+
+	# Passes if the block changes the value of `expression`, which is called
+	# before and after it, and the values before and after match `from` and `to`
+	# (with ===), if given. Returns what the block returns.
+	def assert_changes(expression, from: Quickdraw::Null, to: Quickdraw::Null)
+		before = Quickdraw::Assertions.evaluate(expression)
+		result = yield
+		after = expression.call
+
+		if !Quickdraw::Null.equal?(from) && !(from === before)
+			failure! { "expected #{Quickdraw::Assertions.describe(expression)} to change from #{from.inspect}, but it was #{before.inspect}" }
+		elsif before == after
+			failure! { "expected #{Quickdraw::Assertions.describe(expression)} to change, but it stayed #{before.inspect}" }
+		elsif !Quickdraw::Null.equal?(to) && !(to === after)
+			failure! { "expected #{Quickdraw::Assertions.describe(expression)} to change to #{to.inspect}, but it changed to #{after.inspect}" }
+		else
+			success!
+		end
+
+		result
+	end
+
+	def assert_no_changes(expression, from: Quickdraw::Null)
+		before = Quickdraw::Assertions.evaluate(expression)
+		result = yield
+		after = expression.call
+
+		if !Quickdraw::Null.equal?(from) && !(from === before)
+			failure! { "expected #{Quickdraw::Assertions.describe(expression)} to be #{from.inspect}, but it was #{before.inspect}" }
+		elsif before != after
+			failure! { "expected #{Quickdraw::Assertions.describe(expression)} not to change, but it changed from #{before.inspect} to #{after.inspect}" }
+		else
+			success!
+		end
+
+		result
+	end
+
+	# Module functions, so they aren't methods of tests.
+	def self.evaluate(expression)
+		raise ::ArgumentError, "Expected something to call, such as -> { User.count }, not #{expression.inspect}." unless expression.respond_to?(:call)
+
+		expression.call
+	end
+
+	# Where a Proc is defined, as its source isn't available.
+	def self.describe(expression)
+		path, line = (Proc === expression) && expression.source_location
+		path ? "the value at #{path.delete_prefix("#{Quickdraw::ROOT}/")}:#{line}" : expression.inspect
+	end
+
 	def assert_same(actual, expected)
 		assert actual.equal?(expected) do
 			"expected #{actual.inspect} to be the same object as #{expected.inspect}"

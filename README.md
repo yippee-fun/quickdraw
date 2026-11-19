@@ -205,7 +205,49 @@ Quickdraw.configure(&:rails)
 - Each test runs in a transaction on every database, rolled back afterwards. Threads the test starts share it.
 - The summary shows SQL queries and factory_bot factories per test, and their time.
 
-Fixtures and Rails' test helpers aren't supported yet.
+### Fixtures
+
+```ruby
+Quickdraw.configure { |config| config.rails(fixtures: :all) }
+```
+
+That gives every test the fixtures in `test/fixtures` (or `fixture_paths:`). A test class can ask for sets of its own instead:
+
+```ruby
+class UserTest < Quickdraw::Test
+  fixtures :users, :posts
+
+  test "has posts" do
+    assert_equal users(:ada).posts, [posts(:hello)]
+  end
+end
+```
+
+- Each set loads once into each worker's databases, committed, and tests see it through their transactions, as with Rails' transactional fixtures. A test that commits loads the fixtures again.
+- A later run keeps the sets whose files (with ERB rendered) are unchanged, rather than loading them again. Rows added or removed since, or the schema changing, load them again, but rows another process changed in place are kept. The times Rails fills in (`created_at`) move to when the worker started, as if they'd just loaded; sets with dates it filled in (`created_on`) load again the next day.
+- A database keeps every set loaded into it, so, as in Rails, a test can see fixtures it didn't ask for.
+
+### Test helpers
+
+```ruby
+class SignupTest < Quickdraw::Test
+  include Quickdraw::Rails::TimeHelpers   # travel_to, travel, freeze_time
+  include Quickdraw::Rails::JobHelpers    # assert_enqueued_with, perform_enqueued_jobs, …
+  include Quickdraw::Rails::MailerHelpers # assert_emails, capture_emails, and the job helpers
+
+  test "sends a welcome email" do
+    travel_to Time.utc(2030)
+
+    assert_difference(-> { User.count }) do
+      assert_emails(1) { Signup.call(email: "ada@example.com") }
+    end
+  end
+end
+```
+
+They're Rails' own, and their assertions count as the test's. Time travels back, jobs go back to their adapter and sent emails are cleared after each test, even one that fails. `JobHelpers` and `MailerHelpers` set up in `setup`, so a test's own `setup` must call `super`.
+
+`assert_difference`, `assert_no_difference`, `assert_changes` and `assert_no_changes` work in any test, and take something to call, such as a lambda, rather than a string.
 
 ## Commands
 

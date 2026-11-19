@@ -30,6 +30,21 @@ class DeferTest < Quickdraw::Test
 		assert_equal ran, [:failed, :raised]
 	end
 
+	test "runs blocks that teardown and deferred blocks defer" do
+		order = []
+
+		test_class = Class.new(Quickdraw::Test) do
+			define_method(:teardown) { defer { order << :teardown } }
+		end
+
+		assert_test(passes: 1, test_class:) do
+			defer { defer { order << :nested } }
+			assert true
+		end
+
+		assert_equal order, [:teardown, :nested]
+	end
+
 	test "reports an error in a deferred block and still runs the others" do
 		ran = false
 

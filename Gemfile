@@ -16,6 +16,8 @@ if RUBY_ENGINE == "ruby"
 	group :test do
 		gem "railties", "~> 8.1"
 		gem "activerecord", "~> 8.1"
+		gem "activejob", "~> 8.1"
+		gem "actionmailer", "~> 8.1"
 	end
 end
 
