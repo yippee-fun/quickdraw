@@ -4,25 +4,21 @@ class Quickdraw::CLI
 	DEFAULT_PATTERN = "**/*.test.rb"
 	IGNORED_DIRECTORIES = %r{\A(?:vendor|node_modules|tmp)/}
 	HISTORY_PATH = ".quickdraw/history.sqlite3"
-	FORMATS = ["human", "agent", "json"].freeze
+	FORMATS = ["human", "agent", "json", "junit"].freeze
+	# Formats that other programs read, which what tests print would corrupt.
+	MACHINE_FORMATS = ["json", "junit"].freeze
 	MAX_SEED = (2 ** 63) - 1
-
-	LISTENER = <<~RUBY
-		require "listen"
-		$stdout.sync = true
-		# The default FSEvents latency adds ~100ms to every change. Quickdraw's own
-		# history, and any files passed as arguments (such as JUnit output), must
-		# not trigger another run.
-		ignored = [%r{\\A\\.quickdraw/}, *ARGV.map { |path| /\\A\#{Regexp.escape(path)}\\z/ }]
-		Listen.to(".", latency: 0.01, wait_for_delay: 0.01, ignore: ignored) { puts "changed" }.start
-		sleep
-	RUBY
 
 	def initialize(args)
 		@args = args
 	end
 
 	def call
+		# A file or directory with a command's name is still run as tests.
+		if (name = @args.first) && !File.exist?(name) && (command = Quickdraw::Commands.find(name))
+			exit(command.new(@args.drop(1)).call)
+		end
+
 		# optparse, etc and anything else needed to parse options load in a
 		# throwaway process so they don’t leak into the processes that run tests.
 		options = Quickdraw.isolate { parse }
@@ -49,8 +45,7 @@ class Quickdraw::CLI
 			fail_fast: false,
 			names: [],
 			excludes: [],
-			format: nil,
-			junit: nil,
+			outputs: [],
 		}
 
 		parser = option_parser(options)
@@ -59,6 +54,47 @@ class Quickdraw::CLI
 			parser.parse!(@args)
 		rescue OptionParser::ParseError => error
 			usage_error(*explain(parser, error))
+		end
+
+		options[:outputs].each do |format, _path|
+			next if FORMATS.include?(format)
+
+			suggestion = suggest(format, FORMATS)
+			usage_error "#{format} isn’t a format. Use #{FORMATS[...-1].join(', ')} or #{FORMATS.last}.", ("Did you mean #{suggestion}?" if suggestion)
+		end
+
+		options[:outputs].map! do |format, path|
+			next [format, nil] unless path
+
+			usage_error "--format #{format}: needs a file after the colon." if path.empty?
+			path = File.expand_path(path)
+			usage_error "#{path} is a directory, so a report can’t be written to it." if File.directory?(path)
+
+			require "fileutils"
+			FileUtils.mkdir_p(File.dirname(path))
+			writable = File.writable?(File.dirname(path)) && (!File.exist?(path) || File.writable?(path))
+			usage_error "Can’t write to #{path}." unless writable
+
+			[format, path]
+		rescue SystemCallError => error
+			usage_error "Can’t write to #{path} (#{error.message})."
+		end
+
+		if options[:outputs].count { |_format, path| path.nil? } > 1
+			usage_error "Only one format can write to the terminal.", "Give the others a file, as in --format json:report.json."
+		end
+
+		paths = options[:outputs].filter_map(&:last)
+		if (duplicate = paths.find { |path| paths.count(path) > 1 })
+			usage_error "More than one format would write to #{duplicate}."
+		end
+
+		if options[:watch] && options[:outputs].any? { |format, path| format == "junit" && path.nil? }
+			usage_error "--watch would write a JUnit document to the terminal on every run.", "Give it a file, as in --format junit:junit.xml."
+		end
+
+		if options[:outputs].none? { |_format, path| path.nil? }
+			options[:outputs].unshift([Quickdraw::Reporters.agent? ? "agent" : "human", nil])
 		end
 
 		if [options[:processes], options[:max], options[:efficiency]].count(&:itself) > 1
@@ -120,9 +156,10 @@ class Quickdraw::CLI
 		options
 	end
 
-	private def option_parser(options)
+	# Public for shell completions, which read its switches.
+	def option_parser(options = {})
 		OptionParser.new do |parser|
-			parser.banner = "#{bold('Usage:')} #{Quickdraw::Reporters.command} [options] [files, directories, globs or file:line …]"
+			parser.banner = "#{bold('Usage:')} #{Quickdraw::Reporters.command} [options] [files, directories, globs or file:line …]\n       #{Quickdraw::Reporters.command} COMMAND [arguments]"
 			parser.summary_width = 24
 			parser.separator ""
 			parser.separator "Runs tests across every core. With no paths, runs #{DEFAULT_PATTERN}."
@@ -153,12 +190,13 @@ class Quickdraw::CLI
 			parser.separator ""
 			parser.separator bold("Output")
 
-			parser.on("--format FORMAT", FORMATS, "#{FORMATS.join(', ')} (default: agent under AI coding agents, otherwise human)") do |it|
-				options[:format] = it
-			end
-
-			parser.on("--junit PATH", "Also write JUnit XML to PATH") do |it|
-				options[:junit] = File.expand_path(it)
+			parser.on(
+				"--format FORMAT[:PATH]",
+				"#{FORMATS.join(', ')}, to the terminal or to PATH. Repeat for more than one",
+				"(default: agent under AI coding agents, otherwise human)",
+			) do |it|
+				format, path = it.split(":", 2)
+				options[:outputs] << [format, path]
 			end
 
 			parser.on("-t", "--timings", "List the slowest tests and files") do
@@ -216,6 +254,13 @@ class Quickdraw::CLI
 			width = examples.map { |example, _| example.size }.max
 
 			parser.separator ""
+			parser.separator bold("Commands")
+
+			Quickdraw::Commands::LIST.each do |name, _constant, arguments, summary|
+				parser.separator "    #{"#{name}#{arguments}".ljust(parser.summary_width)} #{summary}"
+			end
+
+			parser.separator ""
 			parser.separator bold("Examples")
 			examples.each { |example, description| parser.separator "    #{example.ljust(width)}  #{dim(description)}" }
 
@@ -255,9 +300,6 @@ class Quickdraw::CLI
 			["#{name} needs a value, as in #{name}#{switch&.arg}."]
 		in OptionParser::NeedlessArgument
 			["#{name} doesn’t take a value."]
-		in OptionParser::InvalidArgument if name == "--format"
-			suggestion = suggest(value, FORMATS)
-			["#{value} isn’t a format. Use #{FORMATS[...-1].join(', ')} or #{FORMATS.last}.", ("Did you mean #{suggestion}?" if suggestion)]
 		in OptionParser::InvalidArgument
 			["#{name} takes a whole number, not #{value.inspect}."]
 		else
@@ -339,6 +381,12 @@ class Quickdraw::CLI
 			warn "No tests are failing in the run history." if files.empty?
 		end
 
+		# From watch mode's path filter.
+		if (text = options[:path_contains])
+			files = files.select { |path| path.include?(text) }
+			warn "No test files have #{text} in their path." if files.empty?
+		end
+
 		# Keyed by each file's expanded path, as the coordinator knows it.
 		lines = files.each_with_object({}) do |path, by_path|
 			by_path[File.expand_path(path)] = options[:lines][File.realpath(path)] if options[:lines].key?(File.realpath(path))
@@ -356,15 +404,17 @@ class Quickdraw::CLI
 				*options[:names].map { |name| "--name #{name}" },
 				*options[:excludes].map { |name| "--exclude #{name}" },
 				("--failed" if options[:failed]),
+				("path contains #{options[:path_contains]}" if options[:path_contains]),
+				*options[:required_names]&.map { |name| "name matches #{name}" },
 			].compact.inspect,
 			filter: Quickdraw::Filter.new(
 				lines:,
 				names: options[:names].map { |name| Quickdraw::Filter::NamePattern.parse(name) },
+				required_names: (options[:required_names] || []).map { |name| Quickdraw::Filter::NamePattern.parse(name) },
 				excludes: options[:excludes].map { |name| Quickdraw::Filter::NamePattern.parse(name) },
 			),
 			fail_fast: options[:fail_fast],
-			# What tests print would corrupt a JSON stream, so it goes to stderr.
-			test_output_to_stderr: output_format(options) == "json",
+			test_output_to_stderr: machine_readable?(options),
 			seed: options[:seed],
 			reporter: reporter(options),
 			history_path: (HISTORY_PATH if options[:history]),
@@ -373,25 +423,27 @@ class Quickdraw::CLI
 		).call
 	end
 
-	private def output_format(options)
-		options[:format] || (Quickdraw::Reporters.agent? ? "agent" : "human")
+	# Whether the terminal gets a format another program reads.
+	private def machine_readable?(options)
+		options[:outputs].any? { |format, path| path.nil? && MACHINE_FORMATS.include?(format) }
 	end
 
 	private def reporter(options)
-		format = output_format(options)
+		reporters = options[:outputs].map do |format, path|
+			io = path ? File.open(path, "w") : $stdout
 
-		primary = case format
-		in "human" then Quickdraw::Reporters::Human.new(backtrace: options[:backtrace], timings: options[:timings])
-		in "agent" then Quickdraw::Reporters::Agent.new(backtrace: options[:backtrace])
-		in "json" then Quickdraw::Reporters::JSON.new
+			case format
+			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings])
+			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace])
+			in "json" then Quickdraw::Reporters::JSON.new(io:)
+			in "junit" then Quickdraw::Reporters::JUnit.new(io:)
+			end
 		end
 
-		reporters = [primary]
-		# Annotations go to stdout, so they'd corrupt a JSON stream.
-		reporters << Quickdraw::Reporters::GitHubActions.new if Quickdraw::Reporters::GitHubActions.active? && format != "json"
-		reporters << Quickdraw::Reporters::JUnit.new(path: options[:junit]) if options[:junit]
+		# Annotations go to the terminal.
+		reporters << Quickdraw::Reporters::GitHubActions.new if Quickdraw::Reporters::GitHubActions.active? && !machine_readable?(options)
 
-		(reporters.size == 1) ? primary : Quickdraw::Reporters::Multiple.new(reporters)
+		(reporters.size == 1) ? reporters.first : Quickdraw::Reporters::Multiple.new(reporters)
 	end
 
 	# Read in a throwaway process, since the loader forks from this one and
@@ -435,26 +487,12 @@ class Quickdraw::CLI
 	end
 
 	private def watch(options)
-		# Files Quickdraw itself writes in the project mustn't trigger another run.
-		ignored = [options[:junit]].compact.filter_map do |path|
-			relative = path.delete_prefix("#{Dir.pwd}/")
-			relative unless relative == path
-		end
-
-		listener = IO.popen([RbConfig.ruby, "-e", LISTENER, *ignored])
-
-		run_in_fork(options)
-		listener.each_line { run_in_fork(options) }
-		listener.close
-		abort "The file watcher stopped (#{$?})." unless $?.success?
-	ensure
-		Process.kill("TERM", listener.pid) if listener && !listener.closed?
+		watch = Quickdraw::Watch.new(options, for_people: !machine_readable?(options)) { |run_options| run_in_fork(run_options) }
+		exit(watch.call)
 	end
 
 	private def run_in_fork(options)
 		pid = Process.fork do
-			print "\e[H\e[2J" unless output_format(options) == "json"
-
 			# A file given as an argument may have been deleted since the last run.
 			options[:patterns].each do |pattern|
 				usage_error(*missing_path(pattern)) if test_files([pattern]).empty?
@@ -463,6 +501,6 @@ class Quickdraw::CLI
 			exit(run(options).exit_status)
 		end
 
-		Process.wait(pid)
+		Process.wait2(pid).last
 	end
 end

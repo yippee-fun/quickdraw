@@ -20,7 +20,26 @@ class CLITest < Quickdraw::Test
 		match { passing.run("--fail") => { stderr: /Did you mean --failed or --fail-fast\?/ } }
 		match { passing.run("-p", "abc") => { stderr: /--processes takes a whole number, not "abc"\./ } }
 		match { passing.run("-p") => { stderr: /--processes needs a value, as in --processes N\./ } }
-		match { passing.run("--format", "jsn") => { stderr: /jsn isn’t a format\. Use human, agent or json\.\nDid you mean json\?/ } }
+		match { passing.run("--format", "jsn") => { stderr: /jsn isn’t a format\. Use human, agent, json or junit\.\nDid you mean json\?/ } }
+		match { passing.run("--format", "json", "--format", "agent") => { stderr: /Only one format can write to the terminal\./ } }
+	end
+
+	test "explains report destinations it can't use", timeout: 20 do
+		project = project("a.test.rb" => "", "reports/.keep" => "")
+
+		match { project.run("--format", "json:r", "--format", "junit:./r") => { stderr: %r{More than one format would write to .*/r\.\n} } }
+		match { project.run("--format", "json:reports") => { stderr: /reports is a directory, so a report can’t be written to it\./ } }
+		match { project.run("--format", "json:") => { stderr: /--format json: needs a file after the colon\./ } }
+		match { project.run("--watch", "--format", "junit") => { stderr: /--watch would write a JUnit document to the terminal on every run\./ } }
+	end
+
+	test "writes several formats at once, with the default on the terminal", timeout: 20 do
+		project = passing
+		result = project.run("-p", "1", "--no-history", "--format", "json:out.json", "--format", "junit:reports/junit.xml")
+
+		match { result => { summary: /\A1 test · 1 assertion/ } }
+		assert_includes File.read(File.join(project.directory, "out.json")), %("event":"finish")
+		assert_includes File.read(File.join(project.directory, "reports/junit.xml")), %(tests="1")
 	end
 
 	test "runs the test files in a directory, and suggests one for a typo", timeout: 20 do

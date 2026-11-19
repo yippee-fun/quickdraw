@@ -167,17 +167,54 @@ class Quickdraw::History
 	Record = Data.define(:key, :path, :test, :result, :worker, :sequence)
 	KnownTest = Data.define(:id, :path, :line, :average_duration)
 
-	def initialize(path)
+	RunSummary = Data.define(:finished_at, :seed, :processes, :worker_choice, :git_sha, :git_branch, :duration, :tests, :failed, :errored, :passed)
+	SlowTest = Data.define(:path, :line, :class_name, :description, :average_duration)
+	FlakyTest = Data.define(:path, :line, :class_name, :description, :runs, :failures)
+
+	FLAKY_TESTS = <<~SQL
+		WITH recent AS (
+			SELECT results.test_id, runs.git_sha, results.status IN ('failed', 'errored', 'crashed') AS failed
+			FROM results JOIN runs ON runs.id = results.run_id
+			WHERE results.run_id IN (SELECT id FROM runs ORDER BY id DESC LIMIT ?)
+				AND results.status IN ('passed', 'failed', 'errored', 'crashed')
+		),
+		-- GROUP BY puts runs without a git_sha together.
+		flaky AS (
+			SELECT DISTINCT test_id FROM recent
+			GROUP BY test_id, git_sha
+			HAVING MIN(failed) = 0 AND MAX(failed) = 1
+		)
+		SELECT tests.path, tests.line, tests.class_name, tests.description, COUNT(*) AS runs, SUM(recent.failed) AS failures
+		FROM recent JOIN tests ON tests.id = recent.test_id
+		WHERE recent.test_id IN (SELECT test_id FROM flaky)
+		GROUP BY recent.test_id
+		ORDER BY failures DESC, tests.path, tests.line
+	SQL
+
+	# Read-only, it never creates, migrates or rebuilds the history, so looking
+	# at it can't lose it. That's for reading only, as `quickdraw history` does.
+	def initialize(path, read_only: false)
 		require "sqlite3"
 		require "json"
 		require "fileutils"
+		require "time"
 
-		# git takes ~15ms, so it runs while the tests do.
-		@revision = Thread.new { git_revision }
 		@path = path
 
-		FileUtils.mkdir_p(File.dirname(path))
-		connect
+		if read_only
+			@db = SQLite3::Database.new(path, readonly: true)
+			@db.busy_timeout = 5000
+			tables = @db.execute("SELECT name FROM sqlite_schema WHERE type = 'table'").flatten
+
+			unless @db.get_first_value("PRAGMA user_version") == SCHEMA_VERSION && (TABLES - tables).empty?
+				raise Error, "it was recorded by a different version of Quickdraw, and the next run will replace it"
+			end
+		else
+			# git takes ~15ms, so it runs while the tests do.
+			@revision = Thread.new { git_revision }
+			FileUtils.mkdir_p(File.dirname(path))
+			connect
+		end
 	rescue LoadError, SystemCallError, SQLite3::Exception => error
 		raise Error, error.message
 	end
@@ -263,6 +300,37 @@ class Quickdraw::History
 	# Paths of files that failed to load the last time a run tried them.
 	def unloadable_files
 		@db.execute("SELECT path FROM files WHERE load_error IS NOT NULL").flatten
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
+	# The most recent runs of any selection, newest first.
+	def runs(limit:)
+		@db.execute(<<~SQL, [limit]).map do |finished_at, seed, processes, worker_choice, git_sha, git_branch, duration, tests, failed, errored, passed|
+			SELECT finished_at, seed, processes, worker_choice, git_sha, git_branch, duration, tests, failed, errored, passed
+			FROM runs ORDER BY id DESC LIMIT ?
+		SQL
+			RunSummary.new(finished_at: Time.iso8601(finished_at), seed:, processes:, worker_choice:, git_sha:, git_branch:, duration:, tests:, failed:, errored:, passed: passed == 1)
+		end
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
+	# The tests with the longest average duration, longest first.
+	def slowest_tests(limit:)
+		@db.execute(<<~SQL, [limit]).map { |row| SlowTest.new(*row) }
+			SELECT path, line, class_name, description, average_duration FROM tests
+			WHERE average_duration IS NOT NULL
+			ORDER BY average_duration DESC LIMIT ?
+		SQL
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
+	# Tests that both passed and failed on the same commit within the last
+	# `within` runs, with how many of those runs they ran and failed in.
+	def flaky_tests(within:)
+		@db.execute(FLAKY_TESTS, [within]).map { |row| FlakyTest.new(*row) }
 	rescue SQLite3::Exception => error
 		raise Error, error.message
 	end

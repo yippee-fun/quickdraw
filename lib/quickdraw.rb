@@ -16,6 +16,8 @@ module Quickdraw
 	LIB = __dir__
 
 	autoload :CLI, "quickdraw/cli"
+	autoload :Commands, "quickdraw/commands"
+	autoload :Watch, "quickdraw/watch"
 	autoload :Diff, "quickdraw/diff"
 	autoload :Inspector, "quickdraw/inspector"
 	autoload :Test, "quickdraw/test"

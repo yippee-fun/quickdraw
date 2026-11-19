@@ -35,7 +35,10 @@ module Integration
 		# output matches `interrupt_when`, sends Ctrl-C to every process, as a
 		# terminal does. With `tty: [rows, columns]`, runs on a terminal of that
 		# size, which both streams go to, so everything is in stdout.
-		def run(*arguments, env: {}, timeout: 10, interrupt_when: nil, tty: nil)
+		#
+		# A block is called with the output so far and the process's input about
+		# every 50ms, to interact with it as a person would.
+		def run(*arguments, env: {}, timeout: 10, interrupt_when: nil, tty: nil, &interact)
 			# Unset what Quickdraw sets in this test's own worker, or the environment
 			# this suite runs in (an AI agent, GitHub Actions, an option parser
 			# setting), so behaviour is only what the test asks for.
@@ -52,7 +55,7 @@ module Integration
 			}
 			command = [RbConfig.ruby, "-I", File.join(ROOT, "lib"), EXECUTABLE, *arguments]
 
-			pid, stdout_reader, stderr_reader = tty ? spawn_on_terminal(environment, command, *tty) : spawn(environment, command)
+			pid, stdout_reader, stderr_reader, input = tty ? spawn_on_terminal(environment, command, *tty) : spawn(environment, command)
 			readers = [stdout_reader, stderr_reader].compact
 			stdout = +""
 			stderr = +""
@@ -63,12 +66,13 @@ module Integration
 				if now - started_at > timeout
 					kill_group(pid)
 					Process.wait(pid)
-					raise "Quickdraw didn’t finish within #{timeout}s. Output so far:\n#{stdout}#{stderr}"
+					raise "Quickdraw didn’t finish within #{timeout}s. Output so far:\n#{Quickdraw.utf8("#{stdout}#{stderr}")}"
 				end
 
 				IO.select(readers, nil, nil, 0.05)
 				drain(stdout_reader, stdout)
 				drain(stderr_reader, stderr)
+				interact&.call(Quickdraw.utf8("#{stdout}#{stderr}"), input)
 
 				if interrupt_when && (interrupt_when.match?(stdout) || interrupt_when.match?(stderr))
 					Process.kill("INT", -pid)
@@ -87,17 +91,20 @@ module Integration
 		ensure
 			stdout_reader&.close
 			stderr_reader&.close
+			input&.close
 		end
 
 		private def spawn(environment, command)
 			stdout_reader, stdout_writer = IO.pipe
 			stderr_reader, stderr_writer = IO.pipe
-			pid = Process.spawn(environment, *command, chdir: @directory, out: stdout_writer, err: stderr_writer, pgroup: true)
+			stdin_reader, stdin_writer = IO.pipe
+			pid = Process.spawn(environment, *command, chdir: @directory, in: stdin_reader, out: stdout_writer, err: stderr_writer, pgroup: true)
 
-			[pid, stdout_reader, stderr_reader]
+			[pid, stdout_reader, stderr_reader, stdin_writer]
 		ensure
 			stdout_writer&.close
 			stderr_writer&.close
+			stdin_reader&.close
 		end
 
 		# The process leads a new session, so it has its own process group too.
@@ -108,9 +115,8 @@ module Integration
 
 			reader, writer, pid = PTY.spawn(environment, RbConfig.ruby, "-e", "Dir.chdir(ARGV.shift); exec(*ARGV)", @directory, *command)
 			reader.winsize = [rows, columns]
-			writer.close
 
-			[pid, reader, nil]
+			[pid, reader, nil, writer]
 		end
 
 		# A terminal raises EIO once the process has gone.

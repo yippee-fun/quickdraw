@@ -92,7 +92,7 @@ class FormatsTest < Quickdraw::Test
 			end
 		RUBY
 
-		json = project.run("-p", "1", "--no-history", "--format", "json", "--junit", "junit.xml")
+		json = project.run("-p", "1", "--no-history", "--format", "json", "--format", "junit:junit.xml")
 		match { JSON.parse(json.stdout.lines.last, symbolize_names: true) => { event: "finish", failed: 1, errored: 1 } }
 		assert_includes File.read(File.join(project.directory, "junit.xml")), %(<testsuites name="quickdraw" tests="2" failures="1" errors="1")
 	end
@@ -109,7 +109,7 @@ class FormatsTest < Quickdraw::Test
 			"fine.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
 		)
 
-		project.run("-p", "1", "--no-history", "--junit", "junit.xml")
+		project.run("-p", "1", "--no-history", "--format", "junit:junit.xml")
 		xml = File.read(File.join(project.directory, "junit.xml"))
 
 		assert_includes xml, %(<testsuites name="quickdraw" tests="2" failures="0" errors="1")
@@ -129,7 +129,7 @@ class FormatsTest < Quickdraw::Test
 	test "writes JUnit XML", timeout: 20 do
 		project = shapes
 		path = File.join(project.directory, "junit.xml")
-		project.run("-p", "1", "--no-history", "--junit", "junit.xml")
+		project.run("-p", "1", "--no-history", "--format", "junit:junit.xml")
 		xml = File.read(path)
 
 		assert_includes xml, %(<testsuites name="quickdraw" tests="3" failures="1" errors="1")

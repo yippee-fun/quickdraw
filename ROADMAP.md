@@ -143,7 +143,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 - **CI** (done):
   - no ANSI when output isn't a TTY or `NO_COLOR` is set;
   - under GitHub Actions, an annotation on the failing line for each problem, plus a job summary;
-  - `--junit PATH` writes JUnit XML.
+  - `--format junit:PATH` writes JUnit XML. Any format can go to a file, and `--format` repeats, so one run can write several (done).
   
   Still to do: an HTML report.
 - **AI agents** (done):
@@ -173,10 +173,15 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 - **Help** (done): options grouped by purpose, with examples and exit statuses. `--version`.
 - **Ctrl-C** (done): the first stops starting tests, lets running tests' teardown and deferred blocks finish, and reports what finished, counting the rest as not run. A second exits at once. Interrupted runs aren't recorded, so they can't mislead worker tuning.
 - **Live progress** (done): on a terminal, a bar on the bottom row, below a scroll region holding everything else, so what tests print can't collide with it. The total and time left come from the last run of the same selection. Problems are printed as they happen, with a one-line-per-problem recap at the end. Workers write output unbuffered, so a hanging test's output shows.
-- Several outputs at once (`--format human --format json:out.json`).
-- Shell completions for zsh, fish and bash, generated from the option definitions.
-- Interactive watch mode: keys to rerun all, failed only, filter by path or name.
-- Subcommands: `init`, `history`, `doctor`, `which` (the test file for a source file, from `exe/qc`), then `bisect`, `flaky` and `profile`.
+- **Shell completions** (done): `quickdraw completions bash|zsh|fish`, generated from the option definitions and commands, for both `quickdraw` and `qt`.
+- **Interactive watch mode** (done): a changed test file reruns on its own, and a changed source file reruns its counterpart's tests (everything when it has none). On a terminal, keys rerun everything, only failures, or tests filtered by path or name. Uses only core Ruby in the process tests fork from: listen runs in its own process, and keys are read with the terminal set by `stty`.
+- **Subcommands** (done):
+  - `init` creates config, an example test when there are none, and ignores `.quickdraw/` in git.
+  - `doctor` checks Ruby, fork, cores, file descriptors, test files, how long config takes to boot, run history, listen and `.gitignore`.
+  - `history` lists recent runs, the slowest tests, and flaky tests: those that passed and failed on the same commit. Still to do: uncommitted changes don't change the commit, so a test that fails while you edit and then passes looks flaky. Recording a hash of the working tree's diff with each run would fix it.
+  - `counterpart PATH` prints a source file's test or a test's source file; `exe/qc` opens it in `$EDITOR`.
+
+  Still to do: `bisect`, `flaky` and `profile`.
 - Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached.
 - The seed and worker sequences are always printed or recorded, so every run is reproducible.
 

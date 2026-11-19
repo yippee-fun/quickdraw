@@ -6,8 +6,8 @@
 class Quickdraw::Reporters::JUnit
 	include Quickdraw::Reporters::Formatting
 
-	def initialize(path:)
-		@path = path
+	def initialize(io: $stdout)
+		@io = io
 		@suites = Hash.new { |suites, file| suites[file] = [] }
 	end
 
@@ -41,7 +41,8 @@ class Quickdraw::Reporters::JUnit
 		xml << %(  <properties><property name="seed" value="#{@seed}"/></properties>\n)
 		xml << "</testsuites>\n"
 
-		File.write(@path, xml)
+		@io.write(xml)
+		@io.flush
 	end
 
 	private def counts(cases)

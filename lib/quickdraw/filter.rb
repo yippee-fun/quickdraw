@@ -29,15 +29,17 @@ class Quickdraw::Filter
 		end
 	end
 
-	# `lines` maps absolute paths to the lines asked for in them. `names` and
-	# `excludes` are NamePatterns.
-	def initialize(lines: {}, names: [], excludes: [])
+	# `lines` maps absolute paths to the lines asked for in them. `names`,
+	# `required_names` and `excludes` are NamePatterns. A test runs if it matches
+	# any of `names`, all of `required_names` and none of `excludes`.
+	def initialize(lines: {}, names: [], required_names: [], excludes: [])
 		@lines = lines
 		@names = names
+		@required_names = required_names
 		@excludes = excludes
 	end
 
-	def any? = @lines.any? || @names.any? || @excludes.any?
+	def any? = @lines.any? || @names.any? || @required_names.any? || @excludes.any?
 
 	def self.name_of(test)
 		[test["class_name"], test["description"]].compact.join(" › ")
@@ -54,7 +56,9 @@ class Quickdraw::Filter
 
 		indices.select do |index|
 			name = self.class.name_of(tests[index])
-			(@names.empty? || @names.any? { |pattern| pattern === name }) && @excludes.none? { |pattern| pattern === name }
+			(@names.empty? || @names.any? { |pattern| pattern === name }) &&
+				@required_names.all? { |pattern| pattern === name } &&
+				@excludes.none? { |pattern| pattern === name }
 		end
 	end
 
