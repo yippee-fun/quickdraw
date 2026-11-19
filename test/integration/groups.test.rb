@@ -57,6 +57,97 @@ class GroupsTest < Quickdraw::Test
 		assert_equal result.stdout.scan(/^browser worker (\d)$/).flatten.uniq.sort, ["0", "1"]
 	end
 
+	# The greeting gem is only in the group's bundle, from a path, so it needs
+	# neither a network nor gems installed beforehand.
+	def bundled_project(files = {}) = project(
+		"config/quickdraw.rb" => <<~RUBY,
+			Quickdraw.configure do |config|
+				config.group :greeting, "test/greeting/**/*.test.rb", gemfile: "test/greeting/Gemfile"
+			end
+		RUBY
+		"test/greeting/Gemfile" => "gem \"greeting\", path: \"../../gems/greeting\"\n",
+		"gems/greeting/greeting.gemspec" => <<~RUBY,
+			Gem::Specification.new do |spec|
+				spec.name = "greeting"
+				spec.version = "2.0.0"
+				spec.summary = "Greets"
+				spec.authors = ["Quickdraw"]
+				spec.files = ["lib/greeting.rb"]
+			end
+		RUBY
+		"gems/greeting/lib/greeting.rb" => "module Greeting; end\n",
+		**files,
+	)
+
+	test "a group with a Gemfile runs with that bundle, and only its tests see it", timeout: 30 do
+		skip "Gemfile groups need fork" unless Process.respond_to?(:fork)
+
+		result = bundled_project(
+			"test/greeting/hello.test.rb" => <<~RUBY,
+				class Hello < Quickdraw::Test
+					test("has its bundle") do
+						require "greeting"
+						assert_equal Gem.loaded_specs["greeting"].version.to_s, "2.0.0"
+						assert_equal Bundler.default_gemfile.to_s, File.expand_path("test/greeting/Gemfile")
+					end
+				end
+			RUBY
+			"test/model.test.rb" => "class Model < Quickdraw::Test; test('lacks it') { assert_raises(LoadError) { require 'greeting' } }; end\n",
+		).run("-p", "2", "--no-history", timeout: 30)
+
+		assert(result.success?) { result.output }
+		match { result => { summary: /\A2 tests · 3 assertions/ } }
+	end
+
+	test "bisect replays a group's tests with its bundle", timeout: 60 do
+		skip "Gemfile groups need fork" unless Process.respond_to?(:fork)
+
+		project = bundled_project(
+			"test/greeting/polluter.test.rb" => <<~RUBY,
+				class Polluter < Quickdraw::Test
+					test("pollutes") { require "greeting"; Greeting.instance_variable_set(:@dirty, true); assert true }
+				end
+			RUBY
+			"test/greeting/victim.test.rb" => <<~RUBY,
+				class Victim < Quickdraw::Test
+					test("expects a clean Greeting") { require "greeting"; refute Greeting.instance_variable_get(:@dirty) }
+				end
+			RUBY
+		)
+
+		seed = (1..30).find { |it| !project.run("-p", "1", "--no-history", "--seed", it.to_s, timeout: 30).success? }
+		refute project.run("-p", "1", "--seed", seed.to_s, timeout: 30).success?
+
+		result = project.run("bisect", "test/greeting/victim.test.rb:2", timeout: 30)
+
+		assert(result.success?) { result.output }
+		assert_includes result.output, "test/greeting/polluter.test.rb:2"
+	end
+
+	test "a group's broken bundle fails its tests, not the run", timeout: 30 do
+		skip "Gemfile groups need fork" unless Process.respond_to?(:fork)
+
+		result = bundled_project(
+			"test/greeting/Gemfile" => "gem \"missing\", path: \"../../gems/missing\"\n",
+			"test/greeting/hello.test.rb" => "class Hello < Quickdraw::Test; test('a') { assert true }; end\n",
+			"test/model.test.rb" => "class Model < Quickdraw::Test; test('b') { assert true }; end\n",
+		).run("-p", "2", "--no-history", timeout: 30)
+
+		refute result.success?
+		assert_includes result.output, "The greeting group’s setup failed: The path `"
+		match { result => { summary: /\A1 test · 1 assertion · 1 errored/ } }
+	end
+
+	test "a group's Gemfile must exist", timeout: 20 do
+		result = project(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.group :alba, 'test/alba/**/*.test.rb', gemfile: 'test/alba/Gemfile' }\n",
+			"test/model.test.rb" => "class Model < Quickdraw::Test; test('a') { assert true }; end\n",
+		).run("-p", "1", "--no-history")
+
+		refute result.success?
+		assert_includes result.output, "The alba group’s Gemfile, test/alba/Gemfile, doesn’t exist."
+	end
+
 	test "bisect replays a group's tests with the group's setup", timeout: 60 do
 		project = browser_project(
 			"test/browser/polluter.test.rb" => <<~RUBY,

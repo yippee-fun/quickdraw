@@ -120,6 +120,9 @@ Quickdraw.configure do |config|
     require "playwright"
   end
 
+  # Or with a bundle of their own, such as another version of Rails.
+  config.group :rails7, "test/rails7/**/*.test.rb", gemfile: "gemfiles/rails7.gemfile"
+
   # Around every test, including its setup and teardown.
   config.around_test { |test, run| Timecop.freeze { run.call } }
 end

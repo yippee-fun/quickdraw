@@ -36,14 +36,14 @@ class Quickdraw::Replay
 
 		groups = boot(nil)
 		display_paths = paths.map { |path| path.delete_prefix("#{Dir.pwd}/") }
-		group, = groups.find do |_name, patterns|
+		group, _patterns, gemfile = groups.find do |_name, patterns|
 			display_paths.any? { |path| patterns.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } }
 		end
 
 		return unless group
 
 		stop
-		boot(group)
+		boot(group, gemfile:)
 	end
 
 	attr_reader :attempts
@@ -104,7 +104,7 @@ class Quickdraw::Replay
 
 	# Starts a loader for `group` and waits for it to boot. Returns the groups
 	# config defines, or raises BootFailed.
-	private def boot(group)
+	private def boot(group, gemfile: nil)
 		@loader_status = nil
 		pairs = Array.new(@channel_count) { Quickdraw::Channel.pair }
 		@channels = pairs.map(&:first)
@@ -112,13 +112,10 @@ class Quickdraw::Replay
 		control, @control = IO.pipe
 		report, report_writer = IO.pipe
 
-		@loader = Process.fork do
+		@loader = Quickdraw::Loader.start(worker_channels, @paths, @seed, gemfile:, quiet: true, control:, group:, report: report_writer) do
 			@channels.each(&:close)
 			@control.close
 			report.close
-			$stdout.reopen(File::NULL)
-			$stderr.reopen(File::NULL)
-			exit(Quickdraw::Loader.new(worker_channels, @paths, @seed, control:, group:, report: report_writer).call)
 		end
 
 		worker_channels.each(&:close)

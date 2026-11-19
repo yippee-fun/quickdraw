@@ -484,8 +484,9 @@ class Quickdraw::CLI
 		(reporters.size == 1) ? reporters.first : Quickdraw::Reporters::Multiple.new(reporters)
 	end
 
-	# Changes that could affect any test, so --changed runs them all.
-	EVERYTHING = %r{\A(?:Gemfile|Gemfile\.lock|[^/]+\.gemspec|\.ruby-version)\z}
+	# Changes that could affect any test, so --changed runs them all. Gemfiles
+	# anywhere, since a group can have its own.
+	EVERYTHING = %r{(?:\A|/)(?:Gemfile|gems\.rb)(?:\.lock|\.locked)?\z|\.gemfile(?:\.lock)?\z|\A(?:[^/]+\.gemspec|\.ruby-version)\z}
 
 	# For --changed: of `files`, those changed since the last commit, and those
 	# whose tests ran a changed source file in the last --coverage run of them.

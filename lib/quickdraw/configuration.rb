@@ -4,8 +4,9 @@ class Quickdraw::Configuration
 	# Test files matching any of `patterns` (globs relative to the project, such
 	# as "test/browser/**/*.test.rb") run in processes of their own, booted with
 	# `setup` as well as the rest of the config. Other tests never see what
-	# `setup` loads.
-	Group = Data.define(:name, :patterns, :setup) do
+	# `setup` loads. With a `gemfile`, they run with that bundle instead of the
+	# one Quickdraw runs with.
+	Group = Data.define(:name, :patterns, :gemfile, :setup) do
 		def match?(path) = patterns.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }
 	end
 
@@ -60,11 +61,15 @@ class Quickdraw::Configuration
 
 	# Defines a group (see Group). A file in more than one group goes in the
 	# first. The block runs after the before_forking callbacks.
-	def group(name, *patterns, &setup)
+	def group(name, *patterns, gemfile: nil, &setup)
 		name = name.to_s
 		raise ArgumentError, "The #{name} group needs a pattern for its files, such as \"test/#{name}/**/*.test.rb\"." if patterns.empty?
 		raise ArgumentError, "There’s already a group named #{name}." if @groups.any? { |group| group.name == name }
+		if gemfile
+			raise ArgumentError, "The #{name} group’s Gemfile, #{gemfile}, doesn’t exist." unless File.file?(gemfile)
+			raise ArgumentError, "The #{name} group can’t have its own Gemfile, since #{RUBY_ENGINE} can’t fork." unless Process.respond_to?(:fork)
+		end
 
-		@groups << Group.new(name:, patterns: patterns.map(&:to_s).freeze, setup:)
+		@groups << Group.new(name:, patterns: patterns.map(&:to_s).freeze, gemfile: gemfile && File.expand_path(gemfile), setup:)
 	end
 end

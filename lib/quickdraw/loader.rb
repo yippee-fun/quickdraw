@@ -21,8 +21,8 @@ class Quickdraw::Loader
 	# `group` names the group (see Configuration#group) whose tests this loader
 	# runs, or is nil for tests in none. Once it has booted, the loader writes
 	# to `report`, if given, a length-prefixed Marshal message: [:booted,
-	# groups, coverage] with the groups config defines as [name, patterns]
-	# pairs and, with `coverage`, what booting covered (see CoverageCollector);
+	# groups, coverage] with the groups config defines as [name, patterns,
+	# gemfile] and, with `coverage`, what booting covered (see CoverageCollector);
 	# or [:failed, error] if booting raised.
 	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil)
 		@channels = channels
@@ -36,6 +36,84 @@ class Quickdraw::Loader
 		@report = report
 		@running = {}
 		@statuses = []
+	end
+
+	# Starts a loader in a new process and returns its pid, taking the same
+	# arguments as #initialize. It's a fork, which runs the block first, unless
+	# there's a `gemfile`: then it's a new Ruby with that bundle, since Bundler
+	# can't be unloaded, given its pipes as inherited file descriptors. `quiet`
+	# discards its output.
+	def self.start(channels, test_files, seed, gemfile: nil, quiet: false, **options)
+		unless gemfile
+			return Process.fork do
+				yield if block_given?
+				$stdout.reopen(File::NULL) if quiet
+				$stderr.reopen(File::NULL) if quiet
+				exit(new(channels, test_files, seed, **options).call)
+			end
+		end
+
+		settings_reader, settings_writer = IO.pipe
+		inherited = [settings_reader, options[:control], options[:report], *channels.flat_map { |channel| [channel.reader, channel.writer] }].compact
+		# Before Bundler starts, which can print.
+		output = if quiet
+			{ out: File::NULL, err: File::NULL }
+		elsif options[:test_output_to_stderr]
+			{ out: :err }
+		else
+			{}
+		end
+
+		# bundled_loader.rb sets the bundle up itself, so it can report a failure.
+		rubyopt = ENV["RUBYOPT"]&.split&.grep_v(%r{\A-r\S*bundler/setup\z})&.join(" ")
+
+		pid = Process.spawn(
+			{ "BUNDLE_GEMFILE" => File.expand_path(gemfile), "BUNDLE_LOCKFILE" => nil, "BUNDLER_SETUP" => nil, "RUBYOPT" => rubyopt },
+			RbConfig.ruby, File.join(Quickdraw::LIB, "quickdraw", "bundled_loader.rb"), settings_reader.fileno.to_s,
+			**inherited.to_h { |io| [io, io] }, **output,
+		)
+
+		settings_reader.close
+
+		begin
+			settings_writer.write(Marshal.dump({
+				channels: channels.map { |channel| [channel.reader.fileno, channel.writer.fileno] },
+				test_files:,
+				seed:,
+				options: options.merge(control: options[:control]&.fileno, report: options[:report]&.fileno),
+			}))
+		rescue Errno::EPIPE
+			# Bundler failed, and said why. Without a report, the loader counts as
+			# having exited while booting.
+			nil
+		ensure
+			settings_writer.close
+		end
+
+		pid
+	end
+
+	# In a process from Loader.start, from the settings it wrote to `io`.
+	def self.from_settings(io)
+		settings = Marshal.load(io.read)
+		io.close
+
+		channels = settings.fetch(:channels).map { |reader, writer| Quickdraw::Channel.new(inherit(reader), inherit(writer, "w")) }
+		options = settings.fetch(:options)
+		options[:control] &&= inherit(options[:control])
+		options[:report] &&= inherit(options[:report], "w")
+
+		new(channels, settings.fetch(:test_files), settings.fetch(:seed), **options)
+	end
+
+	# Inherited without close-on-exec, which programs that tests run mustn't hold.
+	private_class_method def self.inherit(fd, mode = "r")
+		IO.new(fd, mode).tap { |io| io.close_on_exec = true }
+	end
+
+	# Reports that booting failed before #call, as #call does when it fails.
+	def boot_failed(error)
+		report([:failed, Quickdraw.serialize_error(error)])
 	end
 
 	# Returns whether booting and every worker succeeded.
@@ -60,7 +138,7 @@ class Quickdraw::Loader
 		end
 
 		if @report
-			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns] }
+			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile] }
 			report([:booted, groups, (Quickdraw::CoverageCollector.take if @coverage)])
 		end
 		test_files = real_paths

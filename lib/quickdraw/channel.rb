@@ -19,6 +19,7 @@ class Quickdraw::Channel
 	end
 
 	attr_reader :reader
+	attr_reader :writer
 
 	# Returns false if the other end has gone away.
 	def write(message)

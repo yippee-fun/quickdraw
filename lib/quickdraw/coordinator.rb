@@ -254,6 +254,7 @@ class Quickdraw::Coordinator
 		@process_count = 0
 		@leaving = {}
 		@group_of = {}
+		@gemfiles = {}
 
 		# First, so it opens while config boots.
 		@history = Quickdraw::HistoryProcess.new(@history_path) if @history_path
@@ -396,20 +397,17 @@ class Quickdraw::Coordinator
 		control, control_writer = IO.pipe
 		report, report_writer = IO.pipe
 
-		pid = Process.fork do
+		pid = Quickdraw::Loader.start(
+			worker_channels, @test_files, @seed,
+			gemfile: @gemfiles[group],
+			control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, coverage: !@coverage.nil?, group:, report: report_writer,
+		) do
 			coordinator_channels.each(&:close)
 			control_writer.close
 			report.close
 			# Or a process this loader starts could keep the others' pipes open.
 			@loaders&.each_value(&:close)
 			@history&.disconnect
-
-			loader = Quickdraw::Loader.new(
-				worker_channels, @test_files, @seed,
-				control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, coverage: !@coverage.nil?, group:, report: report_writer,
-			)
-
-			exit(loader.call)
 		end
 
 		worker_channels.each(&:close)
@@ -467,6 +465,7 @@ class Quickdraw::Coordinator
 
 	# Starts a loader for each group with tests to run.
 	private def groups_reported(groups)
+		@gemfiles = groups.to_h { |name, _patterns, gemfile| [name, gemfile] }
 		@group_of = @display_paths.to_h do |_path, display_path|
 			name, = groups.find { |_name, patterns| patterns.any? { |pattern| File.fnmatch?(pattern, display_path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } }
 			[display_path, name]
