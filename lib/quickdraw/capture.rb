@@ -63,14 +63,16 @@ class Quickdraw::Capture
 		@stderr.reopen(@terminal_stderr)
 	end
 
-	# What was printed since the last call, or nil. The file is emptied when
-	# there's anything to take, so it only ever holds the current test's output.
-	def take
+	# What was printed since the last call, or nil: its end, or all of it if
+	# `whole`, for output that would otherwise have been shown as printed. The
+	# file is emptied when there's anything to take, so it only ever holds the
+	# current test's output.
+	def take(whole: false)
 		flush
 		size = @file.size
 		return if size == 0
 
-		output = self.class.tail(@file, size)
+		output = whole ? Quickdraw.utf8(@file.pread(size, 0)) : self.class.tail(@file, size)
 		@file.truncate(0)
 		output
 	end

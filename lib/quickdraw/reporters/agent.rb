@@ -38,7 +38,8 @@ class Quickdraw::Reporters::Agent
 		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
 	end
 
-	def tick = nil
+	def tick(_progress) = nil
+	def live? = false
 
 	def finish(outcome)
 		print_profile if @profile.any?

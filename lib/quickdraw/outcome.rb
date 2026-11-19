@@ -45,6 +45,10 @@ class Quickdraw::Outcome
 	# tests are unknown.
 	attr_accessor :not_run, :unloaded_files, :processes_failed, :stopped_early, :nothing_matched, :interrupted, :duration
 
+	# How many test files the run was asked to run, and how many loaded but
+	# didn't finish (e.g. after Ctrl-C).
+	attr_accessor :files, :unfinished_files
+
 	# A CoverageReport with --coverage, or nil.
 	attr_accessor :coverage
 

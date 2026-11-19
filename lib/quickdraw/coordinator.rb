@@ -27,6 +27,9 @@ class Quickdraw::Coordinator
 	# whose tests are stuck where the watchdog can't stop them, in seconds.
 	LIVENESS_INTERVAL = 1
 
+	# How often reporters get a tick while nothing else happens, for live displays.
+	TICK_INTERVAL = 0.1
+
 	# How long past a test's timeout to wait for its watchdog before killing it.
 	TIMEOUT_GRACE = 5
 
@@ -66,9 +69,19 @@ class Quickdraw::Coordinator
 			end
 			@total_duration = 0.0
 			@completed = 0
+			@size = indices.size
+			@reported = 0
 		end
 
 		attr_reader :path, :display_path, :tests, :keys, :pending, :load_duration
+
+		# How many of its tests are selected, how many have finished at least
+		# once, for scheduling, and how many have a final result, after retries.
+		attr_reader :size, :completed, :reported
+
+		def reported!
+			@reported += 1
+		end
 
 		# Whether every one of its tests was selected to run.
 		def whole? = @whole
@@ -316,6 +329,7 @@ class Quickdraw::Coordinator
 	def call
 		started_at = Time.now
 		@forking = Process.respond_to?(:fork)
+		@progress = -> { progress }
 		# A retry needs a fresh worker, which needs fork.
 		@retries = 0 unless @forking
 		@test_files = @unloaded.map(&:first)
@@ -367,7 +381,7 @@ class Quickdraw::Coordinator
 
 		until @workers.empty? && @leaving.empty? && @loaders.each_value.none?(&:report)
 			reports = @loaders.each_value.filter_map(&:report)
-			readable, = IO.select([*@workers.keys, *@leaving.keys, *reports, interrupt_reader], nil, nil, LIVENESS_INTERVAL)
+			readable, = IO.select([*@workers.keys, *@leaving.keys, *reports, interrupt_reader], nil, nil, TICK_INTERVAL)
 
 			if @interrupted
 				abandon_workers
@@ -397,7 +411,7 @@ class Quickdraw::Coordinator
 			end
 
 			dispatch
-			@reporter.tick
+			@reporter.tick(@progress)
 		end
 
 		# No more workers will start, so loaders can exit once their workers have.
@@ -416,6 +430,8 @@ class Quickdraw::Coordinator
 		@outcome.recorded = !@history.nil?
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
+		@outcome.files = @display_paths.size
+		@outcome.unfinished_files = @files.each_value.count { |file| file.pending.any? }
 		@outcome.processes_failed = processes_failed
 		@outcome.stopped_early = @stopping
 		# A filter that matches nothing is more likely a typo than a pass.
@@ -866,6 +882,8 @@ class Quickdraw::Coordinator
 			worker.pid = pid
 		in [:capturing, path]
 			worker.output_path = path
+		in [:printed, output]
+			@reporter.printed(output)
 		in [:ready, pid]
 			worker.pid = pid
 			worker.idle = true
@@ -1011,6 +1029,7 @@ class Quickdraw::Coordinator
 	end
 
 	private def report(file, index, result, (process, slot, sequence))
+		file.reported!
 		@outcome.record(result)
 		@reporter.result(file.display_path, file.tests[index], result)
 		@stopping = true if @fail_fast && failed?(result)
@@ -1219,6 +1238,28 @@ class Quickdraw::Coordinator
 		end
 
 		candidates.max_by { |_file, worth| worth }&.first
+	end
+
+	# For live displays (see Reporters::Progress). A file is running from when
+	# its first test starts until each has its final result, after any retries,
+	# including between batches, so it doesn't flicker in and out of the list.
+	private def progress
+		in_flight = [
+			*@workers.each_value.filter_map { |worker| worker.batch&.first || worker.retrying&.file },
+			*@pending_retries.map(&:file),
+		].to_h { |file| [file, true] }
+
+		running = @files.each_value.select { |file| in_flight.key?(file) || file.reported.between?(1, file.size - 1) }
+		done = @files.each_value.count { |file| !in_flight.key?(file) && file.reported >= file.size }
+		# Only a file loading for the first time can add tests.
+		discovering = @unloaded.any? || @workers.each_value.any? { |worker| worker.loading && !@files.key?(worker.loading) }
+
+		Quickdraw::Reporters::Progress.new(
+			files: @display_paths.size,
+			files_done: @load_errors.size + done,
+			tests: (@selected unless discovering),
+			running: running.map { |file| [file.display_path, file.reported, file.size] },
+		)
 	end
 
 	private def orphaned?(file)

@@ -95,7 +95,7 @@ qt --watch                 # run again when files change
 
 ## Output
 
-The output suits whoever is running the tests: a live progress bar on a terminal, and compact, complete problem reports for AI coding agents, which are detected automatically. `--format` chooses one: `human`, `agent`, `json` or `junit`. Repeat it to write more than one, with all but one going to a file:
+The output suits whoever is running the tests. On a terminal, failures print as they happen, and beneath them a live block shows the files being run and how many files and tests are done. It only shows counts, never estimates, so the total number of tests appears once every file has loaded. AI coding agents, which are detected automatically, get compact, complete problem reports instead. `--format` chooses one: `human`, `agent`, `json` or `junit`. Repeat it to write more than one, with all but one going to a file:
 
 ```sh
 qt --format human --format junit:reports/junit.xml
@@ -103,7 +103,7 @@ qt --format human --format junit:reports/junit.xml
 
 Under GitHub Actions, failures are annotated and a summary is written for the job.
 
-What a test prints, to stdout or stderr, from Ruby, a subprocess or a C extension writing to the file descriptor, is shown with its failure rather than as it's printed, so output from parallel tests can't interleave. Passing tests' output isn't shown. A test that crashes or hangs its worker still has its output shown. What config and test files print while loading shows as usual.
+What a test prints, to stdout or stderr, from Ruby, a subprocess or a C extension writing to the file descriptor, is shown with its failure rather than as it's printed, so output from parallel tests can't interleave. Passing tests' output isn't shown. A test that crashes or hangs its worker still has its output shown. What config and test files print while loading shows as usual, above the live block. `--no-capture` turns off both capturing and the live block.
 
 `--no-capture` shows output as it's printed instead. For a debugger such as `binding.irb`, which needs the terminal, run the one test with it: `qt --no-capture -p 1 test/user.test.rb:12`.
 

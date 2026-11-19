@@ -10,7 +10,8 @@ class ReportingTest < Quickdraw::Test
 
 		assert result.success?
 		match { result => { summary: /\A1 test · 1 assertion · / } }
-		assert_match result.output, /^       1 worker \(manual\) · seed 7 · (bundle exec )?quickdraw --seed 7$/
+		assert_match result.output, /^    Workers  1 \(manual\)/
+		assert_match result.output, /^       Seed  7 · (bundle exec )?quickdraw --seed 7$/
 	end
 
 	test "compares the tests' time with the last run of the same tests", timeout: 30 do

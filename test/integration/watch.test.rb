@@ -47,7 +47,7 @@ class WatchTest < Quickdraw::Test
 
 	def boots(project) = File.read(File.join(project.directory, "boots.log")).size
 
-	def summaries(result) = result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests? · .*$/)
+	def summaries(result) = Integration.summaries(result.stdout)
 
 	test "keeps config booted between runs, and stops its loader when quitting", timeout: 40 do
 		project = project(
@@ -176,7 +176,8 @@ class WatchTest < Quickdraw::Test
 
 		assert result.success?
 		assert_includes result.stdout, "Changed lib/calculator.rb, so running test/calculator.test.rb"
-		assert_match result.stdout, %r{Changed lib/calculator\.rb.*\n(?:PASSED|FAILED) 1 test · 1 assertion}m
+		after_change = result.stdout[%r{Changed lib/calculator\.rb.*\z}m]
+		assert_match Integration.summaries(after_change).first, /\A1 test · 1 assertion/
 	end
 
 	test "keys run only failures, filter by name and path, and run everything again", timeout: 40 do
@@ -190,7 +191,7 @@ class WatchTest < Quickdraw::Test
 		)
 
 		assert result.success?
-		runs = result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests? · .*$/)
+		runs = summaries(result)
 		assert_equal runs.map { |run| run[/\A\d+ tests?/] }, ["3 tests", "1 test", "3 tests", "1 test", "0 tests", "0 tests"]
 		assert_includes result.stdout, "Watching (failed) · Enter rerun"
 		assert_includes result.stdout, "Watching (name matches passes) · Enter rerun"
@@ -218,7 +219,7 @@ class WatchTest < Quickdraw::Test
 			end
 		end
 
-		assert_equal result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests?/), ["2 tests", "1 test"]
+		assert_equal summaries(result).map { |summary| summary[/\A\d+ tests?/] }, ["2 tests", "1 test"]
 	end
 
 	test "f explains that it needs run history with --no-history", timeout: 40 do

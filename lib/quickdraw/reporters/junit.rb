@@ -24,7 +24,8 @@ class Quickdraw::Reporters::JUnit
 		@suites[path] << [nil, { "errors" => [error], "failures" => [], "duration" => 0 }]
 	end
 
-	def tick = nil
+	def tick(_progress) = nil
+	def live? = false
 
 	def finish(outcome)
 		@allow_flaky = outcome.allow_flaky

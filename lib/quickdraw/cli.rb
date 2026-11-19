@@ -510,6 +510,8 @@ class Quickdraw::CLI
 			by_path[File.expand_path(path)] = options[:lines][File.realpath(path)] if options[:lines].key?(File.realpath(path))
 		end
 
+		reporter = reporter(options)
+
 		Quickdraw::Coordinator.new(
 			files:,
 			processes: options[:processes],
@@ -535,13 +537,14 @@ class Quickdraw::CLI
 			fail_fast: options[:fail_fast],
 			test_output_to_stderr: machine_readable?(options),
 			seed: options[:seed],
-			reporter: reporter(options),
+			reporter:,
 			history_path: (HISTORY_PATH if options[:history]),
 			only_keys:,
 			whole_files:,
 			profile: options[:profile],
 			coverage: options[:coverage],
-			capture: options[:capture],
+			# A live display gets what loading prints too, so it isn't written over.
+			capture: (options[:capture] && reporter.live?) ? :loading : options[:capture],
 			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
@@ -560,7 +563,7 @@ class Quickdraw::CLI
 			io = path ? File.open(path, "w") : $stdout
 
 			case format
-			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings])
+			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live: options[:capture])
 			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace])
 			in "json" then Quickdraw::Reporters::JSON.new(io:)
 			in "junit" then Quickdraw::Reporters::JUnit.new(io:)

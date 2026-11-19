@@ -7,10 +7,54 @@ module Integration
 	ROOT = File.expand_path("../..", __dir__)
 	EXECUTABLE = File.join(ROOT, "exe", "quickdraw")
 
-	# `output` is stdout then stderr. `summary` is the "N tests · …" counts, after the summary’s PASSED or FAILED. They're
+	# `output` is stdout then stderr. `summary` is the counts from the human
+	# summary's rows as one line, "N tests · N assertions · N failed · … · 0.05s",
+	# so tests can match counts without depending on the layout. They're
 	# members, rather than methods, so pattern matching can use them.
 	Result = Data.define(:stdout, :stderr, :output, :summary, :status, :exit_status, :duration) do
 		def success? = status.success?
+	end
+
+	# Each run's summary (see .summary), for watch mode's many runs.
+	def self.summaries(output)
+		output.delete("\r").split(/^(?= +Test files  )/).filter_map { |part| summary(part) }
+	end
+
+	# The order and wording of the counts in a Result's summary.
+	SUMMARY_COUNTS = ["failed", "flaky (allowed)", "flaky", "skipped", "pending", "errored", "not run"].freeze
+
+	# From the last summary's Tests, Test files, Assertions and Duration rows,
+	# or nil. The live block uses the same labels, but has no Assertions row.
+	def self.summary(output)
+		# Terminals end lines with \r\n.
+		output = output.delete("\r")
+		start = output.rindex(/^ +Test files  /) or return
+		output = output[start..]
+		return unless output.match?(/^ +Assertions  /)
+
+		tests_row = output[/^ +Tests  (.*\(\d+\))$/, 1] or return
+		files_row = output[/^ +Test files  (.*)$/, 1]
+		tests = Integer(tests_row[/\((\d+)\)\z/, 1])
+		# Files that failed to load count as errored, as they did in one line.
+		errored = tests_row[/(\d+) errored/, 1].to_i + files_row[/(\d+) failed to load/, 1].to_i
+
+		counts = SUMMARY_COUNTS.filter_map do |name|
+			count = (name == "errored") ? (errored if errored > 0) : tests_row[/(\d+) #{Regexp.escape(name)}(?= ·| \(|\z)/, 1]
+			"#{count} #{name}" if count
+		end
+
+		unloaded = files_row[/(\d+) not loaded/, 1]
+		without = tests_row[/(\d+) without assertions/, 1]
+		assertions = Integer(output[/^ +Assertions  ([\d,]+)$/, 1].delete(","))
+
+		[
+			"#{tests} #{(tests == 1) ? 'test' : 'tests'}",
+			"#{assertions} #{(assertions == 1) ? 'assertion' : 'assertions'}",
+			*counts.uniq { |count| count.sub(" (allowed)", "") },
+			("#{unloaded} #{(unloaded == '1') ? 'file' : 'files'} not loaded" if unloaded),
+			("#{without} without assertions" if without),
+			output[/^ +Duration  ([\d.]+s)/, 1],
+		].compact.join(" · ")
 	end
 
 	class Project
@@ -96,7 +140,7 @@ module Integration
 			Quickdraw::History.wait_for_writer(File.join(@directory, Quickdraw::CLI::HISTORY_PATH))
 			output = "#{stdout.force_encoding(Encoding::UTF_8)}#{stderr.force_encoding(Encoding::UTF_8)}"
 
-			Result.new(stdout:, stderr:, output:, summary: output[/^(?:[A-Z]+ +)?\K\d+ tests? ·.*$/], status:, exit_status: status.exitstatus, duration: now - started_at)
+			Result.new(stdout:, stderr:, output:, summary: Integration.summary(output), status:, exit_status: status.exitstatus, duration: now - started_at)
 		ensure
 			stdout_reader&.close
 			stderr_reader&.close

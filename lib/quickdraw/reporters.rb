@@ -5,11 +5,17 @@
 #   start(processes:, worker_choice:, seed:, estimate:)
 #   result(path, test, result)
 #   load_failed(path, error)
-#   tick                        at least once a second, for live displays
+#   tick(progress)              many times a second, for live displays
 #   finish(outcome)
 #
+# and answers `live?`: whether it keeps a live display on the terminal. If
+# so, it also gets what loading test files printed, to show above the display:
+#
+#   printed(output)
+#
 # `estimate` is how many tests the run is expected to have and how long it's
-# expected to take, from the last run of the same tests, or nil.
+# expected to take, from the last run of the same tests, or nil. `progress`
+# returns a Progress when called, which costs a little, so only when needed.
 #
 # They run in the coordinator, after the loader has forked, so they may load
 # libraries (such as json) as long as they do it lazily, not at construction.
@@ -28,6 +34,12 @@ module Quickdraw::Reporters
 	# From the last run of the same tests: how many there were, how long the run
 	# took, and the total of their durations.
 	Estimate = Data.define(:tests, :duration, :test_time)
+
+	# Where a run is, all of it known rather than estimated: how many test files
+	# it runs and how many are done, the number of tests once every file has
+	# loaded (nil until then), and the files being run as [path, tests done,
+	# tests selected].
+	Progress = Data.define(:files, :files_done, :tests, :running)
 
 	def self.agent?
 		AGENT_VARIABLES.any? { |name| ENV[name] && !ENV[name].empty? }

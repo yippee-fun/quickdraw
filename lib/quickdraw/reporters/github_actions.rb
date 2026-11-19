@@ -31,7 +31,8 @@ class Quickdraw::Reporters::GitHubActions
 		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
 	end
 
-	def tick = nil
+	def tick(_progress) = nil
+	def live? = false
 
 	def finish(outcome)
 		@problems.first(ANNOTATION_LIMIT).each { |problem| annotate(*problem) }

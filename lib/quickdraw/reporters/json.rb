@@ -41,7 +41,8 @@ class Quickdraw::Reporters::JSON
 		emit("event" => "load_error", "path" => path, "error" => serialize_error(error))
 	end
 
-	def tick = nil
+	def tick(_progress) = nil
+	def live? = false
 
 	def finish(outcome)
 		emit(

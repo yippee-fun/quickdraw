@@ -57,7 +57,7 @@ class HistoryTest < Quickdraw::Test
 		project = project("a.test.rb" => "class A < Quickdraw::Test; 10.times { |i| test(i.to_s) { assert true } }; end\n")
 
 		assert_includes project.run.output, "(estimated)"
-		assert_match project.run.output, /workers? \((tuned|exploring)\)/
-		assert_includes project.run("-p", "2").output, "2 workers (manual)"
+		assert_match project.run.output, /Workers  \d+ \((tuned|exploring)\)/
+		assert_includes project.run("-p", "2").output, "Workers  2 (manual)"
 	end
 end

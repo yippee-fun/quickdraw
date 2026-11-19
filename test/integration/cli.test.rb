@@ -163,14 +163,31 @@ class CLITest < Quickdraw::Test
 		match { result => { summary: /\A0 tests · 0 assertions · 1 not run/ } }
 	end
 
-	test "on a terminal, keeps a progress bar on the bottom row, then gives the row back", timeout: 20 do
+	test "on a terminal, shows what's running below the output, then clears it for the summary", timeout: 20 do
 		project = project("a.test.rb" => "class A < Quickdraw::Test; 3.times { |i| test(i.to_s) { sleep 0.2; assert true } }; end\n")
-		project.run("-p", "1")
-		result = project.run("-p", "1", tty: [10, 60])
+		result = project.run("-p", "1", tty: [20, 80])
 
-		assert_includes result.stdout, "\e[1;9r"
-		assert_match result.stdout, %r{\e\[10;1H\e\[2K━*─* \d/3 tests}
-		assert result.stdout.index("\e[r") < result.stdout.index("3 tests · 3 assertions")
+		# Each redraw starts by moving up over the last, so not at a line's start.
+		assert_match result.stdout, %r{ \S a\.test\.rb  [0-2]/3\r\n}
+		assert_match result.stdout, / Test files  0 of 1 done\r\n/
+		# Cleared, and the cursor shown again, before the summary.
+		assert_operator result.stdout.rindex("\e[J\e[?25h"), :<, result.stdout.rindex(/^ Test files  1 passed/)
+
+		refute_includes project.run("-p", "1", "--no-capture", tty: [20, 80]).stdout, "of 1 done"
+	end
+
+	test "on a terminal, shows what loading a file prints above what's running, once", timeout: 20 do
+		project = project(
+			"a.test.rb" => "class A < Quickdraw::Test; test('waits') { sleep 0.3; assert true }; end\n",
+			"b.test.rb" => "puts 'loading b'\nwarn 'warning from b'\nclass B < Quickdraw::Test; test('b') { assert true }; end\n",
+		)
+
+		output = project.run("-p", "1", tty: [20, 80]).stdout
+
+		assert_equal output.scan("loading b").size, 1
+		assert_equal output.scan("warning from b").size, 1
+		# Printed after erasing the live block, rather than written over it.
+		assert_match output, /\e\[\d+A\e\[J(?:\e\[\?25h)?loading b\r\nwarning from b\r\n/
 	end
 
 	test "reports a problem as it happens, then lists them all at the end", timeout: 20 do
@@ -181,6 +198,6 @@ class CLITest < Quickdraw::Test
 
 		failure = result.stdout.index("FAIL fails  A · fails.test.rb:1")
 		assert_operator failure, :<, result.stdout.index("slow finished")
-		assert_includes result.stdout, "1 problem\n  ✗ fails.test.rb:1 A › fails\n"
+		assert_match result.stdout, /1 problem ⎯+\n  ✗ fails\.test\.rb:1 A › fails\n/
 	end
 end

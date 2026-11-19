@@ -186,7 +186,7 @@ class BrowserTest < Quickdraw::Test
 
 		refute result.success?
 		assert_includes result.output, "test/browser/page.test.rb:6: a browser test slept."
-		assert_match result.output, /^ +1\.0 pages \(.*\) · 1\.0 sleeps \(.*per test$/
+		assert_match result.output, /^   Per test  .* · 1\.0 pages \(.*\) · 1\.0 sleeps \(/
 	end
 
 	RAILS_APP = {

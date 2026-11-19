@@ -135,7 +135,7 @@ class RailsTest < Quickdraw::Test
 	def boots(project) = File.read(File.join(project.directory, "boots.log")).size
 
 	# Each run's failures or errors.
-	def problems(result) = result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests? · .*$/).map { |summary| summary[/\d+ (?:failed|errored)|\z/] }
+	def problems(result) = Integration.summaries(result.stdout).map { |summary| summary[/\d+ (?:failed|errored)|\z/] }
 
 	test "reloads app code it loaded between runs in watch mode, and boots again when an initializer changes", timeout: 60 do
 		project = watched_app(
@@ -203,7 +203,7 @@ class RailsTest < Quickdraw::Test
 			result.output
 		end
 
-		assert_match result.output, /^ +2\.0 queries \(\d.*\) · 1\.0 factories \(\d/
+		assert_match result.output, /^   Per test  .* · 2\.0 queries \(\d.*\) · 1\.0 factories \(\d/
 	end
 
 	FIXTURES = {
