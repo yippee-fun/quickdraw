@@ -15,9 +15,9 @@ class Quickdraw::History
 		end
 	end
 
-	TABLES = ["runs", "tests", "results", "files"].freeze
+	TABLES = ["runs", "tests", "results", "files", "coverage_map"].freeze
 
-	SCHEMA_VERSION = 7
+	SCHEMA_VERSION = 8
 	KEPT_RUNS = 100
 
 	# Weight of the latest run in each test's rolling average duration.
@@ -129,6 +129,16 @@ class Quickdraw::History
 			load_error TEXT,
 			last_run_id INTEGER NOT NULL
 		) WITHOUT ROWID;
+
+		-- Which source files each test file's tests ran, from the last --coverage
+		-- run of that test file. For --changed.
+		CREATE TABLE coverage_map (
+			test_path TEXT NOT NULL,
+			source_path TEXT NOT NULL,
+			PRIMARY KEY (test_path, source_path)
+		) WITHOUT ROWID;
+
+		CREATE INDEX coverage_map_by_source ON coverage_map (source_path);
 	SQL
 
 	INSERT_RUN = <<~SQL
@@ -205,14 +215,20 @@ class Quickdraw::History
 
 	# Read-only, it never creates, migrates or rebuilds the history, so looking
 	# at it can't lose it. That's for reading only, as `quickdraw history` does.
-	def initialize(path, read_only: false)
+	# Waits for whatever is recording a run to finish, unless `wait` is false,
+	# for a process that will take the write lock itself.
+	def initialize(path, read_only: false, wait: true)
+		# Before loading sqlite3, which takes ~35ms, so git runs meanwhile.
+		@revision = Thread.new { git_revision } unless read_only
+
 		require "sqlite3"
 		require "json"
 		require "fileutils"
 		require "time"
-		require "digest"
 
 		@path = path
+		FileUtils.mkdir_p(File.dirname(path)) unless read_only
+		wait_for_writer if wait
 
 		if read_only
 			@db = SQLite3::Database.new(path, readonly: true)
@@ -223,24 +239,142 @@ class Quickdraw::History
 				raise Error, "it was recorded by a different version of Quickdraw, and the next run will replace it"
 			end
 		else
-			# git takes ~15ms, so it runs while the tests do.
-			@revision = Thread.new { git_revision }
-			FileUtils.mkdir_p(File.dirname(path))
 			connect
 		end
 	rescue LoadError, SystemCallError, SQLite3::Exception => error
 		raise Error, error.message
 	end
 
-	# The identity of each test in a file, in load order.
-	def keys(path, tests)
+	# Held while recording a run, which happens after the run has exited (see
+	# HistoryProcess). Whatever opens the history next waits for it, so
+	# `--failed` straight after a run sees that run. Released when the
+	# returned file closes.
+	# Raises Error after WRITER_WAIT seconds, so a stuck writer can't stop runs.
+	def self.lock_for_writing(path)
+		require "fileutils"
+		FileUtils.mkdir_p(File.dirname(path))
+		file = File.open("#{path}.lock", File::RDWR | File::CREAT)
+		deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + WRITER_WAIT
+
+		until file.flock(File::LOCK_EX | File::LOCK_NB)
+			if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+				file.close
+				raise Error, "another run has been writing to it for over #{WRITER_WAIT}s"
+			end
+
+			sleep 0.005
+		end
+
+		file
+	rescue SystemCallError => error
+		raise Error, error.message
+	end
+
+	# Set to a lock from History.lock_for_writing already held, which #close releases.
+	attr_writer :write_lock
+
+	def lock_for_writing
+		@write_lock ||= self.class.lock_for_writing(@path)
+	end
+
+	private def wait_for_writer = self.class.wait_for_writer(@path)
+
+	# The identity of each test in a file, in load order. Needs no database, so
+	# a run can work them out without opening one.
+	def self.keys(path, tests)
+		require "json"
 		occurrences = Hash.new(0)
 
 		tests.map do |test|
 			name = test["description"] || "line #{test['line']}"
 			occurrence = occurrences[[test["class_name"], name]] += 1
-			JSON.generate(utf8([path, test["class_name"], name, occurrence]))
+			JSON.generate([path, test["class_name"], name, occurrence].map { |part| (String === part) ? Quickdraw.utf8(part) : part })
 		end
+	end
+
+	def keys(...) = self.class.keys(...)
+
+	# What a run needs from history before it starts, written by the run before
+	# (see #save_plan) to a file read without sqlite3, which takes ~35ms to
+	# load, so planning a run never waits for it. `averages` are by test key,
+	# `files` give each file's [tests, total average, longest average], and
+	# `selections` give each recent selection's SelectionPlan.
+	Plan = Data.define(:averages, :files, :selections) do
+		# The known tests' expected time in `paths`.
+		def expected(paths)
+			known = paths.filter_map { |path| files[path] }
+			Expected.new(test_time: known.sum { |_count, total, _longest| total }, tests: known.sum(&:first), longest_test: known.map(&:last).max)
+		end
+	end
+
+	# Runs of a selection, to compare worker counts and estimate progress.
+	SelectionPlan = Data.define(:recent_runs, :waiting_share, :last_run)
+
+	# Plans for this many selections are kept.
+	KEPT_SELECTIONS = 20
+
+	# The plan from the history at `path`, or nil, once a run that's still
+	# recording (see .lock_for_writing) has written its own.
+	def self.plan(path)
+		wait_for_writer(path)
+		read_plan(path)
+	end
+
+	# Without waiting for a writer, for the writer itself, which holds the lock.
+	def self.read_plan(path)
+		plan = Marshal.load(File.binread(plan_path(path)))
+		plan if Plan === plan
+	rescue SystemCallError, ArgumentError, TypeError, NameError
+		# Missing, unreadable, or from another version of Quickdraw.
+		nil
+	end
+
+	# Whether there's a history at `path`, once a run that's still recording,
+	# perhaps its first, has finished.
+	def self.exist?(path)
+		wait_for_writer(path)
+		File.exist?(path)
+	end
+
+	# Up to WRITER_WAIT seconds, so a stuck writer can't stop runs. A lock
+	# that can't be read only means waiting isn't possible.
+	def self.wait_for_writer(path)
+		lock_path = "#{path}.lock"
+		return unless File.exist?(lock_path)
+
+		File.open(lock_path) do |file|
+			deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + WRITER_WAIT
+			sleep 0.005 until file.flock(File::LOCK_SH | File::LOCK_NB) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+		end
+	rescue SystemCallError
+		nil
+	end
+
+	WRITER_WAIT = 10
+
+	def self.plan_path(path) = File.join(File.dirname(path), "plan")
+
+	# Writes the plan for the next run, replacing the file so a reader never
+	# sees half of it.
+	def save_plan(selection)
+		load_known
+		path = self.class.plan_path(@path)
+		selections = self.class.read_plan(@path)&.selections&.dup || {}
+		selections.delete(selection)
+		selections[selection] = SelectionPlan.new(recent_runs: recent_runs(selection), waiting_share: last_waiting_share(selection), last_run: last_run(selection))
+		selections.shift while selections.size > KEPT_SELECTIONS
+
+		timed = @known.select { |_key, test| test.average_duration }
+		files = timed.each_value.with_object({}) do |test, totals|
+			count, total, longest = totals[test.path] || [0, 0.0, 0.0]
+			totals[test.path] = [count + 1, total + test.average_duration, [longest, test.average_duration].max]
+		end
+
+		temporary = "#{path}.#{Process.pid}"
+		File.binwrite(temporary, Marshal.dump(Plan.new(averages: timed.transform_values(&:average_duration), files:, selections:)))
+		File.rename(temporary, path)
+	rescue SystemCallError => error
+		raise Error, error.message
 	end
 
 	# { key => average duration } for every test with a recorded duration.
@@ -358,6 +492,46 @@ class Quickdraw::History
 		raise Error, error.message
 	end
 
+	# The coverage map's entry for sources that ran while config booted.
+	BOOT = ""
+
+	# Records `map`, as { test path => [source paths, whole] }. A file whose
+	# tests all ran (whole) replaces what's known of it; one where only some
+	# did adds to it, since the others may run other sources. Files a run
+	# didn't include keep theirs.
+	def record_coverage_map(map)
+		return if map.empty?
+
+		lock_for_writing
+
+		@db.transaction do
+			map.select { |_path, (_sources, whole)| whole }.each_key.each_slice(BATCH_SIZE) do |paths|
+				@db.execute("DELETE FROM coverage_map WHERE test_path IN (#{(['?'] * paths.size).join(', ')})", utf8(paths))
+			end
+
+			rows = map.flat_map { |test_path, (sources, _whole)| sources.map { |source| [test_path, source] } }
+			insert_many("INSERT OR IGNORE INTO coverage_map (test_path, source_path) VALUES %s", rows) if rows.any?
+		end
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
+	# The test files whose tests ran any of `sources`, and those of `sources`
+	# that only ran while config booted, so may affect any test. Nil if no
+	# --coverage run has recorded which sources test files run.
+	def tests_covering(sources)
+		return unless @db.get_first_value("SELECT 1 FROM coverage_map LIMIT 1")
+
+		rows = sources.each_slice(BATCH_SIZE).flat_map do |paths|
+			@db.execute("SELECT test_path, source_path FROM coverage_map WHERE source_path IN (#{(['?'] * paths.size).join(', ')})", utf8(paths))
+		end
+
+		tests, booted = rows.partition { |test_path, _source| test_path != BOOT }
+		[tests.map(&:first).uniq, booted.map(&:last).uniq - tests.map(&:last)]
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
 	# Each test's results in the `quickdraw flaky` scan's runs after the run
 	# with the id `after`, with the run's seed.
 	def outcomes(scan:, after:)
@@ -393,6 +567,9 @@ class Quickdraw::History
 	# `records` are History::Record; `load_errors` are [path, error] pairs;
 	# `loaded_paths` are the files that loaded. `passed` is the run's outcome.
 	def record_run(started_at:, finished_at:, seed:, processes:, worker_choice:, selection:, passed:, records:, loaded_paths:, load_errors:)
+		lock_for_writing
+		# Another run may have recorded since this one read them.
+		load_known
 		sha, branch, code = @revision.value
 		statuses = records.map { |record| status(record.result) }
 		counts = statuses.tally
@@ -442,6 +619,15 @@ class Quickdraw::History
 
 	def close
 		@db.close
+		@write_lock&.close
+	end
+
+	# Read once, so recording a run only has to touch new or moved tests, and
+	# again after, for the next run's plan.
+	private def load_known
+		@known = @db.execute("SELECT key, id, path, line, average_duration FROM tests").to_h do |key, id, path, line, average_duration|
+			[key, KnownTest.new(id:, path:, line:, average_duration:)]
+		end
 	end
 
 	private def connect(retried: false)
@@ -458,15 +644,13 @@ class Quickdraw::History
 
 		@db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-		# Read once, so recording a run only has to touch new or moved tests.
-		@known = @db.execute("SELECT key, id, path, line, average_duration FROM tests").to_h do |key, id, path, line, average_duration|
-			[key, KnownTest.new(id:, path:, line:, average_duration:)]
-		end
+		load_known
 	rescue SQLite3::CorruptException, SQLite3::NotADatabaseException
 		raise if retried
 
 		@db&.close
-		Dir.glob("#{@path}*").each { |file| File.delete(file) }
+		# Not the lock, which a writer may hold.
+		FileUtils.rm_f(["", "-wal", "-shm", "-journal"].map { |suffix| "#{@path}#{suffix}" })
 		connect(retried: true)
 	end
 
@@ -584,27 +768,36 @@ class Quickdraw::History
 	# untracked Ruby files. Other untracked files are left out, since reports and
 	# other output would make every run look like different code.
 	private def git_revision
-		output = IO.popen(["git", "rev-parse", "HEAD", "--abbrev-ref", "HEAD"], err: File::NULL, &:read)
-		return [nil, nil, nil] unless $?.success?
+		# At the same time, since each takes ~12ms.
+		revision, diff, untracked = [
+			["rev-parse", "HEAD", "--abbrev-ref", "HEAD"],
+			["diff", "HEAD", "--binary", "--no-ext-diff", "--no-color"],
+			["ls-files", "--others", "--exclude-standard", "-z", "--", "*.rb"],
+		].map { |arguments| Thread.new { git(*arguments) } }.map(&:value)
 
-		sha, branch = output.split("\n", 2).map(&:strip)
-		diff = IO.popen(["git", "diff", "HEAD", "--binary", "--no-ext-diff", "--no-color"], err: File::NULL, &:read)
-		untracked = IO.popen(["git", "ls-files", "--others", "--exclude-standard", "-z", "--", "*.rb"], err: File::NULL, &:read)
-		return [sha, branch, sha] if diff.empty? && untracked.empty?
+		return [nil, nil, nil] unless revision
 
+		sha, branch = revision.split("\n", 2).map(&:strip)
+		return [sha, branch, sha] if diff.to_s.empty? && untracked.to_s.empty?
+
+		require "digest"
 		digest = Digest::SHA256.new
-		digest << diff
+		digest << diff.to_s
 
-		untracked.split("\0").sort.each do |path|
+		untracked.to_s.split("\0").sort.each do |path|
 			digest << "\0#{path}\0" << File.binread(path)
 		rescue SystemCallError
 			nil
 		end
 
-		code = "#{sha}+#{digest.hexdigest[0, 12]}"
+		[sha, branch, "#{sha}+#{digest.hexdigest[0, 12]}"]
+	end
 
-		[sha, branch, code]
+	# The output, or nil if git failed or isn't installed.
+	private def git(*arguments)
+		output = IO.popen(["git", *arguments], err: File::NULL, &:read)
+		output if $?.success?
 	rescue Errno::ENOENT
-		[nil, nil, nil]
+		nil
 	end
 end

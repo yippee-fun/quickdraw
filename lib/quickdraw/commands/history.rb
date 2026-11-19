@@ -21,7 +21,7 @@ class Quickdraw::Commands::History
 		end
 
 		# Opening the history creates it.
-		return no_history unless File.exist?(Quickdraw::CLI::HISTORY_PATH)
+		return no_history unless Quickdraw::History.exist?(Quickdraw::CLI::HISTORY_PATH)
 
 		history = Quickdraw::History.new(Quickdraw::CLI::HISTORY_PATH, read_only: true)
 		runs = history.runs(limit: RECENT_RUNS)

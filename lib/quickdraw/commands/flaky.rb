@@ -114,7 +114,7 @@ class Quickdraw::Commands::Flaky
 	# run tests. Returns a String and prints it if the history can't be read.
 	private def read_history
 		result = Quickdraw.isolate do
-			next unless File.exist?(Quickdraw::CLI::HISTORY_PATH)
+			next unless Quickdraw::History.exist?(Quickdraw::CLI::HISTORY_PATH)
 
 			history = Quickdraw::History.new(Quickdraw::CLI::HISTORY_PATH, read_only: true)
 			yield history

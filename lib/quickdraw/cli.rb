@@ -53,6 +53,7 @@ class Quickdraw::CLI
 			efficiency: false,
 			history: true,
 			failed: false,
+			changed: false,
 			fail_fast: false,
 			names: [],
 			excludes: [],
@@ -113,6 +114,12 @@ class Quickdraw::CLI
 		end
 
 		usage_error "--failed needs run history, so it can’t be used with --no-history." if options[:failed] && !options[:history]
+
+		if options[:changed]
+			usage_error "--changed chooses the test files, so it can’t be used with paths." if @args.any?
+			usage_error "--changed can’t be used with --watch, which runs the tests for each change." if options[:watch]
+			usage_error "--changed can’t be used with --failed, which chooses the tests too." if options[:failed]
+		end
 
 		if options[:efficiency] && !Quickdraw::Platform.m_series?
 			usage_error "Efficiency cores are only available on M-series Macs."
@@ -192,6 +199,10 @@ class Quickdraw::CLI
 
 			parser.on("-f", "--failed", "Only the tests that failed or errored in the last run") do
 				options[:failed] = true
+			end
+
+			parser.on("--changed", "Only the test files that run code changed since the last commit (mapped by --coverage runs)") do
+				options[:changed] = true
 			end
 
 			parser.on("--fail-fast", "Stop starting tests after the first failure or error") do
@@ -381,6 +392,7 @@ class Quickdraw::CLI
 		system("taskpolicy", "-b", "-p", Process.pid.to_s) if options[:efficiency]
 
 		files = test_files(options[:patterns])
+		files = changed_test_files(files, history: options[:history]) if options[:changed]
 		only_keys = nil
 		whole_files = {}
 
@@ -427,6 +439,7 @@ class Quickdraw::CLI
 				*options[:names].map { |name| "--name #{name}" },
 				*options[:excludes].map { |name| "--exclude #{name}" },
 				("--failed" if options[:failed]),
+				("--changed" if options[:changed]),
 				("path contains #{options[:path_contains]}" if options[:path_contains]),
 				*options[:required_names]&.map { |name| "name matches #{name}" },
 			].compact.inspect,
@@ -469,6 +482,67 @@ class Quickdraw::CLI
 		reporters << Quickdraw::Reporters::GitHubActions.new if Quickdraw::Reporters::GitHubActions.active? && !machine_readable?(options)
 
 		(reporters.size == 1) ? reporters.first : Quickdraw::Reporters::Multiple.new(reporters)
+	end
+
+	# Changes that could affect any test, so --changed runs them all.
+	EVERYTHING = %r{\A(?:Gemfile|Gemfile\.lock|[^/]+\.gemspec|\.ruby-version)\z}
+
+	# For --changed: of `files`, those changed since the last commit, and those
+	# whose tests ran a changed source file in the last --coverage run of them.
+	# Without that map, the changed source files' counterparts. Explanations go
+	# to stderr, so they can't corrupt a JSON stream.
+	private def changed_test_files(files, history:)
+		changes = Quickdraw::Changes.files or usage_error("--changed needs a git repository, to see what’s changed.")
+		test_paths = files.to_h { |path| [path.delete_prefix("./"), path] }
+
+		# Config, the Gemfile and test helpers, which coverage doesn't map.
+		everything = changes.select do |path|
+			EVERYTHING.match?(path) || path == Quickdraw::Loader::CONFIG_PATH ||
+				(path.end_with?(".rb") && !test_paths.key?(path) && Quickdraw::CoverageCollector::EXCLUDED.match?(path))
+		end
+
+		if everything.any?
+			warn "Running every test, since #{everything.first(3).join(', ')}#{' and more' if everything.size > 3} changed."
+			return files
+		end
+
+		sources = changes.select { |path| path.end_with?(".rb") && !test_paths.key?(path) }
+		covering, booted = (coverage_map(sources) if history && sources.any?) || [nil, []]
+
+		# Loading a file can affect any test, through its constants or callbacks.
+		if booted.any?
+			warn "Running every test, since #{booted.first(3).join(', ')}#{' and more' if booted.size > 3} changed, which loads with config but no test runs its code."
+			return files
+		end
+
+		if covering.nil? && sources.any?
+			warn "No --coverage run has mapped which tests run which files, so running the changed files’ tests by name."
+			counterpart = Quickdraw::Commands::Counterpart.new
+			# Deleted files' tests too, since they may still use them.
+			covering = sources.filter_map { |path| counterpart.find(path) }
+		end
+
+		unmapped = changes - sources - test_paths.keys
+		warn "Coverage only maps Ruby, so tests that use #{unmapped.first(3).join(', ')}#{' and more' if unmapped.size > 3} may not run." if unmapped.any?
+
+		selected = (changes + covering.to_a).filter_map { |path| test_paths[path] }.uniq
+		warn "Nothing has changed that any test runs." if selected.empty?
+		selected
+	end
+
+	# See History#tests_covering. Nil without history or a map. Read in a
+	# throwaway process, for the same reason as #failing.
+	private def coverage_map(sources)
+		Quickdraw.isolate do
+			next unless Quickdraw::History.exist?(HISTORY_PATH)
+
+			history = Quickdraw::History.new(HISTORY_PATH, read_only: true)
+			history.tests_covering(sources)
+		rescue Quickdraw::History::Error
+			nil
+		ensure
+			history&.close
+		end
 	end
 
 	# Read in a throwaway process, since the loader forks from this one and

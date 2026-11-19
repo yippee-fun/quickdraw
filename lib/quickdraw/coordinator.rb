@@ -33,6 +33,7 @@ class Quickdraw::Coordinator
 			@display_path = display_path
 			@tests = tests
 			@keys = keys
+			@whole = indices.size == tests.size
 			@load_duration = load_duration
 			@prior_average = prior_average
 			@pending = indices.shuffle(random:)
@@ -49,6 +50,9 @@ class Quickdraw::Coordinator
 		end
 
 		attr_reader :path, :display_path, :tests, :keys, :pending, :load_duration
+
+		# Whether every one of its tests was selected to run.
+		def whole? = @whole
 
 		# Set when loading this file crashed a worker, so no other worker tries.
 		attr_accessor :unstealable
@@ -229,6 +233,8 @@ class Quickdraw::Coordinator
 		@test_output_to_stderr = test_output_to_stderr
 		@profile = profile
 		@coverage = Quickdraw::CoverageReport.new if coverage
+		# Each test file's source files that ran, with --coverage.
+		@coverage_map = {}
 		@unloaded = files.shuffle(random: Random.new(seed)).map do |path|
 			absolute = File.expand_path(path)
 			[absolute, absolute.delete_prefix("#{Dir.pwd}/")]
@@ -248,6 +254,9 @@ class Quickdraw::Coordinator
 		@process_count = 0
 		@leaving = {}
 		@group_of = {}
+
+		# First, so it opens while config boots.
+		@history = Quickdraw::HistoryProcess.new(@history_path) if @history_path
 
 		# Keyed by group, nil for tests in none. This loader reports the groups
 		# config defines; the others start once it has.
@@ -271,7 +280,7 @@ class Quickdraw::Coordinator
 		end
 		groups_reported(groups) unless @interrupted
 
-		open_history
+		load_plan
 		@processes, @worker_choice = @forking ? choose_processes([@loaders[nil].spares.size - SPARE_CHANNELS, 1].max) : [1, "default"]
 		@free_slots = Array.new(@processes) { |slot| slot }
 
@@ -331,7 +340,7 @@ class Quickdraw::Coordinator
 		@outcome.coverage = @coverage
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
-		@outcome.processes_failed = processes_failed || @history_unavailable
+		@outcome.processes_failed = processes_failed
 		@outcome.stopped_early = @stopping
 		# A filter that matches nothing is more likely a typo than a pass.
 		@outcome.nothing_matched = @filter.any? && @selected.zero? && @unloaded.empty?
@@ -340,9 +349,8 @@ class Quickdraw::Coordinator
 		@coverage&.write
 		@reporter.finish(@outcome)
 
-		# Written after the report, so it never delays the results. A partial run
-		# would mislead worker tuning.
-		save_history(started_at, @outcome.passed?) unless @interrupted
+		# Written after the report, so it never delays the results.
+		save_history(started_at, @outcome.passed?)
 		@outcome
 	ensure
 		trap("INT", previous_handler || "DEFAULT") if interrupt_reader
@@ -394,6 +402,7 @@ class Quickdraw::Coordinator
 			report.close
 			# Or a process this loader starts could keep the others' pipes open.
 			@loaders&.each_value(&:close)
+			@history&.disconnect
 
 			loader = Quickdraw::Loader.new(
 				worker_channels, @test_files, @seed,
@@ -416,8 +425,12 @@ class Quickdraw::Coordinator
 	private def reported(loader, report)
 		error = case report
 		in [:booted, _groups, coverage]
-			# What booting covered, which its workers don't repeat.
-			@coverage.add(coverage) if coverage
+			if coverage
+				# What booting covered, which its workers don't repeat.
+				@coverage.add(coverage)
+				(@coverage_map[Quickdraw::History::BOOT] ||= {}).merge!(Quickdraw::CoverageCollector.run(coverage).to_h { |source| [source, true] })
+			end
+
 			return
 		in [:failed, error]
 			error
@@ -527,52 +540,37 @@ class Quickdraw::Coordinator
 		@loaders.each_value(&:wait)
 	end
 
-	private def open_history
+	# The last run of this selection's plan (see History::Plan).
+	# Timings from history (see History::Plan), and this selection's runs.
+	private def load_plan
 		return unless @history_path
 
-		@history = Quickdraw::History.new(@history_path)
-		@averages = @history.average_durations
-		@file_durations = @history.file_durations
-		order_slowest_files_first(@file_durations)
-	rescue Quickdraw::History::Error => error
-		@history = nil
-
-		if @only_keys
-			# --failed can't pick out the failing tests without history.
-			warn "Quickdraw couldn’t open its run history (#{error.message}), so --failed has nothing to run."
-			@unloaded = []
-			@history_unavailable = true
-		else
-			warn "Quickdraw couldn’t open its run history (#{error.message}). Continuing without it."
-		end
+		@plan = Quickdraw::History.plan(@history_path) or return
+		@runs = @plan.selections[@selection]
+		@averages = @plan.averages
+		order_slowest_files_first(@plan.files.transform_values { |_count, total, _longest| total })
 	end
 
 	# From the last run of the same selection. --failed runs a different subset each time.
 	private def estimate
-		return if @only_keys || !@history
+		return if @only_keys || !@runs&.last_run
 
-		run = @history.last_run(@selection) or return
-		Quickdraw::Reporters::Estimate.new(tests: run.tests, duration: run.duration)
-	rescue Quickdraw::History::Error
-		nil
+		Quickdraw::Reporters::Estimate.new(tests: @runs.last_run.tests, duration: @runs.last_run.duration)
 	end
 
 	# Returns [count, how it was chosen].
 	private def choose_processes(capacity)
 		return [@processes.clamp(1, capacity), "manual"] if @processes
-		return [@cores.clamp(1, capacity), "default"] unless @history
+		return [@cores.clamp(1, capacity), "default"] unless @history_path
 
 		choice = Quickdraw::WorkerTuner.new(cores: @cores, max: capacity).choose(
 			# --failed runs a different subset each time, so its timings aren't comparable.
-			runs: @only_keys ? [] : @history.recent_runs(@selection),
-			expected: @history.expected(@unloaded.map(&:last)),
-			waiting_share: @history.last_waiting_share(@selection),
+			runs: (@only_keys || !@runs) ? [] : @runs.recent_runs,
+			expected: @plan&.expected(@unloaded.map(&:last)) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil),
+			waiting_share: @runs&.waiting_share,
 		)
 
 		[choice.processes, choice.reason]
-	rescue Quickdraw::History::Error => error
-		warn "Quickdraw couldn’t read its run history (#{error.message})."
-		[@cores.clamp(1, capacity), "default"]
 	end
 
 	# Workers that died without closing their pipes, because a process they or
@@ -707,10 +705,19 @@ class Quickdraw::Coordinator
 		64
 	end
 
-	private def save_history(started_at, passed)
-		return unless @history
+	# { test path => [source paths, whether every test in the file ran] }. A
+	# file that only ran some tests may not have run all its sources.
+	private def coverage_map
+		whole = @files.each_value.to_h { |file| [file.display_path, file.whole? && file.pending.empty?] }
+		whole[Quickdraw::History::BOOT] = true
+		@coverage_map.to_h { |path, sources| [path, [sources.keys, whole.fetch(path, false)]] }
+	end
 
-		@history.record_run(
+	# A partial run would mislead worker tuning, so an interrupted one isn't saved.
+	private def save_history(started_at, passed)
+		return if !@history || @interrupted
+
+		run = {
 			started_at:,
 			finished_at: Time.now,
 			seed: @seed,
@@ -721,17 +728,20 @@ class Quickdraw::Coordinator
 			records: @records,
 			loaded_paths: @files.each_value.map(&:display_path),
 			load_errors: @load_errors,
-		)
-		@history.close
+		}
+
+		@history.save(run, (coverage_map if @coverage))
 	rescue Quickdraw::History::Error => error
 		warn "Quickdraw couldn’t save this run to its history (#{error.message})."
+	ensure
+		@history&.close
 	end
 
 	# Files with no history go first, since they could be slow too. The rest go
 	# slowest first, so the longest files don't start last.
 	private def order_slowest_files_first(durations)
 		@unloaded = @unloaded.each_with_index.sort_by do |(_absolute, display), index|
-			duration = durations[display]
+			duration = durations.fetch(display, 0.0)
 			(duration > 0) ? [1, -duration, index] : [0, 0, index]
 		end.map(&:first)
 	end
@@ -761,6 +771,8 @@ class Quickdraw::Coordinator
 			load_failed(path, error) unless @files.key?(path)
 		in [:result, index, result]
 			record(worker, index, result)
+		in [:covered, path, sources]
+			(@coverage_map[display_path(path)] ||= {}).merge!(sources.to_h { |source| [source, true] })
 		end
 	end
 
@@ -775,7 +787,7 @@ class Quickdraw::Coordinator
 			end
 		else
 			display_path = display_path(path)
-			keys = @history&.keys(display_path, tests)
+			keys = (Quickdraw::History.keys(display_path, tests) if @history)
 			indices = @filter.selected_indices(path, tests)
 
 			@filter.unmatched_lines(path, tests).each do |line|

@@ -32,23 +32,7 @@ class Quickdraw::CoverageReport
 
 	# Adds coverage as CoverageCollector#take gives it.
 	def add(files)
-		files.each do |path, data|
-			unless (existing = @files[path])
-				@files[path] = data
-				next
-			end
-
-			existing["lines"] = existing["lines"].zip(data["lines"]).map { |left, right| (left || right) && ((left || 0) + (right || 0)) }
-
-			data["branches"]&.each do |branch, targets|
-				merged = ((existing["branches"] ||= {})[branch] ||= {})
-				targets.each { |target, count| merged[target] = (merged[target] || 0) + count }
-			end
-
-			data["methods"]&.each do |method, count|
-				(existing["methods"] ||= {})[method] = (existing["methods"][method] || 0) + count
-			end
-		end
+		Quickdraw::CoverageCollector.merge(@files, files)
 	end
 
 	def files
@@ -195,47 +179,10 @@ class Quickdraw::CoverageReport
 		{ "lines" => effective_lines(data), "branches" => branches, "methods" => methods }
 	end
 
-	# { path => changed line numbers } for Ruby files changed since the last
-	# commit, staged or not, and untracked ones, which are new in full.
+	# The project's own Ruby changed since the last commit (see Changes).
 	private def changed_lines
-		untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", "*.rb") or return
-		# Relative to this directory, as coverage is, in a repository with more than
-		# one project. Fails before the first commit, when everything is untracked.
-		diff = git("diff", "HEAD", "--relative", "--unified=0", "--no-color", "--no-ext-diff", "--", "*.rb") || ""
-		changes = {}
-		path = nil
-
-		diff.each_line(chomp: true) do |line|
-			case line
-			# Git ends names with spaces with a tab, and quotes names with
-			# quotes, backslashes or control characters, C style.
-			in /\A\+\+\+ (?<file>.*?)\t?\z/
-				file = $~[:file]
-				file = file.undump if file.start_with?('"')
-				path = (file == "/dev/null") ? nil : file.delete_prefix("b/")
-			in /\A@@ -\S+ \+(?<start>\d+)(?:,(?<count>\d+))? @@/ if path
-				start = Integer($~[:start], 10)
-				count = $~[:count] ? Integer($~[:count], 10) : 1
-				(changes[path] ||= []).concat((start...(start + count)).to_a)
-			else nil
-			end
+		Quickdraw::Changes.lines&.reject do |path, _lines|
+			Quickdraw::CoverageCollector::EXCLUDED.match?(path) || path == Quickdraw::Loader::CONFIG_PATH
 		end
-
-		untracked.split("\0").each do |file|
-			changes[file] = Array.new(File.foreach(file).count) { |index| index + 1 }
-		rescue SystemCallError
-			# Such as a dangling symlink.
-			nil
-		end
-
-		changes.reject { |file, _| Quickdraw::CoverageCollector::EXCLUDED.match?(file) || file == Quickdraw::Loader::CONFIG_PATH }
-	end
-
-	private def git(*arguments)
-		# Without quotePath, names outside ASCII would be quoted as octal escapes.
-		output = IO.popen(["git", "-c", "core.quotePath=false", *arguments], err: File::NULL, &:read)
-		output if $?.success?
-	rescue Errno::ENOENT
-		nil
 	end
 end

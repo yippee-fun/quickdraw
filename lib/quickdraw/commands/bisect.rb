@@ -96,7 +96,7 @@ class Quickdraw::Commands::Bisect
 	private def failure_order(path, line)
 		Quickdraw.isolate do
 			history_path = Quickdraw::CLI::HISTORY_PATH
-			next "There’s no run history yet, so there’s nothing to bisect." unless File.exist?(history_path)
+			next "There’s no run history yet, so there’s nothing to bisect." unless Quickdraw::History.exist?(history_path)
 
 			history = Quickdraw::History.new(history_path, read_only: true)
 			order = history.failure_order(path, line)

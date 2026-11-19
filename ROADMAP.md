@@ -57,7 +57,13 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - WAL with `synchronous = NORMAL`, which is safe against corruption; OFF isn't, and was no faster;
   - `wal_autocheckpoint = 0`, with a checkpoint when the database opens, which overlaps the loader's boot;
   - `analysis_limit = 400`, then `PRAGMA optimize = 0x10002` after writing, so the skip-scan has statistics.
-- **Isolation:** `sqlite3` loads only in the coordinator after the loaders fork. `--failed` reads history in a throwaway fork before the loader starts. The one exception is the no-fork thread fallback, where tests share the coordinator's process.
+- **Off the critical path** (done): `require "sqlite3"` alone takes ~35ms, and recording a run waited on three `git` calls (~12ms each), which cost a small project's run ~80ms (0.07s → 0.15s). Now:
+  - A run reads what it needs from history before it starts (previous timings, file durations and the tuner's inputs, for its selection) from a small Marshal file, `.quickdraw/plans`, written by the run before. No `sqlite3` is needed for that.
+  - Recording happens in a process of its own (`HistoryProcess`), started first. It loads `sqlite3` and runs the `git` calls in parallel while the tests run. When the run ends, it takes a file lock and acknowledges at once, then writes after the run has exited. Whatever opens the history next (`--failed`, `history`, `flaky`, the next run's plan) waits for that lock.
+  - It leaves the run's process group, so a terminal, CI or a test stopping the group doesn't cut a write short.
+  
+  A small run with history now takes ~0.09s, against ~0.07s without.
+- **Isolation:** `sqlite3` never loads in the coordinator, so it can't reach loaders or workers. `--failed` and the commands read history in a throwaway fork. The one exception is the no-fork thread fallback, where tests share the coordinator's process.
 - **Treated as a cache:**
   - a schema change or a corrupt file rebuilds it;
   - runs and tests not seen for 100 runs are pruned;
@@ -171,7 +177,9 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - `--failed` and `--fail-fast`.
   - All of these combine freely, and a filter that matches nothing fails the run rather than passing.
   
-  Still to do: tags, and `--changed` (git diff plus the impact map).
+  - `--changed` (done) runs test files changed since the last commit, and those whose tests ran a changed source file in their last `--coverage` run. Config, Gemfile and test helper changes run everything, and non-Ruby changes are named as not mapped. Without a map, it runs changed files' counterparts and says so.
+  
+  Still to do: tags, and `--changed` against any git base.
 - Directories as arguments, searched for test files (done).
 - `SEED` env var as well as `--seed` (done), and `rand` seeded per test from the run seed (done) (from #72).
 - **Usage errors** (done): one line, with "did you mean" for options, formats and paths (keeping `:line`), and no backtrace. Exit status 2, apart from 1 for failures and 130 for Ctrl-C.
@@ -256,7 +264,7 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 - **AI** (done): the same, as compact `path:ranges` lines. Still to do: the code at those lines and the tests nearest to them.
 - **Files** (done): `.quickdraw/coverage/lcov.info` for editors and coverage services, and `coverage.json` with everything, and coverage totals in the JSON stream's finish event.
 - **Changed lines** (done): coverage of the lines changed since the last commit, staged or not, and of untracked Ruby files. Still to do: any git base (`--coverage-base main`), and a threshold that fails CI.
-- **Per-test coverage**, for impact analysis (`--changed`) and "which tests cover this line?". Measured on 105,000 loaded lines, taking coverage costs 8.6ms in lines, branches and methods mode but 0.3ms for lines alone, since branches and methods dominate. So recording what each test ran on every coverage run would add about 9ms per test. Options: a lines-only mapping run, or taking coverage per batch rather than per test (mapping test files, not tests, to source files). Until there's a map, `--changed` could run changed test files and changed source files' counterparts.
+- **Which source files each test file runs** (done), for `--changed`. Measured on 105,000 loaded lines, taking coverage costs 8.6ms in lines, branches and methods mode but 0.3ms for lines alone, so taking it after every test would add ~9ms per test. Workers take it per batch instead, and after loading a file, and keep their own totals. A file counts as run if any of its lines, methods or branches ran, since calling a one-line method doesn't count its line again. Each `--coverage` run replaces its test files' entries in history. Still to do: per-test granularity, for "which tests cover this line?".
 - Coverage of `eval`'d and generated code mapped back to source where possible.
 
 ## Suite profiling

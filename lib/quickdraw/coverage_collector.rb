@@ -42,6 +42,41 @@ module Quickdraw::CoverageCollector
 		end
 	end
 
+	# Adds `files`, as #take gives them, to `totals`, in place.
+	def merge(totals, files)
+		files.each do |path, data|
+			unless (existing = totals[path])
+				totals[path] = data
+				next
+			end
+
+			existing["lines"] = existing["lines"].zip(data["lines"]).map { |left, right| (left || right) && ((left || 0) + (right || 0)) }
+
+			data["branches"]&.each do |branch, targets|
+				merged = ((existing["branches"] ||= {})[branch] ||= {})
+				targets.each { |target, count| merged[target] = (merged[target] || 0) + count }
+			end
+
+			data["methods"]&.each do |method, count|
+				(existing["methods"] ||= {})[method] = (existing["methods"][method] || 0) + count
+			end
+		end
+
+		totals
+	end
+
+	# The paths in `files`, as #take gives them, with code that ran. Methods
+	# count too, since calling a one-line method doesn't count its line again.
+	def run(files)
+		files.filter_map do |path, data|
+			ran = data["lines"].any? { |count| count&.positive? } ||
+				data["methods"]&.each_value&.any?(&:positive?) ||
+				data["branches"]&.each_value&.any? { |targets| targets.each_value.any?(&:positive?) }
+
+			path if ran
+		end
+	end
+
 	# Without the anonymous module each test file is loaded in.
 	private def owner_name(owner)
 		Quickdraw.utf8(Quickdraw.plain_string(owner.inspect)).gsub(/#<Module:0x\h+>::/, "")

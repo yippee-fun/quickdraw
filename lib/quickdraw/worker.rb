@@ -40,16 +40,19 @@ class Quickdraw::Worker
 		end
 
 		# Records the whole test's duration, CPU time, GC time and allocations.
+		# CPU time includes that of processes the test started and waited for (and
+		# theirs), since a test waiting on a busy process isn't idle.
 		def measure_test
 			wall = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 			cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond)
+			children = children_cpu
 			gc = gc_milliseconds
 			allocations = allocated_objects
 
 			yield
 		ensure
 			@duration = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - wall
-			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu
+			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (children_cpu - children)
 			@stats[GC_TIME] = (gc_milliseconds - gc) * 1_000_000
 			@stats[ALLOCATIONS] = allocated_objects - allocations
 		end
@@ -90,6 +93,12 @@ class Quickdraw::Worker
 			}
 		end
 
+		# In nanoseconds, of child processes that have been waited for.
+		private def children_cpu
+			times = Process.times
+			((times.cutime + times.cstime) * 1_000_000_000).round
+		end
+
 		private def gc_milliseconds
 			GC_KEYS.include?(:time) ? GC.stat(:time) : 0
 		end
@@ -108,6 +117,7 @@ class Quickdraw::Worker
 		@timeouts = timeouts
 		@profile = profile
 		@coverage = coverage
+		@coverage_totals = {}
 		@files = {}
 		@file_seeds = {}
 	end
@@ -126,7 +136,9 @@ class Quickdraw::Worker
 		while (message = @channel.read)
 			case message
 			in [:load, path]
-				@channel.write(load(path))
+				loaded = load(path)
+				covered(path) if @coverage
+				@channel.write(loaded)
 			in [:run, path, indices]
 				@channel.write([:started])
 				tests = @files.fetch(path)
@@ -139,14 +151,25 @@ class Quickdraw::Worker
 					@channel.write([:result, index, run(tests[index])])
 				end
 
+				covered(path) if @coverage
 				@channel.write([:ready, Process.pid])
 			in [:stop]
-				@channel.write([:coverage, Quickdraw::CoverageCollector.take]) if @coverage
+				@channel.write([:coverage, Quickdraw::CoverageCollector.merge(@coverage_totals, Quickdraw::CoverageCollector.take)]) if @coverage
 				break
 			end
 		end
 	rescue Quickdraw::Interrupted
 		nil
+	end
+
+	# Takes what loading or running the file's tests covered, for the map of
+	# which source files each test file runs (see History#record_coverage_map).
+	# Taking it per batch rather than per test, since with branches and methods
+	# it takes about 9ms for 100,000 lines of code.
+	private def covered(path)
+		files = Quickdraw::CoverageCollector.take
+		Quickdraw::CoverageCollector.merge(@coverage_totals, files)
+		@channel.write([:covered, path, Quickdraw::CoverageCollector.run(files)])
 	end
 
 	private def load(path)

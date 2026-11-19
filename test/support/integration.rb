@@ -50,6 +50,12 @@ module Integration
 				"GITHUB_ACTIONS" => nil,
 				"GITHUB_STEP_SUMMARY" => nil,
 				"POSIXLY_CORRECT" => nil,
+				# Bundler resolves the Gemfile in every process, which takes about
+				# 120ms. The load path it set up for this one does the same job.
+				"RUBYOPT" => nil,
+				"BUNDLE_GEMFILE" => nil,
+				"BUNDLER_SETUP" => nil,
+				"RUBYLIB" => $LOAD_PATH.join(File::PATH_SEPARATOR),
 				**Quickdraw::Reporters::AGENT_VARIABLES.to_h { |name| [name, nil] },
 				**env,
 			}
@@ -85,6 +91,9 @@ module Integration
 			drain(stdout_reader, stdout)
 			drain(stderr_reader, stderr)
 			kill_group(pid)
+			# Run history is written after the run ends (see HistoryProcess), so
+			# the project, and the next run, see it as a person would.
+			Quickdraw::History.wait_for_writer(File.join(@directory, Quickdraw::CLI::HISTORY_PATH))
 			output = "#{stdout.force_encoding(Encoding::UTF_8)}#{stderr.force_encoding(Encoding::UTF_8)}"
 
 			Result.new(stdout:, stderr:, output:, summary: output[/^\d+ tests? ·.*$/], status:, exit_status: status.exitstatus, duration: now - started_at)
