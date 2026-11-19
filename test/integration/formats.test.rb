@@ -72,7 +72,7 @@ class FormatsTest < Quickdraw::Test
 
 	test "keeps the JSON stream valid when tests print, sending their output to stderr", timeout: 20 do
 		require "json"
-		result = project("noisy.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "json")
+		result = project("noisy.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--no-capture", "--format", "json")
 			class Noisy < Quickdraw::Test
 				test("prints") { puts "debugging"; system("echo", "from a subprocess"); assert true }
 			end
@@ -81,6 +81,27 @@ class FormatsTest < Quickdraw::Test
 		result.stdout.lines.each { |line| JSON.parse(line) }
 		assert_includes result.stderr, "debugging"
 		assert_includes result.stderr, "from a subprocess"
+	end
+
+	test "puts what a failing test printed in its JSON event and JUnit testcase", timeout: 20 do
+		require "json"
+		project = project("noisy.test.rb" => <<~RUBY)
+			puts "loading"
+
+			class Noisy < Quickdraw::Test
+				test("fails") { puts "debugging"; system("echo", "from a subprocess"); assert false }
+				test("passes") { puts "quiet"; assert true }
+			end
+		RUBY
+
+		result = project.run("-p", "1", "--no-history", "--format", "json", "--format", "junit:junit.xml")
+		events = result.stdout.lines.map { |line| JSON.parse(line, symbolize_names: true) }
+
+		match { events.find { |event| event[:name] == "Noisy › fails" } => { output: "debugging\nfrom a subprocess\n" } }
+		match { events.find { |event| event[:name] == "Noisy › passes" } => { output: nil } }
+		assert_includes result.stderr, "loading"
+		refute_includes result.output, "quiet"
+		assert_includes File.read(File.join(project.directory, "junit.xml")), "<system-out>debugging\nfrom a subprocess\n</system-out>"
 	end
 
 	test "reports invalid UTF-8 and binary messages without crashing", timeout: 20 do

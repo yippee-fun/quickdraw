@@ -176,6 +176,9 @@ class Quickdraw::Coordinator
 		# [seconds, thread backtraces] once the worker reports a test timed out.
 		attr_accessor :timeout
 
+		# The file the worker captures tests' output in (see Capture), if it does.
+		attr_accessor :output_path
+
 		def received_message
 			@last_message_at = now
 		end
@@ -210,10 +213,14 @@ class Quickdraw::Coordinator
 	# of the same selection can be compared. `history_path` is nil to run without
 	# history. `only_keys` limits each file to the tests with those history keys
 	# (a Hash keyed by key), except files in `whole_files`, which run in full.
+	# `capture` and `leaks` are for workers (see Worker#initialize).
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
-		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false
+		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
+		capture: false, leaks: nil
 	)
+		@capture = capture
+		@leaks = leaks
 		@seed = seed
 		@processes = processes
 		@cores = cores
@@ -223,6 +230,7 @@ class Quickdraw::Coordinator
 		@stopping = false
 		@interrupted = false
 		@abandoned = []
+		@abandoned_output_paths = []
 		@selected = 0
 		@outcome = Quickdraw::Outcome.new
 		@selection = selection
@@ -373,6 +381,8 @@ class Quickdraw::Coordinator
 		@workers.delete(worker.channel.reader)
 		worker.channel.close
 		@abandoned << worker.pid if worker.pid
+		# The worker shows what's left of it as it exits, unless it's killed first.
+		@abandoned_output_paths << worker.output_path if worker.output_path
 
 		if (path = worker.loading)
 			@unloaded.unshift([path, display_path(path)]) unless @files.key?(path)
@@ -401,6 +411,7 @@ class Quickdraw::Coordinator
 			worker_channels, @test_files, @seed,
 			gemfile: @gemfiles[group],
 			control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, coverage: !@coverage.nil?, group:, report: report_writer,
+			capture: @capture, leaks: @leaks,
 		) do
 			coordinator_channels.each(&:close)
 			control_writer.close
@@ -537,6 +548,11 @@ class Quickdraw::Coordinator
 
 		@loaders.each_value(&:kill)
 		@loaders.each_value(&:wait)
+
+		@abandoned_output_paths.each do |path|
+			output = Quickdraw::Capture.collect(path)
+			$stderr.write(output) if output
+		end
 	end
 
 	# The last run of this selection's plan (see History::Plan).
@@ -756,6 +772,8 @@ class Quickdraw::Coordinator
 			worker.timeout = [seconds, threads]
 		in [:pid, pid]
 			worker.pid = pid
+		in [:capturing, path]
+			worker.output_path = path
 		in [:ready, pid]
 			worker.pid = pid
 			worker.idle = true
@@ -865,6 +883,7 @@ class Quickdraw::Coordinator
 
 		@workers.delete(worker.channel.reader)
 		worker.channel.close
+		output = Quickdraw::Capture.collect(worker.output_path) if worker.output_path
 
 		crash = if (timeout = worker.timeout)
 			timeout_error(*timeout)
@@ -890,7 +909,7 @@ class Quickdraw::Coordinator
 				index, *rest = indices
 				file.pending.unshift(*rest)
 				report(worker, file, index, {
-					"assertions" => 0, "failures" => [], "errors" => [crash], "duration" => nil
+					"assertions" => 0, "failures" => [], "errors" => [crash], "duration" => nil, "output" => output
 				})
 			else
 				file.pending.unshift(*indices)

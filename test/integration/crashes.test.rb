@@ -22,7 +22,7 @@ class CrashesTest < Quickdraw::Test
 	end
 
 	test "starts a replacement in the crashed worker's slot", timeout: 20 do
-		result = project("slot.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "slot.test.rb")
+		result = project("slot.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--no-capture", "slot.test.rb")
 			class Slot < Quickdraw::Test
 				test("kills its worker") { exit!(1) }
 				3.times { |i| test("reports its slot \#{i}") { puts "slot=\#{ENV["QUICKDRAW_WORKER"]}"; assert true } }

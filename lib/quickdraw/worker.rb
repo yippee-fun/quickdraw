@@ -27,6 +27,8 @@ class Quickdraw::Worker
 			@skipped = nil
 			@profile = nil
 			@counts = nil
+			@output = nil
+			@leaks = nil
 		end
 
 		# Records the wall time of a phase of the test. Only the wall clock is read,
@@ -84,8 +86,18 @@ class Quickdraw::Worker
 		# From Sampler#record, with --profile.
 		attr_writer :profile
 
+		# What the test printed, only kept if it failed or errored.
+		attr_writer :output
+
+		# From Leaks#check, as warnings.
+		attr_writer :leaks
+
+		def problem? = @failures.any? || @errors.any?
+
+		# Output and leaks only when there are some, since each key sent costs
+		# about 250ns.
 		def to_h
-			{
+			result = {
 				"assertions" => @assertions,
 				"failures" => @failures,
 				"errors" => @errors,
@@ -95,6 +107,10 @@ class Quickdraw::Worker
 				"profile" => @profile,
 				"counts" => @counts,
 			}
+
+			result["output"] = @output if @output
+			result["leaks"] = @leaks if @leaks
+			result
 		end
 
 		# In nanoseconds, of child processes that have been waited for.
@@ -114,13 +130,19 @@ class Quickdraw::Worker
 
 	# `timeouts` is false where the worker shares a process with the coordinator,
 	# since timing out exits the worker's process. `profile` samples tests.
-	def initialize(channel, test_files, seed, timeouts: true, profile: false, coverage: false)
+	# `capture` attributes what tests print to them (see Capture). `leaks` is
+	# :warn or :fail to check for state tests leave behind (see Leaks), or nil.
+	def initialize(channel, test_files, seed, timeouts: true, profile: false, coverage: false, capture: false, leaks: nil)
+		raise ArgumentError, "leaks must be :warn, :fail or nil, not #{leaks.inspect}" unless leaks in :warn | :fail | nil
+
 		@channel = channel
 		@test_files = test_files
 		@seed = seed
 		@timeouts = timeouts
 		@profile = profile
 		@coverage = coverage
+		@capture_output = capture
+		@leak_mode = leaks
 		@coverage_totals = {}
 		@files = {}
 		@file_seeds = {}
@@ -135,18 +157,33 @@ class Quickdraw::Worker
 			end
 		end
 
+		if @capture_output
+			begin
+				@capture = Quickdraw::Capture.new
+				# So the coordinator can show what a test printed if it kills the worker.
+				@channel.write([:capturing, @capture.path])
+			rescue SystemCallError => error
+				warn "Quickdraw couldn’t create a file to capture what tests print in (#{error.message}), so it’s shown as it’s printed."
+			end
+		end
+
+		# After the watchdog and sampler start, so their threads aren't leaks.
+		@leaks = Quickdraw::Leaks.new(Dir.pwd) if @leak_mode
+
 		@channel.write([:ready, Process.pid])
 
 		while (message = @channel.read)
 			case message
 			in [:load, path]
 				loaded = load(path)
+				@leaks&.reset
 				covered(path) if @coverage
 				@channel.write(loaded)
 			in [:run, path, indices]
 				@channel.write([:started])
 				tests = @files.fetch(path)
 				file_seed = @file_seeds.fetch(path)
+				@capture&.start
 
 				indices.each do |index|
 					# Seeded by test rather than by process, so `rand` in a test gives the
@@ -155,6 +192,7 @@ class Quickdraw::Worker
 					@channel.write([:result, index, run(tests[index])])
 				end
 
+				@capture&.stop
 				covered(path) if @coverage
 				@channel.write([:ready, Process.pid])
 			in [:stop]
@@ -164,6 +202,8 @@ class Quickdraw::Worker
 		end
 	rescue Quickdraw::Interrupted
 		nil
+	ensure
+		@capture&.close
 	end
 
 	# Takes what loading or running the file's tests covered, for the map of
@@ -246,7 +286,22 @@ class Quickdraw::Worker
 			recorder.error!(Quickdraw.serialize_error(error))
 		end
 
-		flush_output
+		if @leaks && (leaks = @leaks.check)
+			if @leak_mode == :fail
+				recorder.error!({ "name" => "Quickdraw::Leak", "message" => leaks.map { |leak| leak["message"] }.join("\n"), "backtrace" => [] })
+			else
+				recorder.leaks = leaks
+			end
+		end
+
+		if @capture
+			# Taken from every test, so the next one starts empty.
+			output = @capture.take
+			recorder.output = output if recorder.problem?
+		else
+			flush_output
+		end
+
 		recorder.to_h
 	end
 
@@ -258,9 +313,9 @@ class Quickdraw::Worker
 		end
 	end
 
-	# Workers start unbuffered, but a test or config can replace $stdout. Without
-	# this, a later test that crashes the worker would lose what earlier tests
-	# printed. Free when nothing was printed.
+	# Without capture. Workers start unbuffered, but a test or config can replace
+	# $stdout. Without this, a later test that crashes the worker would lose what
+	# earlier tests printed. Free when nothing was printed.
 	private def flush_output
 		$stdout.flush
 		$stderr.flush

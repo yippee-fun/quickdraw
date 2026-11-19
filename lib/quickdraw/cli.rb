@@ -7,6 +7,7 @@ class Quickdraw::CLI
 	FORMATS = ["human", "agent", "json", "junit"].freeze
 	# Formats that other programs read, which what tests print would corrupt.
 	MACHINE_FORMATS = ["json", "junit"].freeze
+	LEAK_MODES = ["warn", "fail", "off"].freeze
 	PROFILE_TIMESLICE = "1"
 	MAX_SEED = (2 ** 63) - 1
 
@@ -58,6 +59,8 @@ class Quickdraw::CLI
 			names: [],
 			excludes: [],
 			outputs: [],
+			capture: true,
+			leaks: "warn",
 		}
 
 		parser = option_parser(options)
@@ -115,6 +118,11 @@ class Quickdraw::CLI
 
 		usage_error "--failed needs run history, so it can’t be used with --no-history." if options[:failed] && !options[:history]
 
+		unless LEAK_MODES.include?(options[:leaks])
+			suggestion = suggest(options[:leaks], LEAK_MODES)
+			usage_error "--leaks takes #{LEAK_MODES[...-1].join(', ')} or #{LEAK_MODES.last}, not #{options[:leaks].inspect}.", ("Did you mean #{suggestion}?" if suggestion)
+		end
+
 		if options[:changed]
 			usage_error "--changed chooses the test files, so it can’t be used with paths." if @args.any?
 			usage_error "--changed can’t be used with --watch, which runs the tests for each change." if options[:watch]
@@ -131,6 +139,11 @@ class Quickdraw::CLI
 
 		if options[:coverage] && !Quickdraw::Platform.supports_forking?
 			usage_error "--coverage needs fork, which this platform doesn’t support."
+		end
+
+		# Without fork, tests share the coordinator's process, so leaks can't be told apart.
+		if options[:leaks] == "fail" && !Quickdraw::Platform.supports_forking?
+			usage_error "--leaks fail needs fork, which this platform doesn’t support."
 		end
 
 		# nil lets the coordinator tune the count from run history.
@@ -239,6 +252,18 @@ class Quickdraw::CLI
 
 			parser.on("-b", "--backtrace", "Include Quickdraw’s own frames in backtraces") do
 				options[:backtrace] = true
+			end
+
+			parser.on(
+				"--no-capture",
+				"Show what tests print as they print it, rather than with their failures",
+				"(for a debugger such as binding.irb, also run one test with -p 1)",
+			) do
+				options[:capture] = false
+			end
+
+			parser.on("--leaks MODE", "Threads, child processes and ENV changes a test leaves behind: warn (default), fail or off") do |it|
+				options[:leaks] = it
 			end
 
 			parser.separator ""
@@ -458,6 +483,8 @@ class Quickdraw::CLI
 			whole_files:,
 			profile: options[:profile],
 			coverage: options[:coverage],
+			capture: options[:capture],
+			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
 		).call
 	end
 

@@ -103,6 +103,20 @@ qt --format human --format junit:reports/junit.xml
 
 Under GitHub Actions, failures are annotated and a summary is written for the job.
 
+What a test prints, to stdout or stderr, from Ruby, a subprocess or a C extension writing to the file descriptor, is shown with its failure rather than as it's printed, so output from parallel tests can't interleave. Passing tests' output isn't shown. A test that crashes or hangs its worker still has its output shown. What config and test files print while loading shows as usual.
+
+`--no-capture` shows output as it's printed instead. For a debugger such as `binding.irb`, which needs the terminal, run the one test with it: `qt --no-capture -p 1 test/user.test.rb:12`.
+
+## Leaks
+
+After each test, Quickdraw checks for state it left behind, which can make later tests fail depending on the order they run in:
+
+- threads it started (in your project, not in a gem) that are still running;
+- child processes it started and didn't wait for (unless config started some too, which can't be told apart);
+- changes to `ENV` it didn't undo. Only the names are reported, since values can be secrets.
+
+Leaks are listed as warnings after the run. `--leaks fail` makes them errors, and `--leaks off` turns the checks off. They cost about a microsecond per test.
+
 ## History, flaky tests and order bugs
 
 Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That's how it orders slow files first, tunes the worker count, and knows what failed. `--no-history` turns it off.

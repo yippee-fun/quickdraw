@@ -105,7 +105,7 @@ class SelectionTest < Quickdraw::Test
 	end
 
 	test "--fail-fast stops promptly after a problem in the middle of a file", timeout: 20 do
-		result = project("middle.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--fail-fast", "middle.test.rb")
+		result = project("middle.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--fail-fast", "--no-capture", "middle.test.rb")
 			class Middle < Quickdraw::Test
 				20.times { |i| test("passes \#{i}") { puts "ran passes \#{i}"; assert true } }
 				test("fails") { puts "ran fails"; assert false }

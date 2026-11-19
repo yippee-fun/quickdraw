@@ -131,7 +131,7 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "Ctrl-C stops the run, runs teardown and reports what finished", timeout: 20 do
-		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--seed", "1", interrupt_when: /started/)
+		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--seed", "1", "--no-capture", interrupt_when: /started/)
 			class A < Quickdraw::Test
 				def teardown = puts("tore down")
 
@@ -149,7 +149,7 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "Ctrl-C gives teardown a few seconds, then stops what's left", timeout: 20 do
-		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history", interrupt_when: /started/)
+		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--no-capture", interrupt_when: /started/)
 			class A < Quickdraw::Test
 				def teardown = sleep(30)
 
@@ -177,7 +177,7 @@ class CLITest < Quickdraw::Test
 		result = project(
 			"fails.test.rb" => "class A < Quickdraw::Test; test('fails') { assert false }; end\n",
 			"slow.test.rb" => "class B < Quickdraw::Test; test('slow') { sleep 0.5; puts 'slow finished'; assert true }; end\n",
-		).run("-p", "2", "--no-history")
+		).run("-p", "2", "--no-history", "--no-capture")
 
 		failure = result.stdout.index("✗ fails.test.rb:1 A › fails")
 		assert_operator failure, :<, result.stdout.index("slow finished")

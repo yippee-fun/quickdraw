@@ -12,11 +12,14 @@ class Quickdraw::Reporters::Agent
 	BACKTRACE_LIMIT = 8
 	PROFILE_LIMIT = 10
 	COVERAGE_LIMIT = 20
+	OUTPUT_LINES = 20
+	LEAK_LIMIT = 20
 
 	def initialize(io: $stdout, backtrace: false)
 		@io = io
 		@backtrace = backtrace
 		@problems = []
+		@leaks = []
 		@profile = Quickdraw::Profile.new
 	end
 
@@ -27,6 +30,7 @@ class Quickdraw::Reporters::Agent
 
 	def result(path, test, result)
 		@problems << [path, test, result] if result["errors"].any? || result["failures"].any?
+		@leaks << [path, test, result["leaks"]] if result["leaks"]
 		@profile.record(result)
 	end
 
@@ -46,6 +50,8 @@ class Quickdraw::Reporters::Agent
 			rest.each { |path, test, result| @io.puts "- #{heading(path, test, result)}" }
 			@io.puts
 		end
+
+		print_leaks if @leaks.any?
 
 		@io.puts "Workers exited with a failure status (e.g. from an at_exit hook)." if outcome.processes_failed && @problems.empty?
 		if outcome.interrupted
@@ -124,7 +130,25 @@ class Quickdraw::Reporters::Agent
 			@io.puts indent(compact(relative_paths(plain(error["details"]))), 2) if error["details"]
 		end
 
+		if (output = result["output"])
+			lines = compact(plain(output)).lines(chomp: true)
+			shown = lines.last(OUTPUT_LINES)
+			@io.puts (lines.size > shown.size) ? "  Output (last #{shown.size} of #{lines.size} lines):" : "  Output:"
+			shown.each { |line| @io.puts "    #{line}" }
+		end
+
 		@io.puts "  Rerun: #{rerun_command(path, test)}"
+		@io.puts
+	end
+
+	private def print_leaks
+		@io.puts "Tests that left state behind, which can make later tests fail:"
+
+		@leaks.first(LEAK_LIMIT).each do |path, test, leaks|
+			leaks.each { |leak| @io.puts "- #{path}:#{test['line']} #{name_of(test)}: #{leak['message']}" }
+		end
+
+		@io.puts "- and #{pluralize(@leaks.size - LEAK_LIMIT, 'more test')}" if @leaks.size > LEAK_LIMIT
 		@io.puts
 	end
 

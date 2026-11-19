@@ -138,13 +138,19 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - **Still to do:**
     - A timed-out test's `defer` blocks (and so its `tmpdir`) don't run, because the worker exits mid-test.
     - A message half-written by a dead worker, whose pipe a child process holds open, blocks the coordinator. Reading needs non-blocking framing.
-- **Per-test output capture:** collect what each test prints and show it with that test's failure, as pytest does, instead of interleaving it on the terminal. Workers flush after every test (done), so a crash no longer loses earlier tests' output.
+- **Per-test output capture** (done): each worker points file descriptors 1 and 2 at one file while it runs tests, so stdout and stderr stay in order and include subprocesses and C extensions. After each test the worker takes what's there (an `fstat` when nothing was printed) and sends it with failures and errors only; the last 64KB is kept. Shown in the human, agent (last 20 lines), JSON and JUnit (`system-out`) outputs. The file has a path the worker sends the coordinator, which reads it when a test crashes or hangs its worker. Loading files and the time between batches aren't captured, so what config and test files print shows as usual, and Ctrl-C shows what the interrupted test printed. `--no-capture` streams output live.
+  - Still to do: a debugger or `binding.irb` needs `--no-capture -p 1` (see CLI); output a leaked thread or process prints after its test ends goes to the next test; C code writing through buffered libc stdio isn't flushed at test boundaries (core Ruby can't call `fflush`), so it can land with a later test.
 - **Flaky detection:**
   - `quickdraw flaky [--runs N]` (done) runs the selection N times with new seeds and lists tests that passed in some runs and failed in others, with the failing seeds.
   - `quickdraw history` (done) lists tests that passed and failed on the same code across recent runs.
   - Still to do: retry failures in a fresh worker during a normal run, reporting a test that passes on retry as flaky rather than green.
 - **Order bisection** (done): `quickdraw bisect PATH:LINE` takes the last run where the test failed and the tests its worker ran before it, from history. It checks the test passes alone and fails after them, then replays halves until the fewest that still make it fail are left. Replays run in a worker forked from a loader that boots config once, as in a run, with the run's seed. Still to do: failures that need tests from both halves are reported as the whole remaining set, not narrowed further (ddmin).
 - **Leak detection:** snapshot global state around tests — globals, new constants, `ENV`, `Time` stubs, live threads, open files, temp files — and blame the test that leaked.
+  - Done, after every test, as warnings (`--leaks fail` makes them errors, `--leaks off` skips them), for about 0.6μs per test:
+    - threads still running that started in the project (outside `vendor/`), from comparing `Thread.list`, so the threads gems start lazily (Timeout's, connection pool reapers) aren't blamed;
+    - child processes not waited for. `waitpid(-1, WNOHANG)` costs about 2μs in a worker, so it only runs after `spawn`, `fork` or `IO.popen` set a flag (prepended to those methods before `after_forking` runs). It's skipped in a worker where config or a test file started a process, since waiting could reap one that code waits for later; after a leak, checking pauses until the leaked processes exit. `ps` names running ones, by program only, since arguments can be secrets;
+    - `ENV` changes, by name only (values can be secrets). `ENV.to_h` takes about 7μs, so ENV's writers set a flag (prepended to `ENV`'s singleton class).
+  - Still to do: open file descriptors (listing `/dev/fd` takes about 20μs and `dup` about 4μs, and Files waiting for GC would be noisy, so an opt-in mode), globals and constants, `Time` stubs, temp files; processes started by `PTY.spawn` or C code, and checking processes again once config's have exited (tracking pids from the hooks); ignoring known leaks in config; rerun commands and `bisect` that keep `--leaks fail`.
 - **Stress modes:** `--repeat N`, run each test many times across random workers, randomised `TZ` and locale.
 - Tests with zero assertions are flagged.
 
@@ -162,7 +168,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - **Detection:** the agent format is chosen from the environment (`CLAUDECODE`, `CODEX_SANDBOX` and others), or with `--format agent`.
   - **Each problem:** one compact block with the source line it failed on, a trimmed backtrace and a rerun command. The first 10 are shown in full and the rest one line each.
   - **Result:** one line, last, where truncated output keeps it.
-  - **`--format json`:** one event per line. Anything tests print goes to stderr so the stream stays valid.
+  - **`--format json`:** one event per line, with a failing test's output and any leaks. Anything printed outside tests (or with `--no-capture`) goes to stderr so the stream stays valid.
   
   Still to do: truncating large values with a pointer to the full detail, and possibly a `quickdraw mcp` server.
 - **Worker timeline:** utilisation per worker, to spot long poles and idle time.
@@ -186,7 +192,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 - **Usage errors** (done): one line, with "did you mean" for options, formats and paths (keeping `:line`), and no backtrace. Exit status 2, apart from 1 for failures and 130 for Ctrl-C.
 - **Help** (done): options grouped by purpose, with examples and exit statuses. `--version`.
 - **Ctrl-C** (done): the first stops starting tests, lets running tests' teardown and deferred blocks finish, and reports what finished, counting the rest as not run. A second exits at once. Interrupted runs aren't recorded, so they can't mislead worker tuning.
-- **Live progress** (done): on a terminal, a bar on the bottom row, below a scroll region holding everything else, so what tests print can't collide with it. The total and time left come from the last run of the same selection. Problems are printed as they happen, with a one-line-per-problem recap at the end. Workers write output unbuffered, so a hanging test's output shows.
+- **Live progress** (done): on a terminal, a bar on the bottom row, below a scroll region holding everything else, so what tests print can't collide with it. The total and time left come from the last run of the same selection. Problems are printed as they happen, with a one-line-per-problem recap at the end. What tests print is captured and shown with their failures; with `--no-capture`, workers write it unbuffered, so a hanging test's output shows.
 - **Shell completions** (done): `quickdraw completions bash|zsh|fish`, generated from the option definitions and commands, for both `quickdraw` and `qt`.
 - **Interactive watch mode** (done): a changed test file reruns on its own, and a changed source file reruns its counterpart's tests (everything when it has none). On a terminal, keys rerun everything, only failures, or tests filtered by path or name. Uses only core Ruby in the process tests fork from: listen runs in its own process, and keys are read with the terminal set by `stty`.
 - **Subcommands** (done):
@@ -195,7 +201,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - `history` lists recent runs, the slowest tests, and flaky tests: those that passed and failed on the same code. Each run records its code as the commit plus a hash of uncommitted changes (tracked files' differences and untracked Ruby files), so a test that fails while you edit and then passes isn't flaky.
   - `counterpart PATH` prints a source file's test or a test's source file; `exe/qc` opens it in `$EDITOR`.
   - `flaky` and `bisect`: see Reliability.
-- Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached.
+- Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached. For now, `--no-capture -p 1` gives it the terminal, though its timeout still applies.
 - The seed and worker sequences are always printed or recorded, so every run is reproducible.
 
 ## Compatibility (deferred)

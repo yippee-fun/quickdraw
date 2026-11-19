@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 # JUnit XML, which most CI systems display: a testsuite per file, a testcase
-# per test, and a failure or error element for each problem. A test that
-# both failed an assertion and raised counts as an error.
+# per test, and a failure or error element for each problem, with what the
+# test printed. A test that both failed an assertion and raised counts as an
+# error.
 class Quickdraw::Reporters::JUnit
 	include Quickdraw::Reporters::Formatting
 
@@ -73,7 +74,10 @@ class Quickdraw::Reporters::JUnit
 			%(      <skipped message="#{attribute(skipped['pending'] ? 'pending' : skipped['reason'].to_s)}"/>\n)
 		end
 
-		problem ? %(    <testcase #{attributes}>\n#{problem}    </testcase>\n) : %(    <testcase #{attributes}/>\n)
+		# Stdout and stderr are captured together, in order, so both go in system-out.
+		output = %(      <system-out>#{text(plain(result['output']))}</system-out>\n) if result["output"]
+
+		problem ? %(    <testcase #{attributes}>\n#{problem}#{output}    </testcase>\n) : %(    <testcase #{attributes}/>\n)
 	end
 
 	# For the message attribute, which CI dashboards show as a summary.

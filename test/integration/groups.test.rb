@@ -36,7 +36,7 @@ class GroupsTest < Quickdraw::Test
 					4.times { |i| test("t\#{i}") { puts "worker \#{ENV['QUICKDRAW_WORKER']}"; sleep 0.2; assert defined?(Browser) } }
 				end
 			RUBY
-		).run("-p", "2", "--no-history", "test/browser")
+		).run("-p", "2", "--no-history", "--no-capture", "test/browser")
 
 		assert result.success?
 		assert_equal result.stdout.scan(/^worker (\d)$/).flatten.uniq.sort, ["0", "1"]
@@ -50,7 +50,7 @@ class GroupsTest < Quickdraw::Test
 				end
 			RUBY
 			"test/quick.test.rb" => "class Quick < Quickdraw::Test; test('quick') { assert true }; end\n",
-		).run("-p", "2", "--no-history")
+		).run("-p", "2", "--no-history", "--no-capture")
 
 		assert result.success?
 		# One worker starts in each group; the quick one's moves to the browser group.

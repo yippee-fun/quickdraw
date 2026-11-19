@@ -24,7 +24,9 @@ class Quickdraw::Loader
 	# groups, coverage] with the groups config defines as [name, patterns,
 	# gemfile] and, with `coverage`, what booting covered (see CoverageCollector);
 	# or [:failed, error] if booting raised.
-	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil)
+	#
+	# `capture` and `leaks` are for workers (see Worker#initialize).
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, leaks: nil)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
@@ -34,6 +36,8 @@ class Quickdraw::Loader
 		@coverage = coverage
 		@group = group
 		@report = report
+		@capture = capture
+		@leaks = leaks
 		@running = {}
 		@statuses = []
 	end
@@ -270,7 +274,9 @@ class Quickdraw::Loader
 
 		ENV["QUICKDRAW_WORKER"] = index.to_s
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
+		# Before the callbacks, so processes they start aren't blamed on tests.
+		Quickdraw::Leaks::ProcessStarts.watch if @leaks
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage).call
+		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture: @capture, leaks: @leaks).call
 	end
 end

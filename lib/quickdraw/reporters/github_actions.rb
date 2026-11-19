@@ -6,6 +6,8 @@ class Quickdraw::Reporters::GitHubActions
 	include Quickdraw::Reporters::Formatting
 
 	ANNOTATION_LIMIT = 50
+	# GitHub shows at most 10 warnings per step.
+	LEAK_LIMIT = 10
 
 	def self.active? = ENV["GITHUB_ACTIONS"] == "true"
 
@@ -13,6 +15,7 @@ class Quickdraw::Reporters::GitHubActions
 		@io = io
 		@summary_path = summary_path
 		@problems = []
+		@leaks = []
 	end
 
 	def start(processes:, worker_choice:, seed:, estimate: nil)
@@ -21,6 +24,7 @@ class Quickdraw::Reporters::GitHubActions
 
 	def result(path, test, result)
 		@problems << [path, test, result] if result["errors"].any? || result["failures"].any?
+		@leaks << [path, test, result["leaks"]] if result["leaks"]
 	end
 
 	def load_failed(path, error)
@@ -31,6 +35,12 @@ class Quickdraw::Reporters::GitHubActions
 
 	def finish(outcome)
 		@problems.first(ANNOTATION_LIMIT).each { |problem| annotate(*problem) }
+
+		@leaks.first(LEAK_LIMIT).each do |path, test, leaks|
+			message = leaks.map { |leak| leak["message"] }.join("\n")
+			@io.puts "::warning file=#{property(path)},line=#{test['line']},title=#{property("#{name_of(test)} left state behind")}::#{data(message)}"
+		end
+
 		write_summary(outcome) if @summary_path && !@summary_path.empty?
 	end
 

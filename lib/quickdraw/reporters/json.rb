@@ -2,6 +2,8 @@
 
 # One JSON object per line, for tools: a "start" event, a "test" event per
 # test, a "load_error" event per file that couldn't load, and a "finish" event.
+# A test's "output" is what it printed, for failures and errors, and "leaks"
+# lists state it left behind.
 class Quickdraw::Reporters::JSON
 	include Quickdraw::Reporters::Formatting
 
@@ -29,6 +31,8 @@ class Quickdraw::Reporters::JSON
 			"counts" => result["counts"]&.transform_values { |count, seconds| { "count" => count, "seconds" => seconds } },
 			"failures" => result["failures"].map { |failure| failure.merge("message" => plain(failure["message"]), "path" => relative(failure["path"])) },
 			"errors" => result["errors"].map { |error| serialize_error(error) },
+			"output" => result["output"]&.then { |output| plain(output) },
+			"leaks" => result["leaks"],
 		)
 	end
 

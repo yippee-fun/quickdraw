@@ -9,6 +9,7 @@ class Quickdraw::Reporters::Human
 	HINT_THRESHOLD = 1.0
 	SLOWEST_LIMIT = 10
 	SET_ASIDE_LIMIT = 20
+	LEAK_LIMIT = 20
 	PROFILE_LIMIT = 20
 	COVERAGE_LIMIT = 10
 	PROGRESS_INTERVAL = 0.1
@@ -24,6 +25,7 @@ class Quickdraw::Reporters::Human
 		@live = io.tty?
 		@problems = []
 		@set_aside = []
+		@leaks = []
 		@tests = 0
 		@last_progress_at = 0.0
 	end
@@ -47,6 +49,7 @@ class Quickdraw::Reporters::Human
 		in "passed" then nil
 		end
 
+		@leaks << [path, test, result["leaks"]] if result["leaks"]
 		progress
 	end
 
@@ -64,6 +67,7 @@ class Quickdraw::Reporters::Human
 		print_slowest if @show_timings
 		print_profile if @profile.any?
 		print_set_aside
+		print_leaks if @leaks.any?
 		print_recap if @problems.any?
 
 		if outcome.processes_failed && @problems.empty?
@@ -273,6 +277,19 @@ class Quickdraw::Reporters::Human
 		end
 	end
 
+	# Warnings, since a leak only breaks the tests that run after it.
+	private def print_leaks
+		@io.puts
+		@io.puts "#{yellow('!')} #{pluralize(@leaks.size, 'test')} left state behind, which can make later tests fail"
+
+		@leaks.sort_by { |path, test, _| [path, test["line"]] }.first(LEAK_LIMIT).each do |path, test, leaks|
+			@io.puts "  #{path}:#{test['line']} #{name_of(test)}"
+			leaks.each { |leak| @io.puts "    #{dim(leak['message'])}" }
+		end
+
+		@io.puts "  and #{pluralize(@leaks.size - LEAK_LIMIT, 'more test')}" if @leaks.size > LEAK_LIMIT
+	end
+
 	private def print_problem(path, test, result)
 		@io.puts
 
@@ -300,6 +317,12 @@ class Quickdraw::Reporters::Human
 				@io.puts
 				@io.puts indent(relative_paths(clean(details)), 4)
 			end
+		end
+
+		if (output = result["output"])
+			@io.puts
+			@io.puts "  #{dim('Output')}"
+			@io.puts indent(clean(output).chomp, 4)
 		end
 
 		@io.puts

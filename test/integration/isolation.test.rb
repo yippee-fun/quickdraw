@@ -76,9 +76,9 @@ class IsolationTest < Quickdraw::Test
 		RUBY
 
 		numbers = -> (result) { result.output.scan(/^\d+=\d+$/).sort }
-		one_worker = numbers.(project.run("-p", "1", "--no-history", "--seed", "42", "random.test.rb"))
-		four_workers = numbers.(project.run("-p", "4", "--no-history", "--seed", "42", "random.test.rb"))
-		another_seed = numbers.(project.run("-p", "1", "--no-history", "--seed", "43", "random.test.rb"))
+		one_worker = numbers.(project.run("-p", "1", "--no-history", "--no-capture", "--seed", "42", "random.test.rb"))
+		four_workers = numbers.(project.run("-p", "4", "--no-history", "--no-capture", "--seed", "42", "random.test.rb"))
+		another_seed = numbers.(project.run("-p", "1", "--no-history", "--no-capture", "--seed", "43", "random.test.rb"))
 
 		assert_equal one_worker.size, 20
 		assert_equal four_workers, one_worker
