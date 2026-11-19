@@ -7,9 +7,9 @@ module Integration
 	ROOT = File.expand_path("../..", __dir__)
 	EXECUTABLE = File.join(ROOT, "exe", "quickdraw")
 
-	# `summary` is the "N tests · …" line. It's a member, rather than a method,
-	# so pattern matching can use it.
-	Result = Data.define(:output, :summary, :status, :duration) do
+	# `output` is stdout then stderr. `summary` is the "N tests · …" line. They're
+	# members, rather than methods, so pattern matching can use them.
+	Result = Data.define(:stdout, :stderr, :output, :summary, :status, :duration) do
 		def success? = status.success?
 	end
 
@@ -33,20 +33,35 @@ module Integration
 		# `timeout` seconds. Waits for the process rather than for its output to
 		# close, since processes a test forks can hold the output open.
 		def run(*, env: {}, timeout: 10)
-			reader, writer = IO.pipe
+			stdout_reader, stdout_writer = IO.pipe
+			stderr_reader, stderr_writer = IO.pipe
 
 			pid = Process.spawn(
-				# Unset what Quickdraw sets in this test's own worker, or the user's shell.
-				{ "NO_COLOR" => "1", "SEED" => nil, "QUICKDRAW_WORKER" => nil, "TEST_ENV_NUMBER" => nil, **env },
+				# Unset what Quickdraw sets in this test's own worker, or the environment
+				# this suite runs in (an AI agent, GitHub Actions, an option parser
+				# setting), so behaviour is only what the test asks for.
+				{
+					"NO_COLOR" => "1",
+					"SEED" => nil,
+					"QUICKDRAW_WORKER" => nil,
+					"TEST_ENV_NUMBER" => nil,
+					"GITHUB_ACTIONS" => nil,
+					"GITHUB_STEP_SUMMARY" => nil,
+					"POSIXLY_CORRECT" => nil,
+					**Quickdraw::Reporters::AGENT_VARIABLES.to_h { |name| [name, nil] },
+					**env,
+				},
 				RbConfig.ruby, "-I", File.join(ROOT, "lib"), EXECUTABLE, *,
 				chdir: @directory,
-				out: writer,
-				err: writer,
+				out: stdout_writer,
+				err: stderr_writer,
 				pgroup: true,
 			)
 
-			writer.close
-			output = +""
+			stdout_writer.close
+			stderr_writer.close
+			stdout = +""
+			stderr = +""
 			started_at = now
 			status = nil
 
@@ -54,21 +69,24 @@ module Integration
 				if now - started_at > timeout
 					kill_group(pid)
 					Process.wait(pid)
-					raise "Quickdraw didn’t finish within #{timeout}s. Output so far:\n#{output}"
+					raise "Quickdraw didn’t finish within #{timeout}s. Output so far:\n#{stdout}#{stderr}"
 				end
 
-				reader.wait_readable(0.05)
-				drain(reader, output)
+				IO.select([stdout_reader, stderr_reader], nil, nil, 0.05)
+				drain(stdout_reader, stdout)
+				drain(stderr_reader, stderr)
 				_, status = Process.wait2(pid, Process::WNOHANG)
 			end
 
-			drain(reader, output)
+			drain(stdout_reader, stdout)
+			drain(stderr_reader, stderr)
 			kill_group(pid)
-			output.force_encoding(Encoding::UTF_8)
+			output = "#{stdout.force_encoding(Encoding::UTF_8)}#{stderr.force_encoding(Encoding::UTF_8)}"
 
-			Result.new(output:, summary: output[/^\d+ tests? ·.*$/], status:, duration: now - started_at)
+			Result.new(stdout:, stderr:, output:, summary: output[/^\d+ tests? ·.*$/], status:, duration: now - started_at)
 		ensure
-			reader&.close
+			stdout_reader&.close
+			stderr_reader&.close
 		end
 
 		private def drain(reader, output)

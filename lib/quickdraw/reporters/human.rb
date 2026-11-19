@@ -1,10 +1,9 @@
 # frozen_string_literal: true
 
-class Quickdraw::Reporter
-	ANSI = /\e\[[\d;]*m/
-	# With trailing slashes, so they can't match paths like "exercises".
-	LIBRARY = "#{Quickdraw::LIB}/"
-	EXECUTABLES = "#{File.expand_path('../exe', Quickdraw::LIB)}/"
+# For people at a terminal: live progress, colour when it's a TTY, problems
+# with diffs and rerun commands, then a summary with timing hints.
+class Quickdraw::Reporters::Human
+	include Quickdraw::Reporters::Formatting
 
 	# Below this much total test time, shares and hints are mostly noise.
 	HINT_THRESHOLD = 1.0
@@ -19,10 +18,6 @@ class Quickdraw::Reporter
 		@live = io.tty?
 		@problems = []
 		@tests = 0
-		@assertions = 0
-		@failed = 0
-		@errored = 0
-		@without_assertions = 0
 		@last_progress_at = 0.0
 	end
 
@@ -30,58 +25,53 @@ class Quickdraw::Reporter
 		@worker_choice = worker_choice
 		@processes = processes
 		@seed = seed
-		@started_at = now
 	end
 
 	def result(path, test, result)
 		@tests += 1
-		@assertions += result["assertions"]
 		@timings.record(path, test, result)
-
-		if result["errors"].any?
-			@errored += 1
-			@problems << [path, test, result]
-		elsif result["failures"].any?
-			@failed += 1
-			@problems << [path, test, result]
-		elsif result["assertions"] == 0
-			@without_assertions += 1
-		end
-
+		@problems << [path, test, result] if result["errors"].any? || result["failures"].any?
 		progress
 	end
 
 	def load_failed(path, error)
-		@errored += 1
 		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
 	end
 
-	def finish(not_run:, processes_failed:)
-		duration = now - @started_at
+	def finish(outcome)
 		@io.print "\r\e[K" if @live
 
 		print_slowest if @show_timings
 		@problems.each { |problem| print_problem(*problem) }
 
-		if processes_failed && @problems.empty?
+		if outcome.processes_failed && @problems.empty?
 			@io.puts
 			@io.puts "#{red('✗')} A worker or the loader exited with a failure status (e.g. from an at_exit hook)."
 		end
 
+		if outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
+			@io.puts
+			@io.puts "Stopped after the first problem (--fail-fast)."
+		end
+
+		if outcome.nothing_matched
+			@io.puts
+			@io.puts "#{red('✗')} No tests matched the given lines, --name or --exclude."
+		end
+
 		@io.puts
 		@io.puts [
-			pluralize(@tests, "test"),
-			pluralize(@assertions, "assertion"),
-			("#{@failed} failed" if @failed > 0),
-			("#{@errored} errored" if @errored > 0),
-			("#{not_run} not run" if not_run > 0),
-			("#{@without_assertions} without assertions" if @without_assertions > 0),
-			format("%.2fs", duration),
+			pluralize(outcome.tests, "test"),
+			pluralize(outcome.assertions, "assertion"),
+			("#{outcome.failed} failed" if outcome.failed > 0),
+			("#{outcome.errored + outcome.load_errors} errored" if outcome.errored + outcome.load_errors > 0),
+			("#{outcome.not_run} not run" if outcome.not_run > 0),
+			("#{pluralize(outcome.unloaded_files, 'file')} not loaded" if outcome.unloaded_files > 0),
+			("#{outcome.without_assertions} without assertions" if outcome.without_assertions > 0),
+			format("%.2fs", outcome.duration),
 		].compact.join(" · ")
-		print_timing_summary(duration)
-		@io.puts dim("Seed #{@seed} · #{pluralize(@processes, 'worker')} (#{@worker_choice}) · quickdraw --seed #{@seed}")
-
-		@failed == 0 && @errored == 0 && not_run == 0 && !processes_failed
+		print_timing_summary(outcome.duration)
+		@io.puts dim("Seed #{@seed} · #{pluralize(@processes, 'worker')} (#{@worker_choice}) · #{Quickdraw::Reporters.command} --seed #{@seed}")
 	end
 
 	private def print_timing_summary(elapsed)
@@ -161,8 +151,7 @@ class Quickdraw::Reporter
 	end
 
 	private def location(timed)
-		name = [timed.test["class_name"], timed.test["description"]].compact.join(" › ")
-		"#{timed.path}:#{timed.test['line']} #{name}"
+		"#{timed.path}:#{timed.test['line']} #{name_of(timed.test)}"
 	end
 
 	private def seconds(value)
@@ -177,17 +166,11 @@ class Quickdraw::Reporter
 		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 	end
 
-	private def pluralize(count, noun)
-		"#{count} #{noun}#{'s' unless count == 1}"
-	end
-
 	private def print_problem(path, test, result)
 		@io.puts
 
 		if test
-			line = "#{path}:#{test['line']}"
-			name = [test["class_name"], test["description"]].compact.join(" › ")
-			@io.puts "#{red('✗')} #{bold(line)} #{name}"
+			@io.puts "#{red('✗')} #{bold("#{path}:#{test['line']}")} #{name_of(test)}"
 		else
 			@io.puts "#{red('✗')} #{bold(path)} could not be loaded"
 		end
@@ -209,46 +192,27 @@ class Quickdraw::Reporter
 				@io.puts indent(relative_paths(clean(details)), 4)
 			end
 		end
+
+		@io.puts
+		@io.puts "  #{dim("Rerun: #{rerun_command(path, test)}")}"
 	end
 
-	# Quickdraw's own frames are dropped wherever they are, since an error can be
-	# raised inside an assertion. Everything from Quickdraw's executable on is the
-	# runner starting up.
 	private def backtrace(frames)
-		return frames if @backtrace
-
-		user_frames = frames
-			.reject { |frame| frame.start_with?(LIBRARY) }
-			.take_while { |frame| !frame.start_with?(EXECUTABLES) }
-
-		user_frames.empty? ? frames : user_frames
+		@backtrace ? frames : user_backtrace(frames)
 	end
 
 	private def progress
 		return unless @live
 
-		time = now
+		time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 		return if time - @last_progress_at < 0.05
 
 		@last_progress_at = time
-		@io.print "\r\e[K#{pluralize(@tests, 'test')}#{" · #{red(pluralize(@failed + @errored, 'problem'))}" if @problems.any?}"
-	end
-
-	private def indent(text, spaces)
-		text.gsub(/^(?=.)/, " " * spaces)
-	end
-
-	private def relative(path)
-		path.delete_prefix("#{Dir.pwd}/")
-	end
-
-	private def relative_paths(text)
-		text.gsub("#{Dir.pwd}/", "")
+		@io.print "\r\e[K#{pluralize(@tests, 'test')}#{" · #{red(pluralize(@problems.size, 'problem'))}" if @problems.any?}"
 	end
 
 	private def clean(text)
-		text = text.scrub
-		@color ? text : text.gsub(ANSI, "")
+		@color ? text.scrub : plain(text)
 	end
 
 	private def red(text) = style(text, 31)
@@ -258,9 +222,5 @@ class Quickdraw::Reporter
 
 	private def style(text, code)
 		@color ? "\e[#{code}m#{text}\e[0m" : text
-	end
-
-	private def now
-		Process.clock_gettime(Process::CLOCK_MONOTONIC)
 	end
 end

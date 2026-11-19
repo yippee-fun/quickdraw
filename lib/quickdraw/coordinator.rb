@@ -131,16 +131,25 @@ class Quickdraw::Coordinator
 	# of the same selection can be compared. `history_path` is nil to run without
 	# history. `only_keys` limits each file to the tests with those history keys
 	# (a Hash keyed by key), except files in `whole_files`, which run in full.
-	def initialize(files:, processes:, cores:, max_processes:, seed:, reporter:, selection: "", history_path: nil, only_keys: nil, whole_files: {})
+	def initialize(
+		files:, processes:, cores:, max_processes:, seed:, reporter:,
+		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", history_path: nil, only_keys: nil, whole_files: {}
+	)
 		@seed = seed
 		@processes = processes
 		@cores = cores
 		@max_processes = max_processes
+		@filter = filter
+		@fail_fast = fail_fast
+		@stopping = false
+		@selected = 0
+		@outcome = Quickdraw::Outcome.new
 		@selection = selection
 		@reporter = reporter
 		@history_path = history_path
 		@only_keys = only_keys
 		@whole_files = whole_files
+		@test_output_to_stderr = test_output_to_stderr
 		@unloaded = files.shuffle(random: Random.new(seed)).map do |path|
 			absolute = File.expand_path(path)
 			[absolute, absolute.delete_prefix("#{Dir.pwd}/")]
@@ -171,7 +180,7 @@ class Quickdraw::Coordinator
 			loader = Process.fork do
 				coordinator_channels.each(&:close)
 				control_writer.close
-				exit(Quickdraw::Loader.new(worker_channels, test_files, @seed, control:).call)
+				exit(Quickdraw::Loader.new(worker_channels, test_files, @seed, control:, test_output_to_stderr: @test_output_to_stderr).call)
 			end
 
 			worker_channels.each(&:close)
@@ -203,6 +212,7 @@ class Quickdraw::Coordinator
 		end
 
 		@reporter.start(processes:, worker_choice: @worker_choice, seed: @seed)
+		reporting_started_at = now
 
 		checked_at = now
 
@@ -230,14 +240,18 @@ class Quickdraw::Coordinator
 
 		processes_failed = loader ? !(@loader_status || Process.wait2(loader).last).success? : false
 
-		passed = @reporter.finish(
-			not_run: @unloaded.size + @files.each_value.sum { |file| file.pending.size },
-			processes_failed: processes_failed || @history_unavailable,
-		)
+		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
+		@outcome.unloaded_files = @unloaded.size
+		@outcome.processes_failed = processes_failed || @history_unavailable
+		@outcome.stopped_early = @stopping
+		# A filter that matches nothing is more likely a typo than a pass.
+		@outcome.nothing_matched = @filter.any? && @selected.zero? && @unloaded.empty?
+		@outcome.duration = now - reporting_started_at
+		@reporter.finish(@outcome)
 
 		# Written after the report, so it never delays the results.
-		save_history(started_at, passed)
-		passed
+		save_history(started_at, @outcome.passed?)
+		@outcome.passed?
 	end
 
 	private def open_history
@@ -369,7 +383,7 @@ class Quickdraw::Coordinator
 	# resources, if there's work left and a spare channel. A crashing test is
 	# reported once and not rerun, so this can't loop.
 	private def replace(worker)
-		return if @spares.empty? || @loader_status
+		return if @spares.empty? || @loader_status || @stopping
 		return if @unloaded.empty? && @files.each_value.all? { |file| file.pending.empty? }
 
 		index, channel = @spares.shift
@@ -476,11 +490,17 @@ class Quickdraw::Coordinator
 		else
 			display_path = display_path(path)
 			keys = @history&.keys(display_path, tests)
-			indices = Array.new(tests.size) { |index| index }
+			indices = @filter.selected_indices(path, tests)
+
+			@filter.unmatched_lines(path, tests).each do |line|
+				warn "No test starts at or above #{display_path}:#{line}."
+			end
 
 			if @only_keys && !@whole_files.key?(display_path)
 				indices.select! { |index| @only_keys.key?(keys[index]) }
 			end
+
+			@selected += indices.size
 
 			known = keys&.filter_map { |key| @averages[key] } || []
 
@@ -517,7 +537,9 @@ class Quickdraw::Coordinator
 	end
 
 	private def report(worker, file, index, result)
+		@outcome.record(result)
 		@reporter.result(file.display_path, file.tests[index], result)
+		@stopping = true if @fail_fast && (result["failures"].any? || result["errors"].any?)
 
 		if @history
 			@records << Quickdraw::History::Record.new(
@@ -533,8 +555,10 @@ class Quickdraw::Coordinator
 
 	private def load_failed(path, error)
 		display_path = display_path(path)
+		@outcome.load_failed
 		@reporter.load_failed(display_path, error)
 		@load_errors << [display_path, error]
+		@stopping = true if @fail_fast
 	end
 
 	private def crashed(worker)
@@ -578,6 +602,9 @@ class Quickdraw::Coordinator
 	private def dispatch
 		idle = @workers.each_value.select(&:idle)
 		all_idle = idle.size == @workers.size
+
+		# With --fail-fast, batches already running finish, but nothing new starts.
+		idle = [] if @stopping
 
 		idle.each do |worker|
 			if (file = own_file(worker))
@@ -624,7 +651,9 @@ class Quickdraw::Coordinator
 	end
 
 	private def run_batch(worker, file)
-		indices = file.next_batch
+		# A worker runs its whole batch, so with --fail-fast, one test at a time
+		# stops promptly after a problem.
+		indices = @fail_fast ? file.pending.shift(1) : file.next_batch
 		worker.batch = [file, indices.dup]
 		worker.started = false
 		worker.idle = false

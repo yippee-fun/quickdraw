@@ -120,7 +120,7 @@ class CrashesTest < Quickdraw::Test
 
 		refute result.success?
 		assert_includes result.output, "boot failed"
-		match { result => { summary: /\A0 tests · 0 assertions · 1 not run/ } }
+		match { result => { summary: /\A0 tests · 0 assertions · 1 file not loaded/ } }
 		assert(result.duration < 5) { "took #{result.duration}s" }
 	end
 end

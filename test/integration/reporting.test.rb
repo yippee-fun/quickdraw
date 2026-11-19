@@ -10,7 +10,7 @@ class ReportingTest < Quickdraw::Test
 
 		assert result.success?
 		match { result => { summary: /\A1 test · 1 assertion · / } }
-		assert_includes result.output, "Seed 7 · 1 worker (manual) · quickdraw --seed 7"
+		assert_match result.output, /^Seed 7 · 1 worker \(manual\) · (bundle exec )?quickdraw --seed 7$/
 	end
 
 	test "reports failures with the failing line, then exits unsuccessfully", timeout: 20 do

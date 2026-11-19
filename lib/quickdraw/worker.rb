@@ -124,7 +124,16 @@ class Quickdraw::Worker
 	private def load(path)
 		started_at = now
 		scope = Module.new
-		tests = Quickdraw.collect_tests(path, @test_files) { Kernel.load(path, scope) }
+
+		# Loading can hang too (a file that connects to something at load time,
+		# say), so it has the same timeout as a test.
+		tests = Quickdraw.collect_tests(path, @test_files) do
+			if @watchdog
+				@watchdog.watch(Quickdraw::Config.timeout) { Kernel.load(path, scope) }
+			else
+				Kernel.load(path, scope)
+			end
+		end
 
 		# The file's top-level methods are defined on its scope, so test classes
 		# defined in the file include it to call them. Classes reopened from
@@ -144,9 +153,9 @@ class Quickdraw::Worker
 
 	private def describe((test_class, description, block, timeout))
 		{
-			"description" => description&.then { |it| Quickdraw.plain_string(it).gsub(ANONYMOUS_MODULE, "") },
+			"description" => description&.then { |it| Quickdraw.utf8(Quickdraw.plain_string(it)).gsub(ANONYMOUS_MODULE, "") },
 			"line" => block.source_location[1],
-			"class_name" => test_class.name&.gsub(ANONYMOUS_MODULE, ""),
+			"class_name" => test_class.name&.then { |it| Quickdraw.utf8(it).gsub(ANONYMOUS_MODULE, "") },
 			# So the coordinator can kill a worker whose watchdog can't run.
 			"timeout" => (timeout || Quickdraw::Config.timeout if @timeouts),
 		}

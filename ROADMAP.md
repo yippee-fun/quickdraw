@@ -140,8 +140,19 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 
 - **Humans:** failures shown as they happen, relative clickable `path:line` (OSC 8 links), source excerpt of the failing line, structured diffs for strings, hashes, arrays and objects, filtered backtraces, slowest tests and files, a rerun command for each failure, and a comparison with the last run (newly failing, fixed, flaky).
 - **Assertion introspection:** on failure, rerun the test with instrumentation to show the value of each sub-expression in the failing assertion, at zero cost to passing tests.
-- **CI:** no ANSI when not a TTY or when `NO_COLOR` is set, GitHub Actions annotations and job summary, JUnit XML, an HTML report.
-- **AI agents:** detected automatically. Summary first, one compact block per failure (test, assertion, trimmed backtrace, relevant source), one rerun command, large values truncated with a pointer to the full detail. `--format json` emits the raw event stream. Possibly a `quickdraw mcp` server.
+- **CI** (done):
+  - no ANSI when output isn't a TTY or `NO_COLOR` is set;
+  - under GitHub Actions, an annotation on the failing line for each problem, plus a job summary;
+  - `--junit PATH` writes JUnit XML.
+  
+  Still to do: an HTML report.
+- **AI agents** (done):
+  - **Detection:** the agent format is chosen from the environment (`CLAUDECODE`, `CODEX_SANDBOX` and others), or with `--format agent`.
+  - **Each problem:** one compact block with the source line it failed on, a trimmed backtrace and a rerun command. The first 10 are shown in full and the rest one line each.
+  - **Result:** one line, last, where truncated output keeps it.
+  - **`--format json`:** one event per line. Anything tests print goes to stderr so the stream stays valid.
+  
+  Still to do: truncating large values with a pointer to the full detail, and possibly a `quickdraw mcp` server.
 - **Worker timeline:** utilisation per worker, to spot long poles and idle time.
 - **Invisible differences made visible:** when diffed lines differ only by whitespace, control or format characters (trailing tabs, U+200B), escape them in the diff (from #70).
 - `assert_equivalent_html` shows a diff of the prettified documents, not just both documents (from #55).
@@ -149,7 +160,13 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 ## CLI
 
 - `quickdraw` with no arguments discovers Quickdraw, Minitest and RSpec tests.
-- Selection: `path:line`, `--name`, tags, `--failed` (last run's failures), `--changed` (git diff + impact map), `--fail-fast`. Filters are objects that compose through `===`, so `path:line`, `--name /regex/` and `--exclude` combine freely, like Rails' test filters (#47, #13, #17, #16).
+- **Selection** (done; #47, #13, #17, #16):
+  - `path:line[:line…]` runs the test starting nearest at or above each line, as `rails test` does.
+  - `--name` and `--exclude` take a string or `/regex/flags`.
+  - `--failed` and `--fail-fast`.
+  - All of these combine freely, and a filter that matches nothing fails the run rather than passing.
+  
+  Still to do: tags, and `--changed` (git diff plus the impact map).
 - `SEED` env var as well as `--seed` (done), and `rand` seeded per test from the run seed (done) (from #72).
 - Interactive watch mode: keys to rerun all, failed only, filter by path or name.
 - Subcommands: `bisect`, `flaky`, `profile`, `doctor`, `init`.
@@ -258,7 +275,7 @@ Slow suites are rarely one slow test. Usually it's a small cost paid by every te
 
 1. Quick fixes: the CI `-t` flag, `--max`/`--efficiency` discarding their result, unprinted seed, the prism/refract break, the undefined `message` in `Runner#work`, dead autoloads.
 2. Coordinator/loader split: core-only runtime, batched streaming events, crash recovery, SQLite run history (done). Still to do: hang timeouts.
-3. Reporters (human, CI, AI, JSON) and selection.
+3. Reporters (human, agent, JSON, GitHub Actions, JUnit) and selection (done). Still to do: an HTML report.
 4. Groups (`setup:`, `gemfile:`).
 5. Real Minitest, then real RSpec, then Rails integration (a database per worker, Rails hooks, per-worker resources), verified against real Rails apps.
 6. Flaky detection, order bisection, leak detection.

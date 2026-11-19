@@ -428,10 +428,8 @@ class Quickdraw::History
 	# JSON both need valid UTF-8, and keys must match what SQLite hands back.
 	private def utf8(value)
 		case value
-		in String if value.encoding == Encoding::UTF_8 && value.valid_encoding?
-			value
 		in String
-			value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+			Quickdraw.utf8(value)
 		in Array
 			value.map { |item| utf8(item) }
 		in Hash

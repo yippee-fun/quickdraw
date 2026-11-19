@@ -4,14 +4,17 @@ class Quickdraw::CLI
 	DEFAULT_PATTERN = "**/*.test.rb"
 	IGNORED_DIRECTORIES = %r{\A(?:vendor|node_modules|tmp)/}
 	HISTORY_PATH = ".quickdraw/history.sqlite3"
+	FORMATS = ["human", "agent", "json"].freeze
 	MAX_SEED = (2 ** 63) - 1
 
 	LISTENER = <<~RUBY
 		require "listen"
 		$stdout.sync = true
 		# The default FSEvents latency adds ~100ms to every change. Quickdraw's own
-		# history writes must not trigger another run.
-		Listen.to(".", latency: 0.01, wait_for_delay: 0.01, ignore: %r{\\A\\.quickdraw/}) { puts "changed" }.start
+		# history, and any files passed as arguments (such as JUnit output), must
+		# not trigger another run.
+		ignored = [%r{\\A\\.quickdraw/}, *ARGV.map { |path| /\\A\#{Regexp.escape(path)}\\z/ }]
+		Listen.to(".", latency: 0.01, wait_for_delay: 0.01, ignore: ignored) { puts "changed" }.start
 		sleep
 	RUBY
 
@@ -43,14 +46,39 @@ class Quickdraw::CLI
 			efficiency: false,
 			history: true,
 			failed: false,
+			fail_fast: false,
+			names: [],
+			excludes: [],
+			format: nil,
+			junit: nil,
 		}
 
 		OptionParser.new do |parser|
-			parser.banner = "Usage: quickdraw [options] [paths or globs]"
+			parser.banner = "Usage: quickdraw [options] [paths, globs or path:line]"
 
 			parser.on("-h", "--help", "Prints this help") do
 				puts parser
 				exit
+			end
+
+			parser.on("-n", "--name PATTERN", "Run tests whose name contains PATTERN, or matches /PATTERN/") do |it|
+				options[:names] << it
+			end
+
+			parser.on("-x", "--exclude PATTERN", "Skip tests whose name contains PATTERN, or matches /PATTERN/") do |it|
+				options[:excludes] << it
+			end
+
+			parser.on("--fail-fast", "Stop starting tests after the first failure or error") do
+				options[:fail_fast] = true
+			end
+
+			parser.on("--format FORMAT", FORMATS, "Output format: #{FORMATS.join(', ')} (agent under AI coding agents, else human)") do |it|
+				options[:format] = it
+			end
+
+			parser.on("--junit PATH", "Also write JUnit XML to PATH") do |it|
+				options[:junit] = File.expand_path(it)
 			end
 
 			parser.on("-b", "--backtrace", "Show backtrace frames inside Quickdraw") do
@@ -130,8 +158,32 @@ class Quickdraw::CLI
 		# Seeds are stored in SQLite, whose integers are signed 64-bit.
 		abort "The seed must be between 0 and #{MAX_SEED}." unless (0..MAX_SEED).cover?(options[:seed])
 
-		options[:patterns] = @args.dup
+		options[:patterns] = []
+		options[:lines] = {}
+
+		@args.each do |argument|
+			path, *lines = split_lines(argument)
+			options[:patterns] << path
+			(options[:lines][File.realpath(path)] ||= []).concat(lines) if lines.any?
+		end
+
+		(options[:names] + options[:excludes]).each do |pattern|
+			Quickdraw::Filter::NamePattern.parse(pattern)
+		rescue RegexpError => error
+			abort "Invalid --name or --exclude pattern #{pattern}: #{error.message}"
+		end
+
 		options
+	end
+
+	# "test/a.test.rb:12:40" is the file with lines 12 and 40, when the file
+	# exists. Anything else is a path or glob.
+	private def split_lines(argument)
+		if (match = /\A(?<path>.+?)(?<lines>(?::\d+)+)\z/.match(argument)) && File.file?(match[:path])
+			[match[:path], *match[:lines].delete_prefix(":").split(":").map { |line| Integer(line, 10) }]
+		else
+			[argument]
+		end
 	end
 
 	private def run(options)
@@ -157,7 +209,13 @@ class Quickdraw::CLI
 			only_keys = failing_tests.to_h { |key, _path| [key, true] }
 			whole_files = unloadable_files.to_h { |path| [path, true] }
 
-			puts "No tests are failing in the run history." if files.empty?
+			# On stderr, so it can't corrupt a JSON stream.
+			warn "No tests are failing in the run history." if files.empty?
+		end
+
+		# Keyed by each file's expanded path, as the coordinator knows it.
+		lines = files.each_with_object({}) do |path, by_path|
+			by_path[File.expand_path(path)] = options[:lines][File.realpath(path)] if options[:lines].key?(File.realpath(path))
 		end
 
 		Quickdraw::Coordinator.new(
@@ -166,13 +224,48 @@ class Quickdraw::CLI
 			cores: options[:cores],
 			max_processes: options[:max_processes],
 			# inspect, so a path containing a space can't collide with two paths.
-			selection: [*options[:patterns].sort, ("--failed" if options[:failed])].compact.inspect,
+			selection: [
+				*options[:patterns].sort,
+				*options[:lines].sort.map { |path, lines| "#{path}:#{lines.sort.join(':')}" },
+				*options[:names].map { |name| "--name #{name}" },
+				*options[:excludes].map { |name| "--exclude #{name}" },
+				("--failed" if options[:failed]),
+			].compact.inspect,
+			filter: Quickdraw::Filter.new(
+				lines:,
+				names: options[:names].map { |name| Quickdraw::Filter::NamePattern.parse(name) },
+				excludes: options[:excludes].map { |name| Quickdraw::Filter::NamePattern.parse(name) },
+			),
+			fail_fast: options[:fail_fast],
+			# What tests print would corrupt a JSON stream, so it goes to stderr.
+			test_output_to_stderr: output_format(options) == "json",
 			seed: options[:seed],
-			reporter: Quickdraw::Reporter.new(backtrace: options[:backtrace], timings: options[:timings]),
+			reporter: reporter(options),
 			history_path: (HISTORY_PATH if options[:history]),
 			only_keys:,
 			whole_files:,
 		).call
+	end
+
+	private def output_format(options)
+		options[:format] || (Quickdraw::Reporters.agent? ? "agent" : "human")
+	end
+
+	private def reporter(options)
+		format = output_format(options)
+
+		primary = case format
+		in "human" then Quickdraw::Reporters::Human.new(backtrace: options[:backtrace], timings: options[:timings])
+		in "agent" then Quickdraw::Reporters::Agent.new(backtrace: options[:backtrace])
+		in "json" then Quickdraw::Reporters::JSON.new
+		end
+
+		reporters = [primary]
+		# Annotations go to stdout, so they'd corrupt a JSON stream.
+		reporters << Quickdraw::Reporters::GitHubActions.new if Quickdraw::Reporters::GitHubActions.active? && format != "json"
+		reporters << Quickdraw::Reporters::JUnit.new(path: options[:junit]) if options[:junit]
+
+		(reporters.size == 1) ? primary : Quickdraw::Reporters::Multiple.new(reporters)
 	end
 
 	# Read in a throwaway process, since the loader forks from this one and
@@ -193,18 +286,33 @@ class Quickdraw::CLI
 		end
 	end
 
-	# Explicit patterns are used as given. The default skips directories that hold
-	# other projects' tests, such as installed gems.
+	# Files are used as given; anything else is a glob, which must match
+	# something. The default skips directories that hold other projects' tests,
+	# such as installed gems. A file reached by two paths is only run once.
 	private def test_files(patterns)
-		if patterns.empty?
+		files = if patterns.empty?
 			Dir.glob(DEFAULT_PATTERN).grep_v(IGNORED_DIRECTORIES)
 		else
-			Dir.glob(patterns).uniq
+			patterns.flat_map do |pattern|
+				next [pattern] if File.file?(pattern)
+
+				Dir.glob(pattern).tap do |matches|
+					abort "No test files match #{pattern}." if matches.empty?
+				end
+			end
 		end
+
+		files.uniq { |path| File.realpath(path) }
 	end
 
 	private def watch(options)
-		listener = IO.popen([RbConfig.ruby, "-e", LISTENER])
+		# Files Quickdraw itself writes in the project mustn't trigger another run.
+		ignored = [options[:junit]].compact.filter_map do |path|
+			relative = path.delete_prefix("#{Dir.pwd}/")
+			relative unless relative == path
+		end
+
+		listener = IO.popen([RbConfig.ruby, "-e", LISTENER, *ignored])
 
 		run_in_fork(options)
 		listener.each_line { run_in_fork(options) }
@@ -216,7 +324,7 @@ class Quickdraw::CLI
 
 	private def run_in_fork(options)
 		pid = Process.fork do
-			print "\e[H\e[2J"
+			print "\e[H\e[2J" unless output_format(options) == "json"
 			exit(run(options) ? 0 : 1)
 		end
 

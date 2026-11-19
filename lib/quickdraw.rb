@@ -24,9 +24,11 @@ module Quickdraw
 	autoload :Watchdog, "quickdraw/watchdog"
 	autoload :Channel, "quickdraw/channel"
 	autoload :Platform, "quickdraw/platform"
-	autoload :Reporter, "quickdraw/reporter"
+	autoload :Reporters, "quickdraw/reporters"
+	autoload :Outcome, "quickdraw/outcome"
 	autoload :Timings, "quickdraw/timings"
 	autoload :History, "quickdraw/history"
+	autoload :Filter, "quickdraw/filter"
 	autoload :WorkerTuner, "quickdraw/worker_tuner"
 	autoload :Assertions, "quickdraw/assertions"
 	autoload :Coordinator, "quickdraw/coordinator"
@@ -99,6 +101,19 @@ module Quickdraw
 	def self.stable_hash(string)
 		string.each_byte.reduce(0xcbf29ce484222325) do |hash, byte|
 			((hash ^ byte) * 0x100000001b3) & 0xffffffffffffffff
+		end
+	end
+
+	# The string as valid UTF-8, with anything invalid or unmappable replaced.
+	# Binary strings, such as ARGV without a UTF-8 locale, are taken to be UTF-8.
+	def self.utf8(string)
+		case string.encoding
+		in Encoding::UTF_8
+			string.scrub
+		in Encoding::BINARY | Encoding::US_ASCII
+			String.new(string, encoding: Encoding::UTF_8).scrub
+		else
+			string.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
 		end
 	end
 

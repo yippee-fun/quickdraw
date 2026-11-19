@@ -17,17 +17,22 @@ class Quickdraw::Loader
 	# the per-worker resources (such as a database) of the worker it replaces.
 	# When `control` closes, no more workers start. Without fork, there's no
 	# `control`: see #call_in_thread.
-	def initialize(channels, test_files, seed, control: nil)
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
 		@control = control
+		@test_output_to_stderr = test_output_to_stderr
 		@running = {}
 		@statuses = []
 	end
 
 	# Returns whether booting and every worker succeeded.
 	def call
+		# Before booting, so it covers what config prints, workers and processes
+		# tests start, which all inherit it.
+		$stdout.reopen($stderr) if @test_output_to_stderr
+
 		boot
 		test_files = real_paths
 
