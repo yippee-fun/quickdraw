@@ -203,16 +203,16 @@ class Quickdraw::RSpec::Spec < Quickdraw::BasicTest
 			end
 		end
 
-		def it_should_behave_like(name, *args, &customization_block)
-			it_behaves_like(name, *args, &customization_block)
+		def it_should_behave_like(name, *, &customization_block)
+			it_behaves_like(name, *, &customization_block)
 		end
 
-		def include_examples(name, *args, &customization_block)
+		def include_examples(name, *, &customization_block)
 			shared = find_shared_examples(name)
 			raise ArgumentError, "Shared examples '#{name}' not found" unless shared
 
 			# include_examples runs in the current context (no nesting)
-			class_exec(*args, &shared[:block])
+			class_exec(*, &shared[:block])
 			class_exec(&customization_block) if customization_block
 		end
 

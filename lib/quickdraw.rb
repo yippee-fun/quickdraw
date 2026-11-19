@@ -24,12 +24,23 @@ module Quickdraw
 	autoload :Channel, "quickdraw/channel"
 	autoload :Platform, "quickdraw/platform"
 	autoload :Reporter, "quickdraw/reporter"
+	autoload :Timings, "quickdraw/timings"
+	autoload :History, "quickdraw/history"
+	autoload :WorkerTuner, "quickdraw/worker_tuner"
 	autoload :Assertions, "quickdraw/assertions"
 	autoload :Coordinator, "quickdraw/coordinator"
 	autoload :ArgumentError, "quickdraw/errors/argument_error"
 	autoload :Configuration, "quickdraw/configuration"
 	autoload :HTMLPrettifier, "quickdraw/html_prettifier"
 	autoload :BasicTest, "quickdraw/basic_test"
+
+	# Each test's stats are sent as one array of integers: wall time for each of
+	# PHASES, then CPU time, GC time and allocations for the whole test. Times are
+	# in nanoseconds; the coordinator converts them to seconds when they arrive.
+	# Marshal writes floats as decimal text, so sending float seconds made every
+	# result four times slower to send.
+	PHASES = ["setup", "test", "teardown"].freeze
+	STATS = [*PHASES, "cpu", "gc", "allocations"].freeze
 
 	Null = Object.new.freeze
 	Error = Module.new
@@ -62,6 +73,13 @@ module Quickdraw
 		return if file && file != @loading && @test_files.key?(file)
 
 		@tests << test
+	end
+
+	# 64-bit FNV-1a. Unlike String#hash, it's the same in every process and run.
+	def self.stable_hash(string)
+		string.each_byte.reduce(0xcbf29ce484222325) do |hash, byte|
+			((hash ^ byte) * 0x100000001b3) & 0xffffffffffffffff
+		end
 	end
 
 	# A copy without subclass or instance variables, which may not survive Marshal.

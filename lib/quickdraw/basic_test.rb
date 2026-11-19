@@ -12,13 +12,13 @@ class Quickdraw::BasicTest
 	end
 
 	def run
-		setup
-		around_test { instance_exec(&@block) }
+		@runner.measure("setup") { setup }
+		around_test { @runner.measure("test") { instance_exec(&@block) } }
 	rescue Exception => error
 		error!(error)
 	ensure
 		begin
-			teardown
+			@runner.measure("teardown") { teardown }
 		rescue Exception => error
 			error!(error)
 		end
@@ -43,8 +43,16 @@ class Quickdraw::BasicTest
 		nil
 	end
 
-	def refute(value, ...)
-		assert(!value, ...)
+	def refute(value)
+		if !value
+			success!
+		elsif block_given?
+			failure! { yield(value) }
+		else
+			failure! { "expected #{value.inspect} to be falsy" }
+		end
+
+		nil
 	end
 
 	# Indicate that an assertion passed successfully.

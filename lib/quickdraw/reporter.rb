@@ -3,9 +3,15 @@
 class Quickdraw::Reporter
 	ANSI = /\e\[[\d;]*m/
 
-	def initialize(io: $stdout, backtrace: false)
+	# Below this much total test time, shares and hints are mostly noise.
+	HINT_THRESHOLD = 1.0
+	SLOWEST_LIMIT = 10
+
+	def initialize(io: $stdout, backtrace: false, timings: false)
 		@io = io
 		@backtrace = backtrace
+		@show_timings = timings
+		@timings = Quickdraw::Timings.new
 		@color = io.tty? && !ENV.key?("NO_COLOR")
 		@live = io.tty?
 		@problems = []
@@ -17,7 +23,8 @@ class Quickdraw::Reporter
 		@last_progress_at = 0.0
 	end
 
-	def start(processes:, seed:)
+	def start(processes:, worker_choice:, seed:)
+		@worker_choice = worker_choice
 		@processes = processes
 		@seed = seed
 		@started_at = now
@@ -26,6 +33,7 @@ class Quickdraw::Reporter
 	def result(path, test, result)
 		@tests += 1
 		@assertions += result["assertions"]
+		@timings.record(path, test, result)
 
 		if result["errors"].any?
 			@errored += 1
@@ -49,6 +57,7 @@ class Quickdraw::Reporter
 		duration = now - @started_at
 		@io.print "\r\e[K" if @live
 
+		print_slowest if @show_timings
 		@problems.each { |problem| print_problem(*problem) }
 
 		if processes_failed && @problems.empty?
@@ -58,17 +67,115 @@ class Quickdraw::Reporter
 
 		@io.puts
 		@io.puts [
-			"#{@tests} tests",
-			"#{@assertions} assertions",
+			pluralize(@tests, "test"),
+			pluralize(@assertions, "assertion"),
 			("#{@failed} failed" if @failed > 0),
 			("#{@errored} errored" if @errored > 0),
 			("#{not_run} not run" if not_run > 0),
 			("#{@without_assertions} without assertions" if @without_assertions > 0),
 			format("%.2fs", duration),
 		].compact.join(" · ")
-		@io.puts dim("Seed #{@seed} · #{@processes} workers · quickdraw --seed #{@seed}")
+		print_timing_summary(duration)
+		@io.puts dim("Seed #{@seed} · #{pluralize(@processes, 'worker')} (#{@worker_choice}) · quickdraw --seed #{@seed}")
 
 		@failed == 0 && @errored == 0 && not_run == 0 && !processes_failed
+	end
+
+	private def print_timing_summary(elapsed)
+		return if @timings.count == 0
+
+		timings = @timings
+		utilization = timings.utilization(elapsed:, processes: @processes)
+
+		@io.puts dim([
+			"Test time #{seconds(timings.test_time)}",
+			phase_breakdown(timings),
+			"waiting #{percent(timings.waiting_share)}",
+			"GC #{percent(timings.gc_share)}",
+			"#{delimit(timings.allocations_per_test)} allocations per test",
+			"workers running tests #{percent(utilization)}",
+		].join(" · "))
+
+		return if timings.test_time < HINT_THRESHOLD
+
+		hints = []
+
+		if timings.setup_and_teardown_share >= 0.5
+			hints << "Setup and teardown take #{percent(timings.setup_and_teardown_share)} of test time. " \
+				"Look for expensive shared hooks, factories or fixtures."
+		end
+
+		if timings.waiting_share >= 0.3
+			hints << "Tests spend #{percent(timings.waiting_share)} of their time waiting rather than computing " \
+				"(IO, network, sleep, locks, or competing for the CPU)."
+		end
+
+		if timings.gc_share >= 0.15
+			hints << "GC takes #{percent(timings.gc_share)} of test time. Reducing allocations or enlarging the heap may help."
+		end
+
+		slowest = timings.slowest_tests(1).first
+
+		if @processes > 1 && slowest && elapsed >= 1 && slowest.duration >= elapsed * 0.5
+			hints << "#{location(slowest)} took #{seconds(slowest.duration)}, " \
+				"#{percent(slowest.duration / elapsed)} of the run. Splitting it up would let workers share it."
+		elsif @processes > 1 && elapsed >= 2 && utilization < 0.6
+			hints << "Workers spent #{percent(1 - utilization)} of the run not running tests " \
+				"(booting, loading files or waiting for work)."
+		end
+
+		hints.each { |hint| @io.puts "#{yellow('!')} #{hint}" }
+		@io.puts "  #{dim('Run with --timings to see the slowest tests and files.')}" if hints.any? && !@show_timings
+	end
+
+	private def print_slowest
+		return if @timings.count == 0
+
+		@io.puts
+		@io.puts bold("Slowest tests")
+
+		@timings.slowest_tests(SLOWEST_LIMIT).each do |test|
+			total = Quickdraw::PHASES.sum { |phase| test.wall(phase) }
+			split = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(test.wall(phase) / total)}" }.join(", ") if total > 0
+			@io.puts "  #{seconds(test.duration).rjust(8)}  #{location(test)}  #{dim(split.to_s)}"
+		end
+
+		@io.puts
+		@io.puts bold("Slowest files")
+
+		@timings.slowest_files(SLOWEST_LIMIT).each do |path, duration, count|
+			@io.puts "  #{seconds(duration).rjust(8)}  #{path}  #{dim(pluralize(count, 'test'))}"
+		end
+	end
+
+	# Around hooks run outside the measured phases. Below about 1ms per test, the
+	# time outside phases is Quickdraw's own overhead, so it isn't shown.
+	private def phase_breakdown(timings)
+		parts = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(timings.phase_share(phase))}" }
+		around = timings.outside_phases_time
+		parts << "plus #{seconds(around)} in around hooks" if around / timings.count >= 0.001
+		parts.join(", ")
+	end
+
+	private def location(timed)
+		name = [timed.test["class_name"], timed.test["description"]].compact.join(" › ")
+		"#{timed.path}:#{timed.test['line']} #{name}"
+	end
+
+	private def seconds(value)
+		Quickdraw::Timer::Duration.new(value * 1_000_000_000).to_s
+	end
+
+	private def percent(ratio)
+		"#{(ratio * 100).round}%"
+	end
+
+	private def delimit(number)
+		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
+	end
+
+	private def pluralize(count, noun)
+		"#{count} #{noun}#{'s' unless count == 1}"
 	end
 
 	private def print_problem(path, test, result)
@@ -108,7 +215,7 @@ class Quickdraw::Reporter
 		return if time - @last_progress_at < 0.05
 
 		@last_progress_at = time
-		@io.print "\r\e[K#{@tests} tests#{" · #{red("#{@failed + @errored} problems")}" if @problems.any?}"
+		@io.print "\r\e[K#{pluralize(@tests, 'test')}#{" · #{red(pluralize(@failed + @errored, 'problem'))}" if @problems.any?}"
 	end
 
 	private def indent(text, spaces)
@@ -125,6 +232,7 @@ class Quickdraw::Reporter
 	end
 
 	private def red(text) = style(text, 31)
+	private def yellow(text) = style(text, 33)
 	private def bold(text) = style(text, 1)
 	private def dim(text) = style(text, 2)
 

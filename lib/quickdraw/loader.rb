@@ -1,12 +1,16 @@
 # frozen_string_literal: true
 
-# Boots the shared test environment once, then forks a worker for each channel.
+# Boots the shared test environment once, then forks workers.
 class Quickdraw::Loader
 	CONFIG_PATH = "config/quickdraw.rb"
 
-	def initialize(channels, test_files)
+	# `channels` has one per possible worker. `control` is read for how many to
+	# start, which the coordinator decides while this boots.
+	def initialize(channels, test_files, seed, control: nil)
 		@channels = channels
 		@test_files = test_files
+		@seed = seed
+		@control = control
 	end
 
 	# Returns whether booting and every worker succeeded.
@@ -14,7 +18,11 @@ class Quickdraw::Loader
 		boot
 		test_files = real_paths
 
-		@channels.each_with_index do |channel, index|
+		count = @control ? @control.gets.to_i.clamp(0, @channels.size) : @channels.size
+		@control&.close
+		workers = @channels.first(count)
+
+		workers.each_with_index do |channel, index|
 			Process.fork do
 				@channels.each { |other| other.close unless other.equal?(channel) }
 				start_worker(channel, index, test_files)
@@ -28,6 +36,8 @@ class Quickdraw::Loader
 	end
 
 	# Used where fork isn’t available: a single worker in a thread of this process.
+	# Tests then share a process with the coordinator, so they can see what it
+	# loads (sqlite3 and json for run history).
 	def call_in_thread
 		Thread.new do
 			channel = @channels.fetch(0)
@@ -53,6 +63,6 @@ class Quickdraw::Loader
 		ENV["QUICKDRAW_WORKER"] = index.to_s
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		Quickdraw::Worker.new(channel, test_files).call
+		Quickdraw::Worker.new(channel, test_files, @seed).call
 	end
 end

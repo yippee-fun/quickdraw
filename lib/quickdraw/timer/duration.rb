@@ -17,9 +17,8 @@ class Quickdraw::Timer::Duration
 		elsif @nanoseconds < 60_000_000_000
 			"#{format('%.1f', @nanoseconds / 1_000_000_000)}s"
 		else
-			minutes = @nanoseconds / 60_000_000_000
-			seconds = (@nanoseconds % 60_000_000_000) / 1_000_000_000
-			"#{format('%.0f', minutes)}m #{format('%.0f', seconds)}s"
+			minutes, seconds = (@nanoseconds / 1_000_000_000).round.divmod(60)
+			"#{minutes}m #{seconds}s"
 		end
 	end
 end

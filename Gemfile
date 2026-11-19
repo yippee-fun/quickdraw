@@ -16,6 +16,4 @@ if RUBY_ENGINE == "ruby"
 	end
 end
 
-# refract 1.1.0 references Prism::MissingNode, which prism 2 removed.
-gem "prism", "~> 1.7"
 gem "refract"

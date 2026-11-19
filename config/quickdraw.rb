@@ -21,6 +21,10 @@ class Runner
 		@successes += 1
 	end
 
+	def measure(_phase)
+		yield
+	end
+
 	def error!(error)
 		@errors << error
 	end
