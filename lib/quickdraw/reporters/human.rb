@@ -10,6 +10,7 @@ class Quickdraw::Reporters::Human
 	SLOWEST_LIMIT = 10
 	SET_ASIDE_LIMIT = 20
 	PROFILE_LIMIT = 20
+	COVERAGE_LIMIT = 10
 	PROGRESS_INTERVAL = 0.1
 	BAR_WIDTH = 24
 
@@ -83,6 +84,8 @@ class Quickdraw::Reporters::Human
 			@io.puts "#{red('✗')} No tests matched the given lines, --name or --exclude."
 		end
 
+		print_coverage(outcome.coverage) if outcome.coverage
+
 		@io.puts
 		@io.puts [
 			pluralize(outcome.tests, "test"),
@@ -145,6 +148,42 @@ class Quickdraw::Reporters::Human
 
 		hints.each { |hint| @io.puts "#{yellow('!')} #{hint}" }
 		@io.puts "  #{dim('Run with --timings to see the slowest tests and files.')}" if hints.any? && !@show_timings
+	end
+
+	# Totals, then the lines most worth testing: changed ones first.
+	private def print_coverage(coverage)
+		@io.puts
+		@io.puts "#{bold('Coverage')} #{[
+			"#{coverage_percent(coverage.lines)} of lines",
+			("#{coverage_percent(coverage.branches)} of branches" if coverage.branches.total > 0),
+			("#{coverage_percent(coverage.methods)} of methods" if coverage.methods.total > 0),
+		].compact.join(' · ')}"
+
+		if (changed = coverage.changed)
+			count, uncovered = changed
+			@io.puts "  Changed lines: #{count.covered} of #{count.total} covered"
+			uncovered.each { |path, lines| @io.puts "    #{red('✗')} #{path}:#{Quickdraw::CoverageReport.ranges(lines)}" }
+		end
+
+		least = coverage.least_covered(COVERAGE_LIMIT)
+
+		if least.any?
+			@io.puts "  Least covered"
+			least.each do |file|
+				@io.puts "    #{coverage_percent(file.lines).rjust(4)}  #{file.path}  #{dim("missing #{Quickdraw::CoverageReport.ranges(file.uncovered)}")}"
+			end
+		end
+
+		if (never_loaded = coverage.never_loaded).any?
+			shown = never_loaded.first(COVERAGE_LIMIT).join(", ")
+			@io.puts "  #{yellow('!')} Never loaded by a test: #{shown}#{" and #{never_loaded.size - COVERAGE_LIMIT} more" if never_loaded.size > COVERAGE_LIMIT}"
+		end
+
+		@io.puts dim("  #{Quickdraw::CoverageReport::HTML_PATH} · #{Quickdraw::CoverageReport::LCOV_PATH} · #{Quickdraw::CoverageReport::JSON_PATH}")
+	end
+
+	private def coverage_percent(count)
+		"#{count.percent}%"
 	end
 
 	# A method in many tests with a large share is a cost they share.

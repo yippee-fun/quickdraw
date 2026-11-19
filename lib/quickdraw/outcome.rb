@@ -39,6 +39,9 @@ class Quickdraw::Outcome
 	# tests are unknown.
 	attr_accessor :not_run, :unloaded_files, :processes_failed, :stopped_early, :nothing_matched, :interrupted, :duration
 
+	# A CoverageReport with --coverage, or nil.
+	attr_accessor :coverage
+
 	# 130 is what shells report for a process stopped by Ctrl-C.
 	def exit_status
 		if @interrupted then 130

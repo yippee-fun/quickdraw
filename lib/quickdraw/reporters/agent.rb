@@ -11,6 +11,7 @@ class Quickdraw::Reporters::Agent
 	FULL_PROBLEMS = 10
 	BACKTRACE_LIMIT = 8
 	PROFILE_LIMIT = 10
+	COVERAGE_LIMIT = 20
 
 	def initialize(io: $stdout, backtrace: false)
 		@io = io
@@ -37,6 +38,7 @@ class Quickdraw::Reporters::Agent
 
 	def finish(outcome)
 		print_profile if @profile.any?
+		print_coverage(outcome.coverage) if outcome.coverage
 		@problems.first(FULL_PROBLEMS).each { |problem| print_problem(*problem) }
 
 		if (rest = @problems.drop(FULL_PROBLEMS)).any?
@@ -66,6 +68,29 @@ class Quickdraw::Reporters::Agent
 
 		@io.puts "#{outcome.passed? ? 'PASSED' : 'FAILED'}: #{counts} in #{format('%.2f', outcome.duration)}s (seed #{@seed})"
 		@io.puts "Rerun the failures with: #{Quickdraw::Reporters.command} --failed" if @problems.any?
+	end
+
+	# Uncovered lines as path:ranges, which is what an agent writing tests needs.
+	private def print_coverage(coverage)
+		percent = -> (count) { "#{count.percent}%" }
+		@io.puts "Coverage: #{percent.(coverage.lines)} of lines, #{percent.(coverage.branches)} of branches, #{percent.(coverage.methods)} of methods (#{Quickdraw::CoverageReport::JSON_PATH} has it all)."
+
+		if (changed = coverage.changed)
+			count, uncovered = changed
+			@io.puts "Changed lines: #{count.covered} of #{count.total} covered."
+			uncovered.each { |path, lines| @io.puts "- Uncovered changed lines: #{path}:#{Quickdraw::CoverageReport.ranges(lines)}" }
+		end
+
+		least = coverage.least_covered(COVERAGE_LIMIT)
+
+		if least.any?
+			@io.puts "Least covered files, with their uncovered lines:"
+			least.each { |file| @io.puts "- #{file.path} (#{percent.(file.lines)}): #{Quickdraw::CoverageReport.ranges(file.uncovered)}" }
+		end
+
+		never_loaded = coverage.never_loaded
+		@io.puts "Never loaded by a test: #{never_loaded.join(', ')}" if never_loaded.any?
+		@io.puts
 	end
 
 	private def print_profile

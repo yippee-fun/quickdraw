@@ -250,11 +250,13 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 
 ## Coverage
 
-- Built in, using the core `Coverage` module (lines, branches, methods). It starts in the loader before app code loads and is merged across workers and groups, so parallel runs never need a separate merge step.
-- Per-test coverage, recorded on demand. It drives test impact analysis and answers "which tests cover this line?"
-- **Humans:** a terminal summary of the least-covered files, an annotated source view of uncovered lines and branches, and an HTML report.
-- **AI:** compact uncovered ranges per file (`app/models/user.rb: 42-47, 90`) with the code at those lines and the tests nearest to them. Ranked by recent changes, so an agent knows exactly what to test next.
-- Diff coverage: only the lines changed against a git base, with an optional threshold that fails CI.
+- **Built in** (done, `--coverage`), using the core `Coverage` module (lines, branches, methods). Each loader starts it before config loads, then takes and clears what booting covered before forking workers, so workers report only what they run and boot code isn't counted once per worker. Workers send theirs when they stop, and the coordinator merges everything, across groups too. Only the project's own files count: not tests, `vendor`, `tmp` or Quickdraw. Lines in methods no test called count as uncovered, since Ruby counts a `def` line as run when its file loads. Test processes only load `Coverage` with `--coverage`.
+- **Humans** (done): a terminal summary with totals, changed lines that no test ran, the least covered files with their uncovered ranges, and files no test loaded.
+- **HTML report** (done): `.quickdraw/coverage/index.html` with totals, changed lines that didn't run, files no test loaded and every file least covered first, and a page per file with its source, hit counts, uncovered lines, branches never taken and methods never called. Built with Phlex in the coordinator, so Phlex never reaches test processes. Works from disk, in light and dark.
+- **AI** (done): the same, as compact `path:ranges` lines. Still to do: the code at those lines and the tests nearest to them.
+- **Files** (done): `.quickdraw/coverage/lcov.info` for editors and coverage services, and `coverage.json` with everything, and coverage totals in the JSON stream's finish event.
+- **Changed lines** (done): coverage of the lines changed since the last commit, staged or not, and of untracked Ruby files. Still to do: any git base (`--coverage-base main`), and a threshold that fails CI.
+- **Per-test coverage**, for impact analysis (`--changed`) and "which tests cover this line?". Measured on 105,000 loaded lines, taking coverage costs 8.6ms in lines, branches and methods mode but 0.3ms for lines alone, since branches and methods dominate. So recording what each test ran on every coverage run would add about 9ms per test. Options: a lines-only mapping run, or taking coverage per batch rather than per test (mapping test files, not tests, to source files). Until there's a map, `--changed` could run changed test files and changed source files' counterparts.
 - Coverage of `eval`'d and generated code mapped back to source where possible.
 
 ## Suite profiling

@@ -208,7 +208,7 @@ class Quickdraw::Coordinator
 	# (a Hash keyed by key), except files in `whole_files`, which run in full.
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
-		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", history_path: nil, only_keys: nil, whole_files: {}, profile: false
+		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false
 	)
 		@seed = seed
 		@processes = processes
@@ -228,6 +228,7 @@ class Quickdraw::Coordinator
 		@whole_files = whole_files
 		@test_output_to_stderr = test_output_to_stderr
 		@profile = profile
+		@coverage = Quickdraw::CoverageReport.new if coverage
 		@unloaded = files.shuffle(random: Random.new(seed)).map do |path|
 			absolute = File.expand_path(path)
 			[absolute, absolute.delete_prefix("#{Dir.pwd}/")]
@@ -263,9 +264,9 @@ class Quickdraw::Coordinator
 
 		# Group loaders fork from this process, so they start before run history
 		# (sqlite3) loads, once the first loader says which groups there are.
-		report = @forking ? first_report(interrupt_reader) : [:booted, []]
+		report = @forking ? first_report(interrupt_reader) : [:booted, [], nil]
 		groups = case report
-		in [:booted, groups] then groups
+		in [:booted, groups, *] then groups
 		else []
 		end
 		groups_reported(groups) unless @interrupted
@@ -297,8 +298,12 @@ class Quickdraw::Coordinator
 				if (worker = @workers[io])
 					handle(worker, worker.channel.read)
 				elsif @leaving.key?(io)
-					# What it sends now doesn't matter; its pipe closing means it has exited.
-					left(io) unless @leaving[io].first.channel.read
+					# Its pipe closing means it has exited.
+					case @leaving[io].first.channel.read
+					in [:coverage, coverage] then @coverage.add(coverage)
+					in nil then left(io)
+					else nil
+					end
 				elsif (loader = @loaders.each_value.find { |it| it.report.equal?(io) })
 					reported(loader, loader.read_report)
 				end
@@ -323,6 +328,7 @@ class Quickdraw::Coordinator
 		processes_failed = !@interrupted && @loaders.each_value.any? { |loader| loader.pid && !loader.status&.success? }
 
 		@outcome.interrupted = @interrupted
+		@outcome.coverage = @coverage
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
 		@outcome.processes_failed = processes_failed || @history_unavailable
@@ -330,6 +336,8 @@ class Quickdraw::Coordinator
 		# A filter that matches nothing is more likely a typo than a pass.
 		@outcome.nothing_matched = @filter.any? && @selected.zero? && @unloaded.empty?
 		@outcome.duration = now - reporting_started_at
+		# Before the report, which says where it is.
+		@coverage&.write
 		@reporter.finish(@outcome)
 
 		# Written after the report, so it never delays the results. A partial run
@@ -389,7 +397,7 @@ class Quickdraw::Coordinator
 
 			loader = Quickdraw::Loader.new(
 				worker_channels, @test_files, @seed,
-				control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, group:, report: report_writer,
+				control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, coverage: !@coverage.nil?, group:, report: report_writer,
 			)
 
 			exit(loader.call)
@@ -407,7 +415,9 @@ class Quickdraw::Coordinator
 	# exited while booting.
 	private def reported(loader, report)
 		error = case report
-		in [:booted, _groups]
+		in [:booted, _groups, coverage]
+			# What booting covered, which its workers don't repeat.
+			@coverage.add(coverage) if coverage
 			return
 		in [:failed, error]
 			error
@@ -579,7 +589,14 @@ class Quickdraw::Coordinator
 
 		# A process a worker started can hold its pipe open after it exits.
 		@leaving.to_a.each do |reader, (worker, _loader)|
-			left(reader) if worker.pid ? !worker.alive? : worker.loader.status
+			next unless worker.pid ? !worker.alive? : worker.loader.status
+
+			# Its coverage may be waiting in the pipe.
+			while reader.wait_readable(0) && (message = worker.channel.read)
+				@coverage.add(message.last) if message.first == :coverage
+			end
+
+			left(reader)
 		end
 
 		@workers.values.each do |worker|
@@ -898,7 +915,12 @@ class Quickdraw::Coordinator
 
 		return unless all_idle && @workers.each_value.all?(&:idle)
 
-		@workers.each_value { |worker| worker.channel.write([:stop]) }
+		# Not done until they exit, after sending their coverage.
+		@workers.each_value do |worker|
+			worker.channel.write([:stop])
+			@leaving[worker.channel.reader] = [worker, nil]
+		end
+
 		@workers.clear
 	end
 
@@ -936,11 +958,12 @@ class Quickdraw::Coordinator
 		@leaving[worker.channel.reader] = [worker, loader]
 	end
 
+	# `loader` is where the worker was moving to, or nil at the end of the run.
 	private def left(reader)
 		worker, loader = @leaving.delete(reader)
 		worker.channel.close
 
-		if work_left?(loader.group)
+		if loader && work_left?(loader.group)
 			start_worker(loader, worker.slot)
 		else
 			@free_slots << worker.slot

@@ -126,7 +126,7 @@ class Quickdraw::Replay
 		report_writer.close
 
 		case read_report(report)
-		in [:booted, groups] then groups
+		in [:booted, groups, *] then groups
 		in [:failed, error] then raise BootFailed.new(error)
 		in nil then raise BootFailed.new({ "name" => "Quickdraw::LoaderCrashed", "message" => "The process that loads config exited while booting." })
 		end

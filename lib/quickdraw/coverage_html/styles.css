@@ -1,0 +1,342 @@
+:root {
+	color-scheme: light dark;
+	--background: #ffffff;
+	--surface: #f6f8fa;
+	--text: #1f2328;
+	--muted: #59636e;
+	--border: #d1d9e0;
+	--link: #0969da;
+	--high: #1a7f37;
+	--medium: #9a6700;
+	--low: #cf222e;
+	--covered-line: #e6ffec;
+	--uncovered-line: #ffebe9;
+	--note: #fff8c5;
+	--target: #ddf4ff;
+	--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--background: #0d1117;
+		--surface: #151b23;
+		--text: #e6edf3;
+		--muted: #9198a1;
+		--border: #3d444d;
+		--link: #4493f8;
+		--high: #3fb950;
+		--medium: #d29922;
+		--low: #f85149;
+		--covered-line: #12261e;
+		--uncovered-line: #2d1517;
+		--note: #3b2e0a;
+		--target: #102a4c;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--background);
+	color: var(--text);
+	font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+	max-width: 1200px;
+	margin: 0 auto;
+	padding: 24px 16px 64px;
+}
+
+a {
+	color: var(--link);
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+h1 {
+	margin: 0 0 20px;
+	font-size: 22px;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+h2 {
+	margin: 32px 0 8px;
+	font-size: 15px;
+	font-weight: 600;
+}
+
+code {
+	font-family: var(--mono);
+	font-size: 13px;
+}
+
+h1 code {
+	font-size: 20px;
+}
+
+.muted {
+	color: var(--muted);
+}
+
+nav {
+	margin-bottom: 8px;
+	color: var(--muted);
+}
+
+.totals {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.total {
+	padding: 12px 16px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--surface);
+}
+
+.total h2 {
+	margin: 0 0 4px;
+	color: var(--muted);
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.total .percentage {
+	display: flex;
+	flex-direction: column-reverse;
+	align-items: stretch;
+	gap: 6px;
+	font-size: 24px;
+	font-weight: 600;
+}
+
+.total .percentage .bar {
+	width: 100%;
+}
+
+.total p {
+	margin: 4px 0 0;
+}
+
+.percentage {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font-variant-numeric: tabular-nums;
+}
+
+.percentage .value {
+	min-width: 4ch;
+	text-align: right;
+}
+
+.total .percentage .value {
+	text-align: left;
+}
+
+.bar {
+	display: inline-block;
+	width: 64px;
+	height: 6px;
+	border-radius: 3px;
+	background: var(--border);
+	overflow: hidden;
+}
+
+.bar span {
+	display: block;
+	height: 100%;
+	background: currentColor;
+}
+
+.high {
+	color: var(--high);
+}
+
+.medium {
+	color: var(--medium);
+}
+
+.low {
+	color: var(--low);
+}
+
+.none {
+	color: var(--muted);
+}
+
+ul.plain {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+ul.plain li {
+	padding: 2px 0;
+}
+
+.lines a + a::before {
+	content: ", ";
+	color: var(--muted);
+}
+
+table.files {
+	width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+}
+
+table.files th,
+table.files td {
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--border);
+	text-align: right;
+	white-space: nowrap;
+}
+
+table.files th:first-child,
+table.files td:first-child {
+	width: 100%;
+	text-align: left;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+table.files th {
+	color: var(--muted);
+	font-weight: 500;
+}
+
+table.files tbody tr:hover {
+	background: var(--surface);
+}
+
+.scroll {
+	overflow-x: auto;
+}
+
+.problems {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 4px 16px;
+	margin: 20px 0;
+}
+
+.problems dt {
+	color: var(--muted);
+}
+
+.problems dd {
+	margin: 0;
+}
+
+.warning {
+	padding: 12px 16px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--note);
+}
+
+.source {
+	margin-top: 20px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	overflow-x: auto;
+}
+
+.source table {
+	min-width: 100%;
+	border-collapse: collapse;
+	font: 13px/20px var(--mono);
+}
+
+.source td {
+	padding: 0 12px;
+	vertical-align: top;
+}
+
+.source .number,
+.source .hits {
+	text-align: right;
+	white-space: nowrap;
+	user-select: none;
+	color: var(--muted);
+	background: var(--surface);
+	font-variant-numeric: tabular-nums;
+}
+
+.source .number a {
+	color: inherit;
+}
+
+.source .hits {
+	border-right: 1px solid var(--border);
+}
+
+.source .code {
+	width: 100%;
+	white-space: pre;
+	tab-size: 2;
+}
+
+.source .covered .code {
+	background: var(--covered-line);
+}
+
+.source .covered .hits {
+	color: var(--high);
+}
+
+.source .uncovered .code {
+	background: var(--uncovered-line);
+}
+
+.source .uncovered .hits {
+	color: var(--low);
+	font-weight: 600;
+}
+
+.source .changed .number {
+	box-shadow: inset 3px 0 var(--low);
+	color: var(--low);
+	font-weight: 600;
+}
+
+.source tr:target td {
+	background: var(--target);
+}
+
+.note {
+	margin-left: 2ch;
+	padding: 0 6px;
+	border-radius: 4px;
+	background: var(--note);
+	color: var(--text);
+	font: 12px/18px system-ui, -apple-system, "Segoe UI", sans-serif;
+	white-space: nowrap;
+}
+
+.note.changed {
+	background: var(--low);
+	color: var(--background);
+}
+
+@media (max-width: 640px) {
+	.totals {
+		grid-template-columns: 1fr;
+	}
+
+	table.files .bar {
+		display: none;
+	}
+}

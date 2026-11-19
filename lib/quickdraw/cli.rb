@@ -46,6 +46,7 @@ class Quickdraw::CLI
 			backtrace: false,
 			timings: false,
 			profile: false,
+			coverage: false,
 			processes: nil,
 			watch: false,
 			seed: nil,
@@ -119,6 +120,10 @@ class Quickdraw::CLI
 
 		if options[:watch] && !Quickdraw::Platform.supports_forking?
 			usage_error "Watch mode needs fork, which this platform doesn’t support."
+		end
+
+		if options[:coverage] && !Quickdraw::Platform.supports_forking?
+			usage_error "--coverage needs fork, which this platform doesn’t support."
 		end
 
 		# nil lets the coordinator tune the count from run history.
@@ -215,6 +220,10 @@ class Quickdraw::CLI
 
 			parser.on("--profile", "Sample tests and list the methods that take the most of their time") do
 				options[:profile] = true
+			end
+
+			parser.on("-c", "--coverage", "Measure which lines, branches and methods tests run") do
+				options[:coverage] = true
 			end
 
 			parser.on("-b", "--backtrace", "Include Quickdraw’s own frames in backtraces") do
@@ -435,6 +444,7 @@ class Quickdraw::CLI
 			only_keys:,
 			whole_files:,
 			profile: options[:profile],
+			coverage: options[:coverage],
 		).call
 	end
 

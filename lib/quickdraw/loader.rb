@@ -21,15 +21,17 @@ class Quickdraw::Loader
 	# `group` names the group (see Configuration#group) whose tests this loader
 	# runs, or is nil for tests in none. Once it has booted, the loader writes
 	# to `report`, if given, a length-prefixed Marshal message: [:booted,
-	# groups] with the groups config defines as [name, patterns] pairs, or
-	# [:failed, error] if booting raised.
-	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, group: nil, report: nil)
+	# groups, coverage] with the groups config defines as [name, patterns]
+	# pairs and, with `coverage`, what booting covered (see CoverageCollector);
+	# or [:failed, error] if booting raised.
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
 		@control = control
 		@test_output_to_stderr = test_output_to_stderr
 		@profile = profile
+		@coverage = coverage
 		@group = group
 		@report = report
 		@running = {}
@@ -46,6 +48,8 @@ class Quickdraw::Loader
 		# the loader waits for its workers to finish their teardown.
 		trap("INT") { nil }
 
+		Quickdraw::CoverageCollector.start if @coverage
+
 		begin
 			self.class.boot(group: @group)
 		rescue Exception => error
@@ -55,7 +59,10 @@ class Quickdraw::Loader
 			return false
 		end
 
-		report([:booted, Quickdraw::Config.groups.map { |group| [group.name, group.patterns] }]) if @report
+		if @report
+			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns] }
+			report([:booted, groups, (Quickdraw::CoverageCollector.take if @coverage)])
+		end
 		test_files = real_paths
 
 		while @control
@@ -186,6 +193,6 @@ class Quickdraw::Loader
 		ENV["QUICKDRAW_WORKER"] = index.to_s
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile).call
+		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage).call
 	end
 end

@@ -101,12 +101,13 @@ class Quickdraw::Worker
 
 	# `timeouts` is false where the worker shares a process with the coordinator,
 	# since timing out exits the worker's process. `profile` samples tests.
-	def initialize(channel, test_files, seed, timeouts: true, profile: false)
+	def initialize(channel, test_files, seed, timeouts: true, profile: false, coverage: false)
 		@channel = channel
 		@test_files = test_files
 		@seed = seed
 		@timeouts = timeouts
 		@profile = profile
+		@coverage = coverage
 		@files = {}
 		@file_seeds = {}
 	end
@@ -140,6 +141,7 @@ class Quickdraw::Worker
 
 				@channel.write([:ready, Process.pid])
 			in [:stop]
+				@channel.write([:coverage, Quickdraw::CoverageCollector.take]) if @coverage
 				break
 			end
 		end
