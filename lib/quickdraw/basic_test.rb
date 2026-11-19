@@ -1,14 +1,16 @@
 # frozen_string_literal: true
 
 class Quickdraw::BasicTest
-	def self.test(description = nil, &block)
-		Quickdraw.register([self, description, block])
+	# `timeout` is in seconds, overriding Quickdraw::Config.timeout for this test.
+	def self.test(description = nil, timeout: nil, &block)
+		Quickdraw.register([self, description, block, timeout])
 	end
 
 	def initialize(description:, block:, runner:)
 		@description = description
 		@block = block
 		@runner = runner
+		@deferred = nil
 	end
 
 	def run
@@ -22,6 +24,16 @@ class Quickdraw::BasicTest
 		rescue Exception => error
 			error!(error)
 		end
+
+		run_deferred
+	end
+
+	# Runs the block once the test and its teardown have finished, even if they
+	# failed. Deferred blocks run in reverse order, so cleanup unwinds setup.
+	def defer(&block)
+		(@deferred ||= []) << block
+
+		nil
 	end
 
 	def match
@@ -89,4 +101,12 @@ class Quickdraw::BasicTest
 	def setup = nil
 	def teardown = nil
 	def around_test = yield
+
+	private def run_deferred
+		@deferred&.reverse_each do |block|
+			block.call
+		rescue Exception => error
+			error!(error)
+		end
+	end
 end

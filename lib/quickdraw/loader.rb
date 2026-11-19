@@ -58,7 +58,7 @@ class Quickdraw::Loader
 		Thread.new do
 			channel = @channels.fetch(0)
 			boot
-			start_worker(channel, 0, real_paths)
+			start_worker(channel, 0, real_paths, timeouts: false)
 		ensure
 			channel.close
 		end
@@ -124,7 +124,7 @@ class Quickdraw::Loader
 		@test_files.flat_map { |path| [File.expand_path(path), File.realpath(path)] }.to_h { |path| [path, true] }
 	end
 
-	private def start_worker(channel, index, test_files)
+	private def start_worker(channel, index, test_files, timeouts: true)
 		# Before the callbacks, so the coordinator can tell if this process dies
 		# even while a child the callbacks started holds the channel open.
 		channel.write([:pid, Process.pid])
@@ -132,6 +132,6 @@ class Quickdraw::Loader
 		ENV["QUICKDRAW_WORKER"] = index.to_s
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		Quickdraw::Worker.new(channel, test_files, @seed).call
+		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:).call
 	end
 end

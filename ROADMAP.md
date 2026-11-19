@@ -121,7 +121,15 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 ## Reliability
 
 - **Crash isolation** (done): a dead worker reports the in-flight test (segfault, OOM, `exit!`). The rest of its batch is requeued, and a replacement takes over its slot (see Speed).
-- **Hang detection:** per-test timeouts that dump every thread's backtrace before killing the worker.
+- **Hang detection** (done):
+  - `test("…", timeout: 5)`, with a default of `Quickdraw::Config.timeout` (300s).
+  - A watchdog thread in each worker sends every thread's backtrace and exits; the hung test's thread comes first and the others are listed as details. A replacement worker continues the run.
+  - A test that finishes after its timeout, before the watchdog could run, is still reported.
+  - If the watchdog can't run (C code holding the GVL), the coordinator kills the worker 5s after the timeout.
+  - **Still to do:**
+    - A timed-out test's `defer` blocks (and so its `tmpdir`) don't run, because the worker exits mid-test.
+    - A message half-written by a dead worker, whose pipe a child process holds open, blocks the coordinator. Reading needs non-blocking framing.
+- **Per-test output capture:** collect what each test prints and show it with that test's failure, as pytest does, instead of interleaving it on the terminal. Workers flush after every test (done), so a crash no longer loses earlier tests' output.
 - **Flaky detection:** retry failures in a fresh worker; a test that passes on retry is reported as flaky, not green. Flake scores tracked across runs.
 - **Order bisection:** we record each worker's exact test sequence, so a failure that only happens in a suite run can be replayed serially and delta-debugged down to the minimal polluting test(s). `quickdraw bisect <test>`.
 - **Leak detection:** snapshot global state around tests — globals, new constants, `ENV`, `Time` stubs, live threads, open files, temp files — and blame the test that leaked.
@@ -187,7 +195,11 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 
 ## Native syntax
 
-- A rich assertion set, plus pattern matching via `===`.
+- A rich assertion set, plus pattern matching via `===`. `assert_match(actual, pattern)` (done) uses `===`, so regexes, ranges and classes all work.
+- **`defer { … }`** (done): cleanup registered inside a test, run after teardown in reverse order, even when the test fails.
+- **`tmpdir`** (done): a fresh directory removed after the test. Core Ruby only, never follows symlinks, and handles read-only entries.
+- Top-level methods and constants in a test file are visible only to that file's tests (done; the README promised this but it didn't work for methods).
+- **Testing CLIs and processes:** the integration tests' helper (`test/support/integration.rb`) runs a command against a throwaway project, with a deadline that kills the whole process group, and waits for the process rather than for its output to close. Worth turning into a public tool for testing any CLI.
 - Snapshot testing with an update mode.
 - Table-driven tests.
 - Allocation and performance assertions.

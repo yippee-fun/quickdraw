@@ -2,6 +2,9 @@
 
 class Quickdraw::Reporter
 	ANSI = /\e\[[\d;]*m/
+	# With trailing slashes, so they can't match paths like "exercises".
+	LIBRARY = "#{Quickdraw::LIB}/"
+	EXECUTABLES = "#{File.expand_path('../exe', Quickdraw::LIB)}/"
 
 	# Below this much total test time, shares and hints are mostly noise.
 	HINT_THRESHOLD = 1.0
@@ -196,15 +199,28 @@ class Quickdraw::Reporter
 		end
 
 		result["errors"].each do |error|
-			@io.puts "  #{red(error['name'])}: #{clean(error['message'])}"
+			first_line, *rest = clean(error["message"]).lines(chomp: true)
+			@io.puts "  #{red(error['name'])}: #{first_line}"
+			rest.each { |line| @io.puts "    #{line}" }
 			backtrace(error["backtrace"]).each { |frame| @io.puts "    #{dim(relative(frame))}" }
+
+			if (details = error["details"])
+				@io.puts
+				@io.puts indent(relative_paths(clean(details)), 4)
+			end
 		end
 	end
 
+	# Quickdraw's own frames are dropped wherever they are, since an error can be
+	# raised inside an assertion. Everything from Quickdraw's executable on is the
+	# runner starting up.
 	private def backtrace(frames)
 		return frames if @backtrace
 
-		user_frames = frames.take_while { |frame| !frame.start_with?(Quickdraw::LIB) }
+		user_frames = frames
+			.reject { |frame| frame.start_with?(LIBRARY) }
+			.take_while { |frame| !frame.start_with?(EXECUTABLES) }
+
 		user_frames.empty? ? frames : user_frames
 	end
 
@@ -224,6 +240,10 @@ class Quickdraw::Reporter
 
 	private def relative(path)
 		path.delete_prefix("#{Dir.pwd}/")
+	end
+
+	private def relative_paths(text)
+		text.gsub("#{Dir.pwd}/", "")
 	end
 
 	private def clean(text)

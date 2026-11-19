@@ -21,6 +21,7 @@ module Quickdraw
 	autoload :Timer, "quickdraw/timer"
 	autoload :Loader, "quickdraw/loader"
 	autoload :Worker, "quickdraw/worker"
+	autoload :Watchdog, "quickdraw/watchdog"
 	autoload :Channel, "quickdraw/channel"
 	autoload :Platform, "quickdraw/platform"
 	autoload :Reporter, "quickdraw/reporter"
@@ -73,6 +74,25 @@ module Quickdraw
 		return if file && file != @loading && @test_files.key?(file)
 
 		@tests << test
+	end
+
+	# Deletes a file, or a directory and everything in it, without following
+	# symlinks. Core Ruby only, since it runs alongside user code (fileutils
+	# would leak into tests).
+	def self.remove_tree(path)
+		# A trailing slash would make File.symlink? see the link's target.
+		path = path.sub(%r{(?<=.)/+\z}, "")
+
+		if File.directory?(path) && !File.symlink?(path)
+			# A read-only directory's entries can't be deleted until it's writable.
+			File.chmod(File.stat(path).mode | 0o700, path)
+			Dir.each_child(path) { |child| remove_tree(File.join(path, child)) }
+			Dir.rmdir(path)
+		else
+			File.delete(path)
+		end
+	rescue Errno::ENOENT
+		nil
 	end
 
 	# 64-bit FNV-1a. Unlike String#hash, it's the same in every process and run.

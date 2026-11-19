@@ -132,7 +132,7 @@ class Quickdraw::History
 
 	CPU = Quickdraw::STATS.index("cpu")
 
-	Run = Data.define(:processes, :duration, :worker_choice, :tests)
+	Run = Data.define(:processes, :duration, :worker_choice, :tests, :test_time)
 	Expected = Data.define(:test_time, :tests, :longest_test)
 
 	# An upsert, so a concurrent run that adds the same test doesn't conflict.
@@ -215,11 +215,13 @@ class Quickdraw::History
 		Expected.new(test_time: durations.sum, tests: durations.size, longest_test: durations.max)
 	end
 
-	# The most recent runs of `selection` that ran any tests, newest first.
+	# The most recent runs of `selection` that ran any tests with forked workers,
+	# newest first. Runs without fork had no choice of worker count.
 	def recent_runs(selection, limit: 20)
-		@db.execute(<<~SQL, [selection, limit]).map { |processes, duration, choice, tests| Run.new(processes, duration, choice, tests) }
-			SELECT processes, duration, worker_choice, tests FROM runs
-			WHERE selection = ? AND tests > 0 ORDER BY id DESC LIMIT ?
+		@db.execute(<<~SQL, [selection, limit]).map { |row| Run.new(*row) }
+			SELECT processes, duration, worker_choice, tests, test_time FROM runs
+			WHERE selection = ? AND tests > 0 AND worker_choice != 'default'
+			ORDER BY id DESC LIMIT ?
 		SQL
 	rescue SQLite3::Exception => error
 		raise Error, error.message

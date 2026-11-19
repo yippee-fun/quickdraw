@@ -14,6 +14,13 @@ class Quickdraw::Coordinator
 	# Channels kept for replacing workers that crash.
 	SPARE_CHANNELS = 4
 
+	# How often to check for workers that died without closing their pipes, or
+	# whose tests are stuck where the watchdog can't stop them, in seconds.
+	LIVENESS_INTERVAL = 1
+
+	# How long past a test's timeout to wait for its watchdog before killing it.
+	TIMEOUT_GRACE = 5
+
 	class TestFile
 		# `keys` are the tests' history keys, or nil without history. `indices` are
 		# the tests to run. `prior_average` is the average test duration from
@@ -80,10 +87,27 @@ class Quickdraw::Coordinator
 			@idle = false
 			@pid = nil
 			@sequence = 0
+			@timeout = nil
+			@last_message_at = now
 		end
 
-		attr_reader :channel, :slot, :process, :loaded
+		attr_reader :channel, :slot, :process, :loaded, :last_message_at
 		attr_accessor :loading, :batch, :started, :idle, :pid
+
+		# [seconds, thread backtraces] once the worker reports a test timed out.
+		attr_accessor :timeout
+
+		def received_message
+			@last_message_at = now
+		end
+
+		def silent_for
+			now - @last_message_at
+		end
+
+		private def now
+			Process.clock_gettime(Process::CLOCK_MONOTONIC)
+		end
 
 		# The position of the next test in this worker's run order.
 		def next_sequence
@@ -180,16 +204,21 @@ class Quickdraw::Coordinator
 
 		@reporter.start(processes:, worker_choice: @worker_choice, seed: @seed)
 
-		until @workers.empty?
-			readable, = IO.select(@workers.keys, nil, nil, 1)
+		checked_at = now
 
-			if readable
-				readable.each do |io|
-					worker = @workers[io]
-					handle(worker, worker.channel.read) if worker
-				end
-			else
+		until @workers.empty?
+			readable, = IO.select(@workers.keys, nil, nil, LIVENESS_INTERVAL)
+
+			readable&.each do |io|
+				worker = @workers[io]
+				handle(worker, worker.channel.read) if worker
+			end
+
+			# On a timer rather than only when nothing is readable, so a busy run
+			# can't starve it.
+			if now - checked_at >= LIVENESS_INTERVAL
 				check_liveness
+				checked_at = now
 			end
 
 			dispatch
@@ -259,8 +288,68 @@ class Quickdraw::Coordinator
 
 		@workers.values.each do |worker|
 			dead = worker.pid ? !worker.alive? : @loader_status
-			crashed(worker) if dead
+			next unless dead || overdue?(worker)
+
+			# Messages it sent before dying (results, a timeout report) or that this
+			# process hadn't read yet. Handling them may settle the question.
+			drain(worker)
+			next unless @workers.key?(worker.channel.reader)
+
+			if dead
+				crashed(worker)
+			elsif overdue?(worker)
+				kill(worker)
+			end
 		end
+	end
+
+	# Whether the worker has been silent well past its running test's timeout:
+	# the watchdog should have caught that, so something (C code holding the GVL,
+	# say) stopped it running. Or it reported a timeout and hasn't exited.
+	private def overdue?(worker)
+		return false unless worker.pid && worker.started
+		return worker.silent_for > TIMEOUT_GRACE if worker.timeout
+
+		file, (index, *) = worker.batch
+		timeout = index && file.tests[index]["timeout"]
+		!!timeout && worker.silent_for > timeout + TIMEOUT_GRACE
+	end
+
+	private def drain(worker)
+		reader = worker.channel.reader
+
+		while @workers.key?(reader) && reader.wait_readable(0)
+			handle(worker, worker.channel.read)
+		end
+	end
+
+	private def kill(worker)
+		file, (index, *) = worker.batch
+		worker.timeout ||= [file.tests[index]["timeout"], []]
+		Process.kill("KILL", worker.pid)
+	rescue Errno::ESRCH
+		nil
+	end
+
+	private def now
+		Process.clock_gettime(Process::CLOCK_MONOTONIC)
+	end
+
+	# The test thread's backtrace is the error's. Other threads go in the details,
+	# since a hang is often waiting on one of them.
+	private def timeout_error(seconds, threads)
+		test_thread, *others = threads
+
+		details = others.map do |thread|
+			"Thread #{thread['name']}:\n#{thread['backtrace'].first(10).map { |frame| "  #{frame}" }.join("\n")}"
+		end
+
+		{
+			"name" => "Quickdraw::Timeout",
+			"message" => "The test took longer than its #{seconds}s timeout.",
+			"backtrace" => test_thread&.fetch("backtrace") || [],
+			"details" => (details.join("\n\n") if details.any?),
+		}
 	end
 
 	# Sends a command to the loader (see Loader#initialize). Returns false if it
@@ -348,9 +437,14 @@ class Quickdraw::Coordinator
 	end
 
 	private def handle(worker, message)
+		worker.received_message
+
 		case message
 		in nil
 			crashed(worker)
+		in [:timeout, seconds, threads]
+			# The worker exits next; crashed reports it.
+			worker.timeout = [seconds, threads]
 		in [:pid, pid]
 			worker.pid = pid
 		in [:ready, pid]
@@ -447,11 +541,15 @@ class Quickdraw::Coordinator
 		@workers.delete(worker.channel.reader)
 		worker.channel.close
 
-		crash = {
-			"name" => "Quickdraw::WorkerCrashed",
-			"message" => "The worker process exited unexpectedly.",
-			"backtrace" => [],
-		}
+		crash = if (timeout = worker.timeout)
+			timeout_error(*timeout)
+		else
+			{
+				"name" => "Quickdraw::WorkerCrashed",
+				"message" => "The worker process exited unexpectedly.",
+				"backtrace" => [],
+			}
+		end
 
 		if (path = worker.loading)
 			if (file = @files[path])

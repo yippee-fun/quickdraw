@@ -68,11 +68,18 @@ class Quickdraw::WorkerTuner
 
 	# Runs that ran far fewer tests than usual (say, because files failed to load)
 	# would look fast, so they're left out.
+	# Runs that did a very different amount of work aren't comparable: those that
+	# ran far fewer tests than usual (say, because files failed to load), and
+	# those from before the suite grew or shrank a lot.
 	private def comparable(runs)
 		return runs if runs.empty?
 
-		typical = median(runs.map(&:tests))
-		runs.select { |run| run.tests >= typical * 0.9 }
+		typical_tests = median(runs.map(&:tests))
+		complete = runs.select { |run| run.tests >= typical_tests * 0.9 }
+		return complete if complete.empty?
+
+		latest_test_time = complete.first.test_time
+		complete.select { |run| run.test_time.between?(latest_test_time / 2, latest_test_time * 2) }
 	end
 
 	# The fewest workers whose runs are within the tolerance of the fastest, so

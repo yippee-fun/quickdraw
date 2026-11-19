@@ -137,6 +137,36 @@ module Quickdraw::Assertions
 		end
 	end
 
+	# Passes if `pattern === actual`, so the pattern can be a Regexp, Range,
+	# Class, or anything else that defines ===.
+	def assert_match(actual, pattern)
+		assert(pattern === actual) do
+			<<~MESSAGE
+				\e[34mExpected:\e[0m
+
+				#{actual.inspect}
+
+				\e[34mto match:\e[0m
+
+				#{pattern.inspect}
+			MESSAGE
+		end
+	end
+
+	def refute_match(actual, pattern)
+		refute(pattern === actual) do
+			<<~MESSAGE
+				\e[34mExpected:\e[0m
+
+				#{actual.inspect}
+
+				\e[34mnot to match:\e[0m
+
+				#{pattern.inspect}
+			MESSAGE
+		end
+	end
+
 	def assert_operator(object, operator, other)
 		assert object.public_send(operator, other) do
 			<<~MESSAGE

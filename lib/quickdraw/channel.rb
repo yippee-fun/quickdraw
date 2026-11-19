@@ -14,6 +14,8 @@ class Quickdraw::Channel
 		@reader = reader
 		@writer = writer
 		@writer.sync = true
+		# A worker's watchdog thread can write while its main thread is mid-message.
+		@write_lock = Thread::Mutex.new
 	end
 
 	attr_reader :reader
@@ -21,7 +23,7 @@ class Quickdraw::Channel
 	# Returns false if the other end has gone away.
 	def write(message)
 		data = Marshal.dump(message)
-		@writer.write([data.bytesize].pack("N"), data)
+		@write_lock.synchronize { @writer.write([data.bytesize].pack("N"), data) }
 		true
 	rescue Errno::EPIPE
 		false

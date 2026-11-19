@@ -9,7 +9,7 @@ class WorkerTunerTest < Quickdraw::Test
 
 	# Newest first, as History#recent_runs returns them.
 	def runs(*specs)
-		specs.map { |processes, duration, choice = "tuned"| Quickdraw::History::Run.new(processes, duration, choice, 100) }
+		specs.map { |processes, duration, choice = "tuned"| Quickdraw::History::Run.new(processes, duration, choice, 100, 10.0) }
 	end
 
 	def choose(runs: [], expected: self.expected, waiting_share: 0.0)
@@ -82,7 +82,14 @@ class WorkerTunerTest < Quickdraw::Test
 	end
 
 	test "ignores runs that ran far fewer tests" do
-		history = [Quickdraw::History::Run.new(4, 0.1, "exploring", 3), *runs([8, 1.0], [8, 1.0], [8, 1.0, "estimated"])]
+		history = [Quickdraw::History::Run.new(4, 0.1, "exploring", 3, 10.0), *runs([8, 1.0], [8, 1.0], [8, 1.0, "estimated"])]
 		assert_equal choose(runs: history).processes, 8
+	end
+
+	test "ignores runs from before the suite's test time changed a lot" do
+		before_growing = Array.new(3) { Quickdraw::History::Run.new(1, 0.1, "tuned", 100, 0.3) }
+		history = [*runs([8, 1.0], [8, 1.0]), *before_growing]
+
+		assert_equal choose(runs: history), Quickdraw::WorkerTuner::Choice.new(8, "tuned")
 	end
 end

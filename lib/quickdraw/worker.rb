@@ -78,15 +78,24 @@ class Quickdraw::Worker
 		end
 	end
 
-	def initialize(channel, test_files, seed)
+	# `timeouts` is false where the worker shares a process with the coordinator,
+	# since timing out exits the worker's process.
+	def initialize(channel, test_files, seed, timeouts: true)
 		@channel = channel
 		@test_files = test_files
 		@seed = seed
+		@timeouts = timeouts
 		@files = {}
 		@file_seeds = {}
 	end
 
 	def call
+		if @timeouts
+			@watchdog = Quickdraw::Watchdog.new do |seconds, threads|
+				@channel.write([:timeout, seconds, threads])
+			end
+		end
+
 		@channel.write([:ready, Process.pid])
 
 		while (message = @channel.read)
@@ -114,7 +123,17 @@ class Quickdraw::Worker
 
 	private def load(path)
 		started_at = now
-		tests = Quickdraw.collect_tests(path, @test_files) { Kernel.load(path, Module.new) }
+		scope = Module.new
+		tests = Quickdraw.collect_tests(path, @test_files) { Kernel.load(path, scope) }
+
+		# The file's top-level methods are defined on its scope, so test classes
+		# defined in the file include it to call them. Classes reopened from
+		# elsewhere don't, or the helpers would leak to other files' tests.
+		scope.constants.each do |name|
+			test_class = scope.const_get(name)
+			test_class.include(scope) if Class === test_class && test_class < Quickdraw::BasicTest
+		end
+
 		@files[path] = tests
 		@file_seeds[path] = Quickdraw.stable_hash("#{@seed}:#{path.delete_prefix("#{Dir.pwd}/")}")
 
@@ -123,18 +142,50 @@ class Quickdraw::Worker
 		[:load_failed, path, Quickdraw.serialize_error(error)]
 	end
 
-	private def describe((test_class, description, block))
+	private def describe((test_class, description, block, timeout))
 		{
 			"description" => description&.then { |it| Quickdraw.plain_string(it).gsub(ANONYMOUS_MODULE, "") },
 			"line" => block.source_location[1],
 			"class_name" => test_class.name&.gsub(ANONYMOUS_MODULE, ""),
+			# So the coordinator can kill a worker whose watchdog can't run.
+			"timeout" => (timeout || Quickdraw::Config.timeout if @timeouts),
 		}
 	end
 
-	private def run(test_class, description, block)
+	private def run(test_class, description, block, timeout)
 		recorder = Recorder.new
-		recorder.measure_test { test_class.new(description:, block:, runner: recorder).run }
+
+		recorder.measure_test do
+			test = test_class.new(description:, block:, runner: recorder)
+			seconds = timeout || Quickdraw::Config.timeout
+
+			if @watchdog
+				overran = @watchdog.watch(seconds) { test.run }
+
+				if overran
+					recorder.error!({
+						"name" => "Quickdraw::Timeout",
+						"message" => "The test took longer than its #{seconds}s timeout.",
+						"backtrace" => [],
+					})
+				end
+			else
+				test.run
+			end
+		end
+
+		flush_output
 		recorder.to_h
+	end
+
+	# Output is buffered when it isn't a terminal, so without this, a later test
+	# that crashes the worker would lose what earlier tests printed. Free when
+	# nothing was printed.
+	private def flush_output
+		$stdout.flush
+		$stderr.flush
+	rescue IOError
+		nil
 	end
 
 	private def now
