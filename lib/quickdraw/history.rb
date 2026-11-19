@@ -92,8 +92,9 @@ class Quickdraw::History
 		-- status: passed, failed, errored or crashed.
 		-- Times are in seconds. setup, body and teardown are each phase's wall
 		-- time; cpu, gc and allocations cover the whole test.
-		-- worker and sequence record which worker ran the test and in what order,
-		-- for replaying order-dependent failures.
+		-- worker numbers each worker process in the run (a replacement for a
+		-- crashed worker gets a new number), and sequence is the test's position
+		-- in that process's run order, for replaying order-dependent failures.
 		-- details is JSON, {"failures": [...], "errors": [...]}, only for problems.
 		CREATE TABLE results (
 			run_id INTEGER NOT NULL,

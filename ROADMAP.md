@@ -93,9 +93,12 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
      - Runs that ran far fewer tests (e.g. files failed to load) and `--failed` runs are left out.
      - Measured: IO-bound suites jump from 8 to 36 workers on their second run (0.30s → 0.10s). The slow-file suite goes from 0.66s to 0.32s. CPU-bound and 20,000-trivial-test suites stay at 8.
   3. **How it's wired:** the coordinator creates channels for the maximum count, raising the open-file limit or capping the count to fit. It chooses while the loader boots, then sends the count down a control pipe. Choosing never delays the loader, and sqlite3 never reaches it.
-  4. **Next:**
-     - **Replacement workers:** reuse the control pipe and spare channels to fork a replacement when a worker crashes. A crash currently leaves the rest of its file unrun if it was the only worker, which auto-tuning makes more likely for small suites.
-     - **Elastic workers:** fork more when CPU is idle and work remains, or stop when memory gets tight.
+  4. **Replacement workers** (done):
+     - The loader stays alive for the whole run, taking commands from the coordinator over the control pipe: `start N`, then `fork CHANNEL SLOT`.
+     - When a worker crashes and work remains, a replacement starts on one of 4 spare channels, in the same slot. It inherits `QUICKDRAW_WORKER`, so it reuses that slot's database and other resources.
+     - A crashing test is reported once and never rerun. A file whose loading crashed a worker isn't handed to other workers. Spares are limited, so crashes can't loop.
+     - Workers report their pid before `after_forking` runs, and the coordinator also watches the loader's pid. Processes that config or callbacks fork, and that keep pipes open, can no longer hang a run.
+  5. **Next — elastic workers:** use the same `fork` command to add workers when CPU is idle and work remains, or stop adding them when memory gets tight.
   
   `-p`, `--max` and `--efficiency` still override all of this; the summary shows how the count was chosen.
 - Shared-memory queue (C extension): only worth it if profiling shows IPC is a meaningful share of runtime after batching.
@@ -117,7 +120,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 
 ## Reliability
 
-- **Crash isolation:** a dead worker reports the in-flight test (segfault, OOM, `exit!`) and the rest of its batch is requeued (done). Replacing the worker is still to do (see Speed).
+- **Crash isolation** (done): a dead worker reports the in-flight test (segfault, OOM, `exit!`). The rest of its batch is requeued, and a replacement takes over its slot (see Speed).
 - **Hang detection:** per-test timeouts that dump every thread's backtrace before killing the worker.
 - **Flaky detection:** retry failures in a fresh worker; a test that passes on retry is reported as flaky, not green. Flake scores tracked across runs.
 - **Order bisection:** we record each worker's exact test sequence, so a failure that only happens in a suite run can be replayed serially and delta-debugged down to the minimal polluting test(s). `quickdraw bisect <test>`.

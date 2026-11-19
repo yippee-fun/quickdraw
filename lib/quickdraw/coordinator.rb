@@ -11,6 +11,9 @@
 class Quickdraw::Coordinator
 	BATCH_BUDGET = 0.02
 
+	# Channels kept for replacing workers that crash.
+	SPARE_CHANNELS = 4
+
 	class TestFile
 		# `keys` are the tests' history keys, or nil without history. `indices` are
 		# the tests to run. `prior_average` is the average test duration from
@@ -37,6 +40,9 @@ class Quickdraw::Coordinator
 
 		attr_reader :path, :display_path, :tests, :keys, :pending, :load_duration
 
+		# Set when loading this file crashed a worker, so no other worker tries.
+		attr_accessor :unstealable
+
 		def next_batch
 			average = average_duration
 			size = average ? [@batch_size, (BATCH_BUDGET / [average, 1e-9].max).floor].min : 1
@@ -61,9 +67,12 @@ class Quickdraw::Coordinator
 	end
 
 	class Worker
-		def initialize(channel, index)
+		# `slot` is the worker's QUICKDRAW_WORKER number, which a replacement
+		# inherits. `process` numbers every worker process in the run, for history.
+		def initialize(channel, slot, process)
 			@channel = channel
-			@index = index
+			@slot = slot
+			@process = process
 			@loaded = {}
 			@loading = nil
 			@batch = nil
@@ -73,7 +82,7 @@ class Quickdraw::Coordinator
 			@sequence = 0
 		end
 
-		attr_reader :channel, :index, :loaded
+		attr_reader :channel, :slot, :process, :loaded
 		attr_accessor :loading, :batch, :started, :idle, :pid
 
 		# The position of the next test in this worker's run order.
@@ -124,8 +133,8 @@ class Quickdraw::Coordinator
 		forking = Process.respond_to?(:fork)
 
 		# A channel for every worker there could be, since the count is chosen
-		# after the loader forks.
-		capacity = forking ? channel_capacity(@processes || @max_processes) : 1
+		# after the loader forks, plus spares for replacing workers that crash.
+		capacity = forking ? channel_capacity((@processes || @max_processes) + SPARE_CHANNELS) : 1
 		pairs = Array.new(capacity) { Quickdraw::Channel.pair }
 		coordinator_channels = pairs.map(&:first)
 		worker_channels = pairs.map(&:last)
@@ -147,18 +156,28 @@ class Quickdraw::Coordinator
 			Quickdraw::Loader.new(worker_channels, test_files, @seed).call_in_thread
 		end
 
+		@control = control_writer
+
+		@loader = loader
+
 		begin
 			# After forking, so sqlite3 never reaches the loader. Overlaps with its boot.
 			open_history
-			processes, @worker_choice = forking ? choose_processes(capacity) : [1, "default"]
+			processes, @worker_choice = forking ? choose_processes([capacity - SPARE_CHANNELS, 1].max) : [1, "default"]
 		ensure
 			# The loader waits for this, so it's always sent: zero if choosing failed.
-			tell_loader(control_writer, processes || 0) if control_writer
+			command("start #{processes || 0}")
+			@control&.close unless processes
 		end
 
-		coordinator_channels.drop(processes).each(&:close)
 		@processes = processes
-		@workers = coordinator_channels.first(processes).each_with_index.to_h { |channel, index| [channel.reader, Worker.new(channel, index)] }
+		@spares = coordinator_channels.each_with_index.drop(processes).map { |channel, index| [index, channel] }
+		@process_count = 0
+
+		@workers = coordinator_channels.first(processes).each_with_index.to_h do |channel, slot|
+			[channel.reader, Worker.new(channel, slot, @process_count += 1)]
+		end
+
 		@reporter.start(processes:, worker_choice: @worker_choice, seed: @seed)
 
 		until @workers.empty?
@@ -170,13 +189,17 @@ class Quickdraw::Coordinator
 					handle(worker, worker.channel.read) if worker
 				end
 			else
-				@workers.values.reject(&:alive?).each { |worker| crashed(worker) }
+				check_liveness
 			end
 
 			dispatch
 		end
 
-		processes_failed = loader ? !Process.wait2(loader).last.success? : false
+		# No more workers will start, so the loader can exit once its workers have.
+		@control&.close
+		@spares.each { |_index, channel| channel.close }
+
+		processes_failed = loader ? !(@loader_status || Process.wait2(loader).last).success? : false
 
 		passed = @reporter.finish(
 			not_run: @unloaded.size + @files.each_value.sum { |file| file.pending.size },
@@ -226,13 +249,47 @@ class Quickdraw::Coordinator
 		[@cores.clamp(1, capacity), "default"]
 	end
 
-	private def tell_loader(writer, processes)
-		writer.puts(processes)
+	# Workers that died without closing their pipes, because a process they or
+	# the loader forked still holds them open. Workers that haven't reported a
+	# pid yet are only known dead if the loader has died too.
+	private def check_liveness
+		if @loader && !@loader_status
+			_, @loader_status = Process.wait2(@loader, Process::WNOHANG)
+		end
+
+		@workers.values.each do |worker|
+			dead = worker.pid ? !worker.alive? : @loader_status
+			crashed(worker) if dead
+		end
+	end
+
+	# Sends a command to the loader (see Loader#initialize). Returns false if it
+	# can't, e.g. because the loader has exited.
+	private def command(line)
+		return false unless @control
+
+		@control.puts(line)
+		true
 	rescue Errno::EPIPE
-		# The loader has already exited; its workers' channels report that.
-		nil
-	ensure
-		writer.close
+		@control.close
+		@control = nil
+		false
+	end
+
+	# Starts a worker in the crashed worker's slot, so it takes over that slot's
+	# resources, if there's work left and a spare channel. A crashing test is
+	# reported once and not rerun, so this can't loop.
+	private def replace(worker)
+		return if @spares.empty? || @loader_status
+		return if @unloaded.empty? && @files.each_value.all? { |file| file.pending.empty? }
+
+		index, channel = @spares.shift
+
+		if command("fork #{index} #{worker.slot}")
+			@workers[channel.reader] = Worker.new(channel, worker.slot, @process_count += 1)
+		else
+			channel.close
+		end
 	end
 
 	# Each worker needs four file descriptors. Raises the soft limit if needed,
@@ -294,6 +351,8 @@ class Quickdraw::Coordinator
 		case message
 		in nil
 			crashed(worker)
+		in [:pid, pid]
+			worker.pid = pid
 		in [:ready, pid]
 			worker.pid = pid
 			worker.idle = true
@@ -372,7 +431,7 @@ class Quickdraw::Coordinator
 				path: file.display_path,
 				test: file.tests[index],
 				result:,
-				worker: worker.index,
+				worker: worker.process,
 				sequence: worker.next_sequence,
 			)
 		end
@@ -395,7 +454,12 @@ class Quickdraw::Coordinator
 		}
 
 		if (path = worker.loading)
-			load_failed(path, crash) unless @files.key?(path)
+			if (file = @files[path])
+				# It loaded elsewhere but crashed this worker, so don't let it take more.
+				file.unstealable = true
+			else
+				load_failed(path, crash)
+			end
 		elsif (batch = worker.batch)
 			file, indices = batch
 
@@ -409,6 +473,8 @@ class Quickdraw::Coordinator
 				file.pending.unshift(*indices)
 			end
 		end
+
+		replace(worker)
 	end
 
 	private def dispatch
@@ -440,16 +506,23 @@ class Quickdraw::Coordinator
 
 	# When every worker is idle, nothing else will pick up the work, so steal regardless of cost.
 	private def file_to_steal(worker, all_idle)
-		candidates = @files.each_value.reject { |file| worker.loaded.key?(file.path) || file.pending.empty? }
+		candidates = @files.each_value.reject { |file| file.unstealable || worker.loaded.key?(file.path) || file.pending.empty? }
 
 		unless all_idle
 			candidates.select! do |file|
+				# Nobody else will run tests left behind by a crashed worker.
+				next true if orphaned?(file)
+
 				estimate = file.estimated_pending_time
 				estimate && estimate > file.load_duration * 2
 			end
 		end
 
 		candidates.max_by { |file| file.estimated_pending_time || 0 }
+	end
+
+	private def orphaned?(file)
+		@workers.each_value.none? { |worker| worker.loaded[file.path] }
 	end
 
 	private def run_batch(worker, file)
