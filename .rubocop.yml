@@ -4,7 +4,8 @@ inherit_from:
 AllCops:
   TargetRubyVersion: 3.3
 
-# Skip must get past a test's own `rescue => error`.
+# Skip and Interrupted must get past a test's own `rescue => error`.
 Lint/InheritException:
   Exclude:
+    - lib/quickdraw.rb
     - lib/quickdraw/basic_test.rb

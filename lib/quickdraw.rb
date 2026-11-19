@@ -50,6 +50,10 @@ module Quickdraw
 	# why the line is kept separately.
 	Definition = Data.define(:test_class, :description, :block, :timeout, :line)
 
+	# Raised in a worker on Ctrl-C. Not an Interrupt or StandardError, so tests
+	# can't rescue it by accident; their teardown and deferred blocks still run.
+	class Interrupted < Exception; end
+
 	Null = Object.new.freeze
 	Error = Module.new
 	Config = Configuration.new

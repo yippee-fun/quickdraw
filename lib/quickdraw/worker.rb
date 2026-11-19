@@ -135,6 +135,8 @@ class Quickdraw::Worker
 				break
 			end
 		end
+	rescue Quickdraw::Interrupted
+		nil
 	end
 
 	private def load(path)
@@ -163,6 +165,8 @@ class Quickdraw::Worker
 		@file_seeds[path] = Quickdraw.stable_hash("#{@seed}:#{path.delete_prefix("#{Dir.pwd}/")}")
 
 		[:loaded, path, tests.map { |test| describe(test) }, now - started_at]
+	rescue Quickdraw::Interrupted
+		raise
 	rescue Exception => error
 		[:load_failed, path, Quickdraw.serialize_error(error)]
 	end
@@ -199,6 +203,8 @@ class Quickdraw::Worker
 			else
 				test.run
 			end
+		rescue Quickdraw::Interrupted
+			raise
 		rescue Exception => error
 			recorder.error!(Quickdraw.serialize_error(error))
 		end
@@ -207,9 +213,9 @@ class Quickdraw::Worker
 		recorder.to_h
 	end
 
-	# Output is buffered when it isn't a terminal, so without this, a later test
-	# that crashes the worker would lose what earlier tests printed. Free when
-	# nothing was printed.
+	# Workers start unbuffered, but a test or config can replace $stdout. Without
+	# this, a later test that crashes the worker would lose what earlier tests
+	# printed. Free when nothing was printed.
 	private def flush_output
 		$stdout.flush
 		$stderr.flush

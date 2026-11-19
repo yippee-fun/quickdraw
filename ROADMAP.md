@@ -167,9 +167,16 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - All of these combine freely, and a filter that matches nothing fails the run rather than passing.
   
   Still to do: tags, and `--changed` (git diff plus the impact map).
+- Directories as arguments, searched for test files (done).
 - `SEED` env var as well as `--seed` (done), and `rand` seeded per test from the run seed (done) (from #72).
+- **Usage errors** (done): one line, with "did you mean" for options, formats and paths (keeping `:line`), and no backtrace. Exit status 2, apart from 1 for failures and 130 for Ctrl-C.
+- **Help** (done): options grouped by purpose, with examples and exit statuses. `--version`.
+- **Ctrl-C** (done): the first stops starting tests, lets running tests' teardown and deferred blocks finish, and reports what finished, counting the rest as not run. A second exits at once. Interrupted runs aren't recorded, so they can't mislead worker tuning.
+- **Live progress** (done): on a terminal, a bar on the bottom row, below a scroll region holding everything else, so what tests print can't collide with it. The total and time left come from the last run of the same selection. Problems are printed as they happen, with a one-line-per-problem recap at the end. Workers write output unbuffered, so a hanging test's output shows.
+- Several outputs at once (`--format human --format json:out.json`).
+- Shell completions for zsh, fish and bash, generated from the option definitions.
 - Interactive watch mode: keys to rerun all, failed only, filter by path or name.
-- Subcommands: `bisect`, `flaky`, `profile`, `doctor`, `init`.
+- Subcommands: `init`, `history`, `doctor`, `which` (the test file for a source file, from `exe/qc`), then `bisect`, `flaky` and `profile`.
 - Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached.
 - The seed and worker sequences are always printed or recorded, so every run is reproducible.
 

@@ -21,6 +21,9 @@ class Quickdraw::Coordinator
 	# How long past a test's timeout to wait for its watchdog before killing it.
 	TIMEOUT_GRACE = 5
 
+	# How long to wait for teardown after Ctrl-C before reporting, in seconds.
+	INTERRUPT_GRACE = 3
+
 	class TestFile
 		# `keys` are the tests' history keys, or nil without history. `indices` are
 		# the tests to run. `prior_average` is the average test duration from
@@ -142,6 +145,8 @@ class Quickdraw::Coordinator
 		@filter = filter
 		@fail_fast = fail_fast
 		@stopping = false
+		@interrupted = false
+		@abandoned = []
 		@selected = 0
 		@outcome = Quickdraw::Outcome.new
 		@selection = selection
@@ -193,6 +198,15 @@ class Quickdraw::Coordinator
 
 		@loader = loader
 
+		# The first Ctrl-C stops the run and reports what finished; a second gives up.
+		interrupt_reader, interrupt_writer = IO.pipe
+		previous_handler = trap("INT") do
+			exit(130) if @interrupted
+
+			@interrupted = true
+			interrupt_writer.write_nonblock(".", exception: false)
+		end
+
 		begin
 			# After forking, so sqlite3 never reaches the loader. Overlaps with its boot.
 			open_history
@@ -211,13 +225,18 @@ class Quickdraw::Coordinator
 			[channel.reader, Worker.new(channel, slot, @process_count += 1)]
 		end
 
-		@reporter.start(processes:, worker_choice: @worker_choice, seed: @seed)
+		@reporter.start(processes:, worker_choice: @worker_choice, seed: @seed, estimate:)
 		reporting_started_at = now
 
 		checked_at = now
 
 		until @workers.empty?
-			readable, = IO.select(@workers.keys, nil, nil, LIVENESS_INTERVAL)
+			readable, = IO.select([*@workers.keys, interrupt_reader], nil, nil, LIVENESS_INTERVAL)
+
+			if @interrupted
+				abandon_workers
+				break
+			end
 
 			readable&.each do |io|
 				worker = @workers[io]
@@ -232,14 +251,18 @@ class Quickdraw::Coordinator
 			end
 
 			dispatch
+			@reporter.tick
 		end
 
 		# No more workers will start, so the loader can exit once its workers have.
 		@control&.close
 		@spares.each { |_index, channel| channel.close }
 
-		processes_failed = loader ? !(@loader_status || Process.wait2(loader).last).success? : false
+		wait_for_loader(interrupt_reader) if loader
+		wait_for_teardown if @interrupted
+		processes_failed = !@interrupted && !!loader && !@loader_status.success?
 
+		@outcome.interrupted = @interrupted
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
 		@outcome.processes_failed = processes_failed || @history_unavailable
@@ -249,9 +272,67 @@ class Quickdraw::Coordinator
 		@outcome.duration = now - reporting_started_at
 		@reporter.finish(@outcome)
 
-		# Written after the report, so it never delays the results.
-		save_history(started_at, @outcome.passed?)
-		@outcome.passed?
+		# Written after the report, so it never delays the results. A partial run
+		# would mislead worker tuning.
+		save_history(started_at, @outcome.passed?) unless @interrupted
+		@outcome
+	ensure
+		trap("INT", previous_handler || "DEFAULT") if interrupt_reader
+		interrupt_reader&.close
+		interrupt_writer&.close
+	end
+
+	# Results already sent are kept. Tests still running are counted as not run,
+	# and files still loading as not loaded.
+	private def abandon_workers
+		@stopping = true
+		@workers.values.each { |worker| drain(worker) }
+		@workers.values.each { |worker| abandon(worker) }
+	end
+
+	private def abandon(worker)
+		@workers.delete(worker.channel.reader)
+		worker.channel.close
+		@abandoned << worker.pid if worker.pid
+
+		if (path = worker.loading)
+			@unloaded.unshift([path, display_path(path)]) unless @files.key?(path)
+		elsif (batch = worker.batch)
+			file, indices = batch
+			file.pending.unshift(*indices)
+		end
+	end
+
+	# Interruptible, since the loader can be slow to exit (an at_exit hook, say).
+	private def wait_for_loader(interrupt_reader)
+		until @loader_status || @interrupted
+			_, @loader_status = Process.wait2(@loader, Process::WNOHANG)
+			interrupt_reader.wait_readable(0.01) unless @loader_status
+		end
+	end
+
+	# Ctrl-C reached the workers too, so they're running teardown. Waits a little
+	# for them, so their output comes before the summary, then stops whatever is
+	# left.
+	private def wait_for_teardown
+		return unless @loader
+
+		deadline = now + INTERRUPT_GRACE
+
+		until @loader_status || now > deadline
+			_, @loader_status = Process.wait2(@loader, Process::WNOHANG)
+			sleep 0.01
+		end
+
+		return if @loader_status
+
+		[*@abandoned, @loader].each do |pid|
+			Process.kill("KILL", pid)
+		rescue Errno::ESRCH
+			nil
+		end
+
+		_, @loader_status = Process.wait2(@loader)
 	end
 
 	private def open_history
@@ -272,6 +353,16 @@ class Quickdraw::Coordinator
 		else
 			warn "Quickdraw couldn’t open its run history (#{error.message}). Continuing without it."
 		end
+	end
+
+	# From the last run of the same selection. --failed runs a different subset each time.
+	private def estimate
+		return if @only_keys || !@history
+
+		run = @history.last_run(@selection) or return
+		Quickdraw::Reporters::Estimate.new(tests: run.tests, duration: run.duration)
+	rescue Quickdraw::History::Error
+		nil
 	end
 
 	# Returns [count, how it was chosen].
@@ -562,6 +653,9 @@ class Quickdraw::Coordinator
 	end
 
 	private def crashed(worker)
+		# After Ctrl-C, a worker exiting is expected, and its test didn't finish.
+		return abandon(worker) if @interrupted
+
 		@workers.delete(worker.channel.reader)
 		worker.channel.close
 

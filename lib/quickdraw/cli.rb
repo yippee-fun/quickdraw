@@ -30,7 +30,7 @@ class Quickdraw::CLI
 		if options[:watch]
 			watch(options)
 		else
-			exit(run(options) ? 0 : 1)
+			exit(run(options).exit_status)
 		end
 	end
 
@@ -53,83 +53,26 @@ class Quickdraw::CLI
 			junit: nil,
 		}
 
-		OptionParser.new do |parser|
-			parser.banner = "Usage: quickdraw [options] [paths, globs or path:line]"
+		parser = option_parser(options)
 
-			parser.on("-h", "--help", "Prints this help") do
-				puts parser
-				exit
-			end
-
-			parser.on("-n", "--name PATTERN", "Run tests whose name contains PATTERN, or matches /PATTERN/") do |it|
-				options[:names] << it
-			end
-
-			parser.on("-x", "--exclude PATTERN", "Skip tests whose name contains PATTERN, or matches /PATTERN/") do |it|
-				options[:excludes] << it
-			end
-
-			parser.on("--fail-fast", "Stop starting tests after the first failure or error") do
-				options[:fail_fast] = true
-			end
-
-			parser.on("--format FORMAT", FORMATS, "Output format: #{FORMATS.join(', ')} (agent under AI coding agents, else human)") do |it|
-				options[:format] = it
-			end
-
-			parser.on("--junit PATH", "Also write JUnit XML to PATH") do |it|
-				options[:junit] = File.expand_path(it)
-			end
-
-			parser.on("-b", "--backtrace", "Show backtrace frames inside Quickdraw") do
-				options[:backtrace] = true
-			end
-
-			parser.on("-t", "--timings", "Show the slowest tests and files") do
-				options[:timings] = true
-			end
-
-			parser.on("-f", "--failed", "Run only the tests that failed in the last run") do
-				options[:failed] = true
-			end
-
-			parser.on("--no-history", "Don’t read or record run history (#{HISTORY_PATH})") do
-				options[:history] = false
-			end
-
-			parser.on("-p N", "--processes N", Integer, "Number of worker processes") do |it|
-				options[:processes] = it
-			end
-
-			parser.on("-m", "--max", "Use all available CPU cores") do
-				options[:max] = true
-			end
-
-			parser.on("-e", "--efficiency", "Use efficiency cores (Apple M-series Macs only)") do
-				options[:efficiency] = true
-			end
-
-			parser.on("-w", "--watch", "Watch for changes") do
-				options[:watch] = true
-			end
-
-			parser.on("-s N", "--seed N", Integer, "Seed for randomization") do |it|
-				options[:seed] = it
-			end
-		end.parse!(@args)
-
-		if [options[:processes], options[:max], options[:efficiency]].count(&:itself) > 1
-			abort "Use only one of --processes, --max and --efficiency."
+		begin
+			parser.parse!(@args)
+		rescue OptionParser::ParseError => error
+			usage_error(*explain(parser, error))
 		end
 
-		abort "--failed needs run history, so it can’t be used with --no-history." if options[:failed] && !options[:history]
+		if [options[:processes], options[:max], options[:efficiency]].count(&:itself) > 1
+			usage_error "Use only one of --processes, --max and --efficiency."
+		end
+
+		usage_error "--failed needs run history, so it can’t be used with --no-history." if options[:failed] && !options[:history]
 
 		if options[:efficiency] && !Quickdraw::Platform.m_series?
-			abort "Efficiency cores are only available on M-series Macs."
+			usage_error "Efficiency cores are only available on M-series Macs."
 		end
 
 		if options[:watch] && !Quickdraw::Platform.supports_forking?
-			abort "Watch mode needs fork, which this platform doesn’t support."
+			usage_error "Watch mode needs fork, which this platform doesn’t support."
 		end
 
 		# nil lets the coordinator tune the count from run history.
@@ -143,7 +86,7 @@ class Quickdraw::CLI
 			options[:processes]
 		end
 
-		abort "--processes must be at least 1." if options[:processes]&.< 1
+		usage_error "--processes must be at least 1." if options[:processes]&.< 1
 
 		options[:cores] = Quickdraw::Platform.supports_forking? ? Quickdraw::Platform.non_blocking_cores : 1
 		# Tests that mostly wait can use more workers than cores; beyond this the
@@ -151,18 +94,19 @@ class Quickdraw::CLI
 		options[:max_processes] = Quickdraw::Platform.cpu_cores * 3
 
 		options[:seed] ||= ENV["SEED"]&.then do |it|
-			Integer(it, exception: false) || abort("SEED must be an integer, got #{it.inspect}.")
+			Integer(it, exception: false) || usage_error("SEED must be a whole number, not #{it.inspect}.")
 		end
 		options[:seed] ||= Random.new_seed % 100_000
 
 		# Seeds are stored in SQLite, whose integers are signed 64-bit.
-		abort "The seed must be between 0 and #{MAX_SEED}." unless (0..MAX_SEED).cover?(options[:seed])
+		usage_error "The seed must be between 0 and #{MAX_SEED}." unless (0..MAX_SEED).cover?(options[:seed])
 
 		options[:patterns] = []
 		options[:lines] = {}
 
 		@args.each do |argument|
 			path, *lines = split_lines(argument)
+			usage_error(*missing_path(path)) if test_files([path]).empty?
 			options[:patterns] << path
 			(options[:lines][File.realpath(path)] ||= []).concat(lines) if lines.any?
 		end
@@ -170,10 +114,192 @@ class Quickdraw::CLI
 		(options[:names] + options[:excludes]).each do |pattern|
 			Quickdraw::Filter::NamePattern.parse(pattern)
 		rescue RegexpError => error
-			abort "Invalid --name or --exclude pattern #{pattern}: #{error.message}"
+			usage_error "#{pattern} isn’t a valid pattern: #{error.message.chomp('.')}."
 		end
 
 		options
+	end
+
+	private def option_parser(options)
+		OptionParser.new do |parser|
+			parser.banner = "#{bold('Usage:')} #{Quickdraw::Reporters.command} [options] [files, directories, globs or file:line …]"
+			parser.summary_width = 24
+			parser.separator ""
+			parser.separator "Runs tests across every core. With no paths, runs #{DEFAULT_PATTERN}."
+
+			parser.separator ""
+			parser.separator bold("Choosing tests")
+
+			parser.on("-n", "--name PATTERN", "Only tests whose name contains PATTERN, or matches /PATTERN/flags") do |it|
+				options[:names] << it
+			end
+
+			parser.on("-x", "--exclude PATTERN", "Leave out tests whose name contains PATTERN, or matches /PATTERN/flags") do |it|
+				options[:excludes] << it
+			end
+
+			parser.on("-f", "--failed", "Only the tests that failed or errored in the last run") do
+				options[:failed] = true
+			end
+
+			parser.on("--fail-fast", "Stop starting tests after the first failure or error") do
+				options[:fail_fast] = true
+			end
+
+			parser.on("-s N", "--seed N", Integer, "Order tests and seed rand with N (or set SEED)") do |it|
+				options[:seed] = it
+			end
+
+			parser.separator ""
+			parser.separator bold("Output")
+
+			parser.on("--format FORMAT", FORMATS, "#{FORMATS.join(', ')} (default: agent under AI coding agents, otherwise human)") do |it|
+				options[:format] = it
+			end
+
+			parser.on("--junit PATH", "Also write JUnit XML to PATH") do |it|
+				options[:junit] = File.expand_path(it)
+			end
+
+			parser.on("-t", "--timings", "List the slowest tests and files") do
+				options[:timings] = true
+			end
+
+			parser.on("-b", "--backtrace", "Include Quickdraw’s own frames in backtraces") do
+				options[:backtrace] = true
+			end
+
+			parser.separator ""
+			parser.separator bold("Workers")
+
+			parser.on("-p N", "--processes N", Integer, "Run N workers (default: tuned from run history)") do |it|
+				options[:processes] = it
+			end
+
+			parser.on("-m", "--max", "One worker per CPU core") do
+				options[:max] = true
+			end
+
+			parser.on("-e", "--efficiency", "Run on efficiency cores (Apple silicon)") do
+				options[:efficiency] = true
+			end
+
+			parser.separator ""
+			parser.separator bold("Other")
+
+			parser.on("-w", "--watch", "Run again when files change") do
+				options[:watch] = true
+			end
+
+			parser.on("--no-history", "Don’t read or record run history (#{HISTORY_PATH})") do
+				options[:history] = false
+			end
+
+			parser.on("-v", "--version", "Print the version") do
+				require_relative "version"
+				puts "Quickdraw #{Quickdraw::VERSION}"
+				exit
+			end
+
+			parser.on("-h", "--help", "Print this help") do
+				puts parser
+				exit
+			end
+
+			command = Quickdraw::Reporters.command
+			examples = [
+				["#{command} test/models", "Every test in a directory"],
+				["#{command} test/user.test.rb:12", "The test at line 12"],
+				["#{command} -n /admin/i --fail-fast", "Tests matching a regex, stopping at the first failure"],
+				["#{command} --failed", "What failed last time"],
+			]
+			width = examples.map { |example, _| example.size }.max
+
+			parser.separator ""
+			parser.separator bold("Examples")
+			examples.each { |example, description| parser.separator "    #{example.ljust(width)}  #{dim(description)}" }
+
+			parser.separator ""
+			parser.separator "Exits with 0 when everything passes, 1 when something fails, 2 for a usage error and 130 when interrupted."
+		end
+	end
+
+	# The message and hint for an option the parser rejected.
+	private def explain(parser, error)
+		argument, value = error.args
+		option, inline_value = argument.split("=", 2)
+
+		# "-pabc" is -p with the value "abc".
+		if (attached = /\A-(?<letter>[^-])(?<rest>.+)\z/.match(option))
+			option, inline_value = "-#{attached[:letter]}", attached[:rest]
+		end
+
+		value ||= inline_value
+		switches = parser.top.list.grep(OptionParser::Switch)
+		long_options = switches.flat_map(&:long)
+		# Abbreviations, such as --for for --format, as the parser accepts them.
+		long = long_options.include?(option) ? option : long_options.select { |it| it.start_with?(option) }.then { |it| it.first if it.one? }
+		switch = switches.find { |it| it.long.include?(long) || it.short.include?(option) }
+		name = switch&.long&.first || option
+
+		case error
+		in OptionParser::InvalidArgument if switch.nil? || value.nil?
+			[error.message]
+		in OptionParser::AmbiguousOption
+			candidates = long_options.select { |it| it.start_with?(option) }
+			["#{option} is ambiguous.", "Did you mean #{candidates.join(' or ')}?"]
+		in OptionParser::InvalidOption
+			suggestion = suggest(option, long_options)
+			["#{option} isn’t an option.", ("Did you mean #{suggestion}?" if suggestion)]
+		in OptionParser::MissingArgument
+			["#{name} needs a value, as in #{name}#{switch&.arg}."]
+		in OptionParser::NeedlessArgument
+			["#{name} doesn’t take a value."]
+		in OptionParser::InvalidArgument if name == "--format"
+			suggestion = suggest(value, FORMATS)
+			["#{value} isn’t a format. Use #{FORMATS[...-1].join(', ')} or #{FORMATS.last}.", ("Did you mean #{suggestion}?" if suggestion)]
+		in OptionParser::InvalidArgument
+			["#{name} takes a whole number, not #{value.inspect}."]
+		else
+			[error.message]
+		end
+	end
+
+	# The message and hint for a path that matches no test files.
+	private def missing_path(path)
+		message = if File.exist?(path)
+			"#{path} has no test files (#{DEFAULT_PATTERN})."
+		else
+			"#{path} doesn’t exist."
+		end
+
+		require "pathname"
+		files = test_files([])
+		directories = files.flat_map { |file| Pathname(file).dirname.ascend.map(&:to_s) }.uniq - ["."]
+		# Lines are kept, so the suggestion can be pasted as it is.
+		_, base, lines = *path.chomp("/").match(/\A(.*?)((?::\d+)*)\z/)
+		suggestion = suggest(base, files + directories)
+		[message, ("Did you mean #{suggestion}#{lines}?" if suggestion)]
+	end
+
+	private def suggest(input, candidates)
+		require "did_you_mean"
+		DidYouMean::SpellChecker.new(dictionary: candidates).correct(input).first
+	end
+
+	private def usage_error(message, hint = nil)
+		warn "#{red('Error:', $stderr)} #{message}"
+		warn hint if hint
+		warn dim("Run #{Quickdraw::Reporters.command} --help for usage.", $stderr)
+		exit 2
+	end
+
+	private def bold(text, io = $stdout) = style(text, 1, io)
+	private def dim(text, io = $stdout) = style(text, 2, io)
+	private def red(text, io = $stdout) = style(text, 31, io)
+
+	private def style(text, code, io)
+		(io.tty? && !ENV.key?("NO_COLOR")) ? "\e[#{code}m#{text}\e[0m" : text
 	end
 
 	# "test/a.test.rb:12:40" is the file with lines 12 and 40, when the file
@@ -286,18 +412,21 @@ class Quickdraw::CLI
 		end
 	end
 
-	# Files are used as given; anything else is a glob, which must match
-	# something. The default skips directories that hold other projects' tests,
-	# such as installed gems. A file reached by two paths is only run once.
+	# Files are used as given, directories are searched for test files, and
+	# anything else is a glob. The default skips directories that hold other
+	# projects' tests, such as installed gems. A file reached by two paths is only
+	# run once.
 	private def test_files(patterns)
 		files = if patterns.empty?
 			Dir.glob(DEFAULT_PATTERN).grep_v(IGNORED_DIRECTORIES)
 		else
 			patterns.flat_map do |pattern|
-				next [pattern] if File.file?(pattern)
-
-				Dir.glob(pattern).tap do |matches|
-					abort "No test files match #{pattern}." if matches.empty?
+				if File.file?(pattern)
+					[pattern]
+				elsif File.directory?(pattern)
+					Dir.glob(DEFAULT_PATTERN, base: pattern).map { |path| File.join(pattern, path) }
+				else
+					Dir.glob(pattern).select { |path| File.file?(path) }
 				end
 			end
 		end
@@ -325,7 +454,13 @@ class Quickdraw::CLI
 	private def run_in_fork(options)
 		pid = Process.fork do
 			print "\e[H\e[2J" unless output_format(options) == "json"
-			exit(run(options) ? 0 : 1)
+
+			# A file given as an argument may have been deleted since the last run.
+			options[:patterns].each do |pattern|
+				usage_error(*missing_path(pattern)) if test_files([pattern]).empty?
+			end
+
+			exit(run(options).exit_status)
 		end
 
 		Process.wait(pid)

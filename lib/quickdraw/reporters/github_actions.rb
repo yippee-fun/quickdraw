@@ -15,7 +15,7 @@ class Quickdraw::Reporters::GitHubActions
 		@problems = []
 	end
 
-	def start(processes:, worker_choice:, seed:)
+	def start(processes:, worker_choice:, seed:, estimate: nil)
 		@seed = seed
 	end
 
@@ -26,6 +26,8 @@ class Quickdraw::Reporters::GitHubActions
 	def load_failed(path, error)
 		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
 	end
+
+	def tick = nil
 
 	def finish(outcome)
 		@problems.first(ANNOTATION_LIMIT).each { |problem| annotate(*problem) }

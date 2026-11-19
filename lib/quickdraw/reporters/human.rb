@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# For people at a terminal: live progress, colour when it's a TTY, problems
-# with diffs and rerun commands, then a summary with timing hints.
+# For people at a terminal: problems with diffs and rerun commands as they
+# happen, a progress bar when it's a TTY, then a summary with timing hints.
 class Quickdraw::Reporters::Human
 	include Quickdraw::Reporters::Formatting
 
@@ -9,6 +9,8 @@ class Quickdraw::Reporters::Human
 	HINT_THRESHOLD = 1.0
 	SLOWEST_LIMIT = 10
 	SET_ASIDE_LIMIT = 20
+	PROGRESS_INTERVAL = 0.1
+	BAR_WIDTH = 24
 
 	def initialize(io: $stdout, backtrace: false, timings: false)
 		@io = io
@@ -23,40 +25,51 @@ class Quickdraw::Reporters::Human
 		@last_progress_at = 0.0
 	end
 
-	def start(processes:, worker_choice:, seed:)
+	def start(processes:, worker_choice:, seed:, estimate: nil)
 		@worker_choice = worker_choice
 		@processes = processes
 		@seed = seed
+		@estimate = estimate
+		@started_at = now
 	end
 
 	def result(path, test, result)
 		@tests += 1
 		@timings.record(path, test, result)
+
 		case Quickdraw::Outcome.status(result)
-		in "failed" | "errored" then @problems << [path, test, result]
+		in "failed" | "errored" then problem(path, test, result)
 		in "skipped" | "pending" then @set_aside << [path, test, result["skipped"]]
 		in "passed" then nil
 		end
+
 		progress
 	end
 
 	def load_failed(path, error)
-		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
+		problem(path, nil, { "errors" => [error], "failures" => [] })
+	end
+
+	def tick
+		progress
 	end
 
 	def finish(outcome)
-		@io.print "\r\e[K" if @live
+		release_bottom_row
 
 		print_slowest if @show_timings
 		print_set_aside
-		@problems.each { |problem| print_problem(*problem) }
+		print_recap if @problems.any?
 
 		if outcome.processes_failed && @problems.empty?
 			@io.puts
 			@io.puts "#{red('✗')} A worker or the loader exited with a failure status (e.g. from an at_exit hook)."
 		end
 
-		if outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
+		if outcome.interrupted
+			@io.puts
+			@io.puts "#{yellow('!')} Interrupted. Tests that were running or hadn’t started are counted as not run."
+		elsif outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
 			@io.puts
 			@io.puts "Stopped after the first problem (--fail-fast)."
 		end
@@ -79,7 +92,7 @@ class Quickdraw::Reporters::Human
 			("#{outcome.without_assertions} without assertions" if outcome.without_assertions > 0),
 			format("%.2fs", outcome.duration),
 		].compact.join(" · ")
-		print_timing_summary(outcome.duration)
+		print_timing_summary(outcome.duration) unless outcome.interrupted
 		@io.puts dim("Seed #{@seed} · #{pluralize(@processes, 'worker')} (#{@worker_choice}) · #{Quickdraw::Reporters.command} --seed #{@seed}")
 	end
 
@@ -232,14 +245,113 @@ class Quickdraw::Reporters::Human
 		@backtrace ? frames : user_backtrace(frames)
 	end
 
+	# Printed as soon as it happens, so there's something to look at while the
+	# rest of the run finishes.
+	private def problem(path, test, result)
+		@problems << [path, test, result]
+		print_problem(path, test, result)
+		@io.flush
+	end
+
+	# One line per problem, so they're all in view at the end however much the
+	# run printed after them.
+	private def print_recap
+		@io.puts
+		@io.puts bold(pluralize(@problems.size, "problem"))
+
+		@problems.each do |path, test, _result|
+			@io.puts test ? "  #{red('✗')} #{path}:#{test['line']} #{name_of(test)}" : "  #{red('✗')} #{path} could not be loaded"
+		end
+	end
+
+	# The bar sits on the terminal's bottom row, below a scroll region holding
+	# everything else, so what tests print can't collide with it. Each update is
+	# one write, which saves the cursor, draws the bar and restores the cursor.
 	private def progress
 		return unless @live
 
-		time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-		return if time - @last_progress_at < 0.05
+		time = now
+		return if time - @last_progress_at < PROGRESS_INTERVAL
 
 		@last_progress_at = time
-		@io.print "\r\e[K#{pluralize(@tests, 'test')}#{" · #{red(pluralize(@problems.size, 'problem'))}" if @problems.any?}"
+		rows, columns = terminal_size
+		return release_bottom_row unless rows && rows >= 4 && columns >= 20
+
+		reserve_bottom_row(rows) unless @rows == rows
+		@io.print "\e7\e[#{rows};1H\e[2K#{fit(progress_line(time - @started_at), columns)}\e8"
+		@io.flush
+	end
+
+	# Scrolls up a line if the cursor is on the bottom row, then limits scrolling
+	# to the rows above it. Setting the region moves the cursor, hence \e7 and \e8.
+	private def reserve_bottom_row(rows)
+		unless @rows
+			# The terminal keeps the scroll region if this process dies without finishing.
+			at_exit { release_bottom_row }
+		end
+
+		@io.print "\n\e[1A\e7\e[1;#{rows - 1}r\e8"
+		@rows = rows
+	end
+
+	private def release_bottom_row
+		return unless @rows
+
+		@io.print "\e7\e[#{@rows};1H\e[2K\e[r\e8"
+		@io.flush
+		@rows = nil
+	end
+
+	# Done as a share of the tests the last run had, which can be off when tests
+	# were added or removed, so it never quite reaches the end on its own.
+	private def progress_line(elapsed)
+		parts = []
+
+		if @estimate && @estimate.tests > 0
+			total = [@estimate.tests, @tests].max
+			fraction = (@tests.to_f / total).clamp(0.0, 0.99)
+			parts << "#{bar(fraction)} #{delimit(@tests)}/#{delimit(total)} tests"
+			parts << time_left(elapsed, fraction)
+		else
+			parts << pluralize(@tests, "test")
+			parts << dim(duration(elapsed))
+		end
+
+		parts << red(pluralize(@problems.size, "problem")) if @problems.any?
+		parts.compact.join(" · ")
+	end
+
+	# Early on, from how long the last run took; later, from this run's pace.
+	private def time_left(elapsed, fraction)
+		left = (fraction >= 0.1) ? elapsed * (1 - fraction) / fraction : @estimate.duration - elapsed
+		dim("#{duration(left)} left") if left >= 1
+	end
+
+	private def bar(fraction)
+		filled = (fraction * BAR_WIDTH).round
+		"#{green('━' * filled)}#{dim('─' * (BAR_WIDTH - filled))}"
+	end
+
+	private def duration(seconds)
+		(seconds < 60) ? "#{seconds.round}s" : "#{(seconds / 60).floor}m #{(seconds % 60).round}s"
+	end
+
+	# Truncated to the terminal's width, since a wrapped line would scroll.
+	private def fit(line, width)
+		visible = line.gsub(ANSI, "")
+		(visible.size < width) ? line : visible[0, width - 1]
+	end
+
+	# [rows, columns], or nil.
+	private def terminal_size
+		require "io/console"
+		@io.winsize
+	rescue LoadError, SystemCallError, NoMethodError
+		nil
+	end
+
+	private def now
+		Process.clock_gettime(Process::CLOCK_MONOTONIC)
 	end
 
 	private def clean(text)
@@ -247,6 +359,7 @@ class Quickdraw::Reporters::Human
 	end
 
 	private def red(text) = style(text, 31)
+	private def green(text) = style(text, 32)
 	private def yellow(text) = style(text, 33)
 	private def bold(text) = style(text, 1)
 	private def dim(text) = style(text, 2)

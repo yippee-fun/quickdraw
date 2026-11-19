@@ -74,10 +74,10 @@ class SelectionTest < Quickdraw::Test
 	end
 
 	test "fails when a path matches no file", timeout: 20 do
-		result = maths.run("-p", "1", "--no-history", "missing.test.rb:12")
+		result = maths.run("-p", "1", "--no-history", "math.test.rb:12")
 
-		refute result.success?
-		assert_includes result.stderr, "No test files match missing.test.rb:12."
+		assert_equal result.status.exitstatus, 2
+		assert_includes result.stderr, "Error: math.test.rb:12 doesn’t exist.\nDid you mean maths.test.rb:12?"
 	end
 
 	test "runs a file once when it's given by two paths", timeout: 20 do
@@ -99,8 +99,8 @@ class SelectionTest < Quickdraw::Test
 	test "explains an invalid --name regex", timeout: 20 do
 		result = maths.run("-p", "1", "--no-history", "-n", "/[/")
 
-		refute result.success?
-		assert_includes result.stderr, "Invalid --name or --exclude pattern /[/"
+		assert_equal result.status.exitstatus, 2
+		assert_includes result.stderr, "Error: /[/ isn’t a valid pattern: premature end of char-class: /[/."
 		refute_includes result.stderr, ".rb:"
 	end
 

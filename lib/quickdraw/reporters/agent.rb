@@ -17,7 +17,7 @@ class Quickdraw::Reporters::Agent
 		@problems = []
 	end
 
-	def start(processes:, worker_choice:, seed:)
+	def start(processes:, worker_choice:, seed:, estimate: nil)
 		@processes = processes
 		@seed = seed
 	end
@@ -30,6 +30,8 @@ class Quickdraw::Reporters::Agent
 		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
 	end
 
+	def tick = nil
+
 	def finish(outcome)
 		@problems.first(FULL_PROBLEMS).each { |problem| print_problem(*problem) }
 
@@ -40,7 +42,11 @@ class Quickdraw::Reporters::Agent
 		end
 
 		@io.puts "Workers exited with a failure status (e.g. from an at_exit hook)." if outcome.processes_failed && @problems.empty?
-		@io.puts "Stopped after the first problem (--fail-fast)." if outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
+		if outcome.interrupted
+			@io.puts "Interrupted (Ctrl-C). Tests that were running or hadn't started weren't run."
+		elsif outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
+			@io.puts "Stopped after the first problem (--fail-fast)."
+		end
 		@io.puts "No tests matched the given lines, --name or --exclude." if outcome.nothing_matched
 
 		counts = [

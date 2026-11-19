@@ -2,10 +2,14 @@
 
 # Reporters render a run. Each receives every event:
 #
-#   start(processes:, worker_choice:, seed:)
+#   start(processes:, worker_choice:, seed:, estimate:)
 #   result(path, test, result)
 #   load_failed(path, error)
+#   tick                        at least once a second, for live displays
 #   finish(outcome)
+#
+# `estimate` is how many tests the run is expected to have and how long it's
+# expected to take, from the last run of the same tests, or nil.
 #
 # They run in the coordinator, after the loader has forked, so they may load
 # libraries (such as json) as long as they do it lazily, not at construction.
@@ -20,6 +24,8 @@ module Quickdraw::Reporters
 	# Environment variables set by AI coding agents, which get the agent format
 	# unless another is asked for.
 	AGENT_VARIABLES = ["CLAUDECODE", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI", "AI_AGENT"].freeze
+
+	Estimate = Data.define(:tests, :duration)
 
 	def self.agent?
 		AGENT_VARIABLES.any? { |name| ENV[name] && !ENV[name].empty? }

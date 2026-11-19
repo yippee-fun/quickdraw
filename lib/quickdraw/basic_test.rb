@@ -123,23 +123,24 @@ class Quickdraw::BasicTest
 		around_test { @runner.measure("test") { instance_exec(&@block) } }
 	rescue Skip => skip
 		@runner.skip!(skip.reason)
+	rescue Quickdraw::Interrupted
+		raise
 	rescue Exception => error
 		error!(error)
 	ensure
-		begin
-			@runner.measure("teardown") { teardown }
+		# Cleanup carries on after Ctrl-C, which then stops the worker.
+		interrupted = nil
+		cleanups = [-> { @runner.measure("teardown") { teardown } }, *@deferred&.reverse]
+
+		cleanups.each do |cleanup|
+			cleanup.call
 		rescue Exception => error
-			error!(error)
+			case error
+			in Quickdraw::Interrupted then interrupted = error
+			else error!(error)
+			end
 		end
 
-		run_deferred
-	end
-
-	private def run_deferred
-		@deferred&.reverse_each do |block|
-			block.call
-		rescue Exception => error
-			error!(error)
-		end
+		raise interrupted if interrupted
 	end
 end

@@ -33,6 +33,10 @@ class Quickdraw::Loader
 		# tests start, which all inherit it.
 		$stdout.reopen($stderr) if @test_output_to_stderr
 
+		# Ctrl-C reaches every process. The coordinator decides what happens, and
+		# the loader waits for its workers to finish their teardown.
+		trap("INT") { nil }
+
 		boot
 		test_files = real_paths
 
@@ -86,6 +90,8 @@ class Quickdraw::Loader
 		channel = @channels.fetch(channel_index)
 
 		pid = Process.fork do
+			# A handler rather than "IGNORE", which processes that tests exec would inherit.
+			trap("INT") { raise Quickdraw::Interrupted }
 			@control.close
 			@channels.each { |other| other.close unless other.equal?(channel) }
 			start_worker(channel, slot, test_files)
@@ -133,6 +139,10 @@ class Quickdraw::Loader
 		# Before the callbacks, so the coordinator can tell if this process dies
 		# even while a child the callbacks started holds the channel open.
 		channel.write([:pid, Process.pid])
+
+		# Unbuffered, so what a test prints shows up while it runs, even if it hangs.
+		$stdout.sync = true
+		$stderr.sync = true
 
 		ENV["QUICKDRAW_WORKER"] = index.to_s
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s

@@ -30,13 +30,22 @@ class Quickdraw::Outcome
 		@processes_failed = false
 		@stopped_early = false
 		@nothing_matched = false
+		@interrupted = false
 	end
 
 	attr_reader :tests, :assertions, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions
 	# `not_run` counts tests in loaded files. Files never loaded (e.g. after
 	# --fail-fast stopped the run) are counted in `unloaded_files`, since their
 	# tests are unknown.
-	attr_accessor :not_run, :unloaded_files, :processes_failed, :stopped_early, :nothing_matched, :duration
+	attr_accessor :not_run, :unloaded_files, :processes_failed, :stopped_early, :nothing_matched, :interrupted, :duration
+
+	# 130 is what shells report for a process stopped by Ctrl-C.
+	def exit_status
+		if @interrupted then 130
+		elsif passed? then 0
+		else 1
+		end
+	end
 
 	def record(result)
 		@tests += 1
@@ -61,6 +70,6 @@ class Quickdraw::Outcome
 
 	def passed?
 		@failed == 0 && @errored == 0 && @load_errors == 0 && @not_run == 0 && @unloaded_files == 0 &&
-			!@processes_failed && !@nothing_matched
+			!@processes_failed && !@nothing_matched && !@interrupted
 	end
 end

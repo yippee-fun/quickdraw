@@ -9,5 +9,6 @@ class Quickdraw::Reporters::Multiple
 	def start(...) = @reporters.each { |reporter| reporter.start(...) }
 	def result(...) = @reporters.each { |reporter| reporter.result(...) }
 	def load_failed(...) = @reporters.each { |reporter| reporter.load_failed(...) }
+	def tick = @reporters.each(&:tick)
 	def finish(...) = @reporters.each { |reporter| reporter.finish(...) }
 end

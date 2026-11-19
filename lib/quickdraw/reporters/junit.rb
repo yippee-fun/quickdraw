@@ -11,7 +11,7 @@ class Quickdraw::Reporters::JUnit
 		@suites = Hash.new { |suites, file| suites[file] = [] }
 	end
 
-	def start(processes:, worker_choice:, seed:)
+	def start(processes:, worker_choice:, seed:, estimate: nil)
 		@seed = seed
 	end
 
@@ -22,6 +22,8 @@ class Quickdraw::Reporters::JUnit
 	def load_failed(path, error)
 		@suites[path] << [nil, { "errors" => [error], "failures" => [], "duration" => 0 }]
 	end
+
+	def tick = nil
 
 	def finish(outcome)
 		all = @suites.values.flatten(1)

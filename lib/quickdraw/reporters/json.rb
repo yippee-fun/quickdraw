@@ -9,7 +9,7 @@ class Quickdraw::Reporters::JSON
 		@io = io
 	end
 
-	def start(processes:, worker_choice:, seed:)
+	def start(processes:, worker_choice:, seed:, estimate: nil)
 		# Lazily, so json never reaches the loader, which forks before this runs.
 		require "json"
 
@@ -35,10 +35,13 @@ class Quickdraw::Reporters::JSON
 		emit("event" => "load_error", "path" => path, "error" => serialize_error(error))
 	end
 
+	def tick = nil
+
 	def finish(outcome)
 		emit(
 			"event" => "finish",
 			"passed" => outcome.passed?,
+			"interrupted" => outcome.interrupted,
 			"tests" => outcome.tests,
 			"assertions" => outcome.assertions,
 			"failed" => outcome.failed,

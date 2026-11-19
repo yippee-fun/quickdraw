@@ -227,6 +227,19 @@ class Quickdraw::History
 		raise Error, error.message
 	end
 
+	# The most recent run of `selection` that ran any tests, or nil.
+	def last_run(selection)
+		row = @db.get_first_row(<<~SQL, [selection])
+			SELECT processes, duration, worker_choice, tests, test_time FROM runs
+			WHERE selection = ? AND tests > 0
+			ORDER BY id DESC LIMIT 1
+		SQL
+
+		Run.new(*row) if row
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
 	# The share of test time spent waiting rather than on the CPU in the most
 	# recent run of `selection`, else of any selection, or nil.
 	def last_waiting_share(selection)

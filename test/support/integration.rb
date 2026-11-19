@@ -31,35 +31,29 @@ module Integration
 
 		# Runs Quickdraw to completion, or kills it and everything it started after
 		# `timeout` seconds. Waits for the process rather than for its output to
-		# close, since processes a test forks can hold the output open.
-		def run(*, env: {}, timeout: 10)
-			stdout_reader, stdout_writer = IO.pipe
-			stderr_reader, stderr_writer = IO.pipe
+		# close, since processes a test forks can hold the output open. Once the
+		# output matches `interrupt_when`, sends Ctrl-C to every process, as a
+		# terminal does. With `tty: [rows, columns]`, runs on a terminal of that
+		# size, which both streams go to, so everything is in stdout.
+		def run(*arguments, env: {}, timeout: 10, interrupt_when: nil, tty: nil)
+			# Unset what Quickdraw sets in this test's own worker, or the environment
+			# this suite runs in (an AI agent, GitHub Actions, an option parser
+			# setting), so behaviour is only what the test asks for.
+			environment = {
+				"NO_COLOR" => "1",
+				"SEED" => nil,
+				"QUICKDRAW_WORKER" => nil,
+				"TEST_ENV_NUMBER" => nil,
+				"GITHUB_ACTIONS" => nil,
+				"GITHUB_STEP_SUMMARY" => nil,
+				"POSIXLY_CORRECT" => nil,
+				**Quickdraw::Reporters::AGENT_VARIABLES.to_h { |name| [name, nil] },
+				**env,
+			}
+			command = [RbConfig.ruby, "-I", File.join(ROOT, "lib"), EXECUTABLE, *arguments]
 
-			pid = Process.spawn(
-				# Unset what Quickdraw sets in this test's own worker, or the environment
-				# this suite runs in (an AI agent, GitHub Actions, an option parser
-				# setting), so behaviour is only what the test asks for.
-				{
-					"NO_COLOR" => "1",
-					"SEED" => nil,
-					"QUICKDRAW_WORKER" => nil,
-					"TEST_ENV_NUMBER" => nil,
-					"GITHUB_ACTIONS" => nil,
-					"GITHUB_STEP_SUMMARY" => nil,
-					"POSIXLY_CORRECT" => nil,
-					**Quickdraw::Reporters::AGENT_VARIABLES.to_h { |name| [name, nil] },
-					**env,
-				},
-				RbConfig.ruby, "-I", File.join(ROOT, "lib"), EXECUTABLE, *,
-				chdir: @directory,
-				out: stdout_writer,
-				err: stderr_writer,
-				pgroup: true,
-			)
-
-			stdout_writer.close
-			stderr_writer.close
+			pid, stdout_reader, stderr_reader = tty ? spawn_on_terminal(environment, command, *tty) : spawn(environment, command)
+			readers = [stdout_reader, stderr_reader].compact
 			stdout = +""
 			stderr = +""
 			started_at = now
@@ -72,9 +66,15 @@ module Integration
 					raise "Quickdraw didn’t finish within #{timeout}s. Output so far:\n#{stdout}#{stderr}"
 				end
 
-				IO.select([stdout_reader, stderr_reader], nil, nil, 0.05)
+				IO.select(readers, nil, nil, 0.05)
 				drain(stdout_reader, stdout)
 				drain(stderr_reader, stderr)
+
+				if interrupt_when && (interrupt_when.match?(stdout) || interrupt_when.match?(stderr))
+					Process.kill("INT", -pid)
+					interrupt_when = nil
+				end
+
 				_, status = Process.wait2(pid, Process::WNOHANG)
 			end
 
@@ -89,13 +89,42 @@ module Integration
 			stderr_reader&.close
 		end
 
+		private def spawn(environment, command)
+			stdout_reader, stdout_writer = IO.pipe
+			stderr_reader, stderr_writer = IO.pipe
+			pid = Process.spawn(environment, *command, chdir: @directory, out: stdout_writer, err: stderr_writer, pgroup: true)
+
+			[pid, stdout_reader, stderr_reader]
+		ensure
+			stdout_writer&.close
+			stderr_writer&.close
+		end
+
+		# The process leads a new session, so it has its own process group too.
+		# PTY.spawn has no chdir option, hence the Ruby that changes directory.
+		private def spawn_on_terminal(environment, command, rows, columns)
+			require "pty"
+			require "io/console"
+
+			reader, writer, pid = PTY.spawn(environment, RbConfig.ruby, "-e", "Dir.chdir(ARGV.shift); exec(*ARGV)", @directory, *command)
+			reader.winsize = [rows, columns]
+			writer.close
+
+			[pid, reader, nil]
+		end
+
+		# A terminal raises EIO once the process has gone.
 		private def drain(reader, output)
+			return unless reader
+
 			loop do
 				chunk = reader.read_nonblock(65_536, exception: false)
 				break unless String === chunk
 
 				output << chunk
 			end
+		rescue Errno::EIO
+			nil
 		end
 
 		# Anything the run left behind, such as a process a test forked.
