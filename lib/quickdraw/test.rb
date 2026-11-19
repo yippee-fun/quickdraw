@@ -3,6 +3,23 @@
 class Quickdraw::Test < Quickdraw::BasicTest
 	include Quickdraw::Assertions
 	include Quickdraw::Generators
+	# For fuzz, in the class body.
+	extend Quickdraw::Generators
+
+	# Defines a test that checks the block with values from the generators, as
+	# `check` does, and that `quickdraw fuzz` fuzzes for longer, guided by the
+	# code it reaches.
+	def self.fuzz(*arguments, cases: 100, timeout: nil, &block)
+		description = arguments.shift unless Quickdraw::Generator === arguments.first
+		raise ::ArgumentError, "fuzz needs a generator, as in fuzz(\"parses anything\", bytes) { |input| … }." if arguments.empty?
+		raise ::ArgumentError, "fuzz needs a block." unless block
+
+		(@fuzz_targets ||= {}.compare_by_identity)[block] = [arguments, cases]
+		test(description, timeout:, &block)
+	end
+
+	# The generators and case count of the test that fuzz defined with `block`, if it did.
+	def self.fuzz_target(block) = @fuzz_targets&.[](block)
 
 	# Runs the block with values from the generators, `cases` times or until
 	# `seconds` have passed, and reports the simplest values that fail it.
@@ -28,13 +45,23 @@ class Quickdraw::Test < Quickdraw::BasicTest
 			@runner = runner
 		end
 
-		if (counterexample = property.check)
+		# Under `quickdraw fuzz`, the test's first property is fuzzed instead.
+		fuzzer = Quickdraw::Fuzz.claim
+
+		if (counterexample = fuzzer ? fuzzer.call(property) : property.check)
 			counterexample.report(runner)
 		else
 			success!
 		end
 
 		nil
+	end
+
+	private def run_block
+		case self.class.fuzz_target(@block)
+		in [generators, cases] then check(*generators, cases:) { |*values| instance_exec(*values, &@block) }
+		in nil then super
+		end
 	end
 
 	# A new, empty directory that's removed after the test. Its real, absolute

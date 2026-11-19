@@ -107,6 +107,36 @@ class GeneratorsTest < Quickdraw::Test
 			assert_equal Quickdraw::Generators.codepoint(last), 0x10FFFF
 			refute_includes(0xD800..0xDFFF, Quickdraw::Generators.codepoint(32 + 0xD800 - 127))
 		end
+
+		test "mixes in a dictionary's strings, each counting as one towards the length" do
+			check(string("ab", length: 3, dictionary: ["true", "null"])) do |s|
+				assert_match s, /\A(?:[ab]|true|null){3}\z/
+			end
+
+			assert samples(string("ab", dictionary: ["true"])).any? { |it| it.include?("true") }
+			assert_equal simplest(string("ab", length: 2, dictionary: ["true"])), "aa"
+			assert_raises(ArgumentError) { string(dictionary: [""]) }
+			assert_raises(ArgumentError) { string(dictionary: [:true]) }
+		end
+	end
+
+	describe "bytes" do
+		test "makes binary strings of any bytes" do
+			values = samples(bytes(length: 1..))
+
+			assert values.all? { |it| it.encoding == Encoding::BINARY }
+			assert_equal values.join.bytes.uniq.size, 256
+			assert_equal simplest(bytes), "".b
+			assert_equal simplest(bytes(length: 2)), "\x00\x00".b
+		end
+
+		test "mixes in a dictionary's strings" do
+			values = samples(bytes(dictionary: ["GET", "é"]))
+
+			assert values.any? { |it| it.include?("GET") }
+			assert values.any? { |it| it.include?("é".b) }
+			assert values.all? { |it| it.encoding == Encoding::BINARY }
+		end
 	end
 
 	test "symbol" do

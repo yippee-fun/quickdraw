@@ -53,13 +53,28 @@ module Quickdraw::Generators
 
 	# `characters` is a String or Array of them, a Range such as "a".."z", a
 	# generator of characters, :ascii for printable ASCII, or :unicode.
-	def string(characters = :unicode, length: 0..)
-		character = Quickdraw::Generators.characters(characters)
+	# `dictionary` has strings, such as a format's keywords, to mix in with the
+	# characters, each counting as one towards the length.
+	def string(characters = :unicode, length: 0.., dictionary: [])
+		piece = Quickdraw::Generators.with_dictionary(Quickdraw::Generators.characters(characters), dictionary)
 		lengths = Quickdraw::Generators.lengths(length)
 
 		Quickdraw::Generator.new do |choices|
 			string = +""
-			Quickdraw::Generators.collect(choices, lengths) { string << choices.draw(character) }
+			Quickdraw::Generators.collect(choices, lengths) { string << choices.draw(piece) }
+			string
+		end
+	end
+
+	# Binary strings of any bytes, mixed with `dictionary`'s strings as string does.
+	def bytes(length: 0.., dictionary: [])
+		byte = Quickdraw::Generator.new { |choices| choices.choose(255).chr }
+		piece = Quickdraw::Generators.with_dictionary(byte, dictionary.map { |token| (String === token) ? token.b : token })
+		lengths = Quickdraw::Generators.lengths(length)
+
+		Quickdraw::Generator.new do |choices|
+			string = String.new(encoding: Encoding::BINARY)
+			Quickdraw::Generators.collect(choices, lengths) { string << choices.draw(piece) }
 			string
 		end
 	end
@@ -241,6 +256,26 @@ module Quickdraw::Generators
 		in String then one_of(*characters.chars.uniq)
 		in Range | Array then one_of(*characters.to_a.uniq)
 		else raise ::ArgumentError, "Expected characters as a String, Range, Array, generator, :ascii or :unicode, got #{characters.inspect}."
+		end
+	end
+
+	# The generator's values, or a quarter of the time a string from the
+	# dictionary. Without one, just the generator, so its choices don't change.
+	def self.with_dictionary(generator, dictionary)
+		return generator if dictionary.empty?
+
+		unless dictionary.all? { |token| String === token && !token.empty? }
+			raise ::ArgumentError, "A dictionary has non-empty strings, got #{dictionary.inspect}."
+		end
+
+		tokens = dictionary.uniq.map { |token| token.dup.freeze }
+
+		Quickdraw::Generator.new do |choices|
+			if choices.choose(1) { |random| (random.rand(4) == 0) ? 1 : 0 } == 1
+				tokens[choices.choose(tokens.size - 1)]
+			else
+				choices.draw(generator)
+			end
 		end
 	end
 

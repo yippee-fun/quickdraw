@@ -78,6 +78,14 @@ class PropertyTest < Quickdraw::Test
 		assert_match error["message"], /\Aboom\n\n.*Counterexample.*\n\n11\n\n/m
 	end
 
+	test "shrinks by deleting adjacent values together, when deleting either alone passes" do
+		runner = assert_test(failures: 1) do
+			check(array(integer(1..3))) { |list| refute list.include?(3) && list.sum.odd? }
+		end
+
+		assert_includes message(runner), "\n\n[3]\n\n"
+	end
+
 	test "shrinks to a case that fails the same way" do
 		runner = assert_test(errors: 1) do
 			check(integer(0..)) do |n|
@@ -146,6 +154,26 @@ class PropertyTest < Quickdraw::Test
 		assert_equal values.first, 50
 		assert_equal values.size, 101
 		assert_equal Dir.children(Quickdraw::Property.directory), []
+	end
+
+	test "replays each of several saved cases, as fuzzing saves them, forgetting those that pass" do
+		Quickdraw::Property.remember("several", [5])
+		Quickdraw::Property.remember("several", [7])
+		Quickdraw::Property.remember("several", [7])
+		path = Quickdraw::Property.path("several")
+		assert_equal Quickdraw::Property.saved(path), [[5], [7]]
+
+		values = []
+		failure = Quickdraw::Property::Failure.new(failures: [{ "message" => "seven", "path" => __FILE__, "line" => __LINE__ }], errors: [])
+		property = Quickdraw::Property.new([integer(0..)], cases: 0, seconds: nil, key: "several") do |(n)|
+			values << n
+			failure if n == 7
+		end
+
+		counterexample = property.check
+		assert_equal values.first(2), [5, 7]
+		assert_equal counterexample.input, "7"
+		assert_equal Quickdraw::Property.saved(path), [[7]]
 	end
 
 	test "ignores and deletes a saved case it can't read" do

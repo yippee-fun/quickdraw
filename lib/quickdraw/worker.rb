@@ -216,6 +216,8 @@ class Quickdraw::Worker
 				@channel.write([:baseline, path, *baseline(path, subjects)])
 			in [:mutant, mutant, tests, seconds]
 				@channel.write([:mutant, mutant.id, mutate(mutant, tests, seconds)])
+			in [:fuzz, path, index, settings]
+				Quickdraw::Fuzz::Session.new(@channel, @files.fetch(path).fetch(index), test_seed: @file_seeds.fetch(path) + index, **settings).call
 			in [:stop]
 				@channel.write([:coverage, Quickdraw::CoverageCollector.merge(@coverage_totals, Quickdraw::CoverageCollector.take)]) if @coverage
 				break

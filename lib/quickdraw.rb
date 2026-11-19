@@ -58,6 +58,8 @@ module Quickdraw
 	autoload :Generators, "quickdraw/generators"
 	autoload :Property, "quickdraw/property"
 	autoload :Mutation, "quickdraw/mutation"
+	autoload :Fuzz, "quickdraw/fuzz"
+	autoload :WorkerPool, "quickdraw/worker_pool"
 	autoload :Coordinator, "quickdraw/coordinator"
 	autoload :ArgumentError, "quickdraw/errors/argument_error"
 	autoload :Configuration, "quickdraw/configuration"

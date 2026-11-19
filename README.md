@@ -70,9 +70,54 @@ end
 
 When a case fails, Quickdraw shrinks it to the simplest case it can find that fails in the same place, and reports it with the original and how many cases ran. The case is saved in `.quickdraw/properties/` and tried first next time, until it passes. Cases come from the run's seed, so `--seed N` repeats them.
 
-- **Generators:** `integer(-10..10)`, `float(0.0..1.0)`, `boolean`, `string` (any Unicode, or `string("a".."z", length: 1..8)`, or `string(:ascii)`), `symbol`, `array(integer, length: 0..5)`, `hash_of(symbol, integer)`, `fixed_hash(name: string, age: integer(0..))`, `tuple(integer, string)`, `one_of(:red, :green, integer)`, `constant(value)` and `nilable(string)`. Ranges can be open-ended.
+- **Generators:** `integer(-10..10)`, `float(0.0..1.0)`, `boolean`, `string` (any Unicode, or `string("a".."z", length: 1..8)`, or `string(:ascii)`, with `dictionary: ["true", "null"]` to mix in words), `bytes` (binary, with a `dictionary:` too), `symbol`, `array(integer, length: 0..5)`, `hash_of(symbol, integer)`, `fixed_hash(name: string, age: integer(0..))`, `tuple(integer, string)`, `one_of(:red, :green, integer)`, `constant(value)` and `nilable(string)`. Ranges can be open-ended.
 - **Your own:** `map`, `filter` and `flat_map` build generators from others, and `generator { |choices| User.new(name: choices.draw(string)) }` draws from several. They shrink as well as the built-in ones. Outside a test, call generators on `Quickdraw::Generators`.
 - **How many:** `cases: 1000`, or `seconds: 2` to stop sooner if time runs out. A property counts as one assertion.
+
+## Fuzzing
+
+A property tries 100 cases. Fuzzing tries hundreds of thousands, and learns as it goes: a case that runs code no case ran before is kept, and new cases are made by changing kept ones, so it gets deeper into your code over time. `fuzz` defines a test that's an ordinary property when tests run:
+
+```ruby
+class ParserTest < Quickdraw::Test
+  fuzz "parses anything", bytes(dictionary: ["{", "}", "[", "]", ":", ",", "true", "null"]) do |input|
+    Parser.parse(input)
+  rescue Parser::Error
+    # Invalid input is fine. Any other error is a bug.
+  end
+end
+```
+
+`qt fuzz` fuzzes it, on every worker at once:
+
+```sh
+qt fuzz                          # the tests fuzz defines, in every test file that mentions fuzz
+qt fuzz test/parser.test.rb      # in a file, or a directory
+qt fuzz test/sorting.test.rb:12  # any test that checks a property, by line
+qt fuzz --seconds 300            # for longer (the default is 30 seconds a test)
+```
+
+```
+ERRORED parses anything  ParserTest · test/parser.test.rb:3
+
+    NoMethodError: undefined method 'fetch' for nil
+    lib/parser.rb:41:in 'Parser.object'
+
+  Input (found after 10,715 cases, shrunk 9 times)
+
+    "{null:true"
+
+ParserTest › parses anything  test/parser.test.rb:3
+  861,402 cases in 30.0s (28,713/s) · 92 edges · 96 in the corpus · 6 methods traced
+  Edges: 75 by 0.2s, 92 by 0.8s.
+```
+
+- **Finds:** failed assertions and errors, as properties do; cases that crash the process (a segfault, `exit!`), or raise past the property (`exit`); and cases that hang, running longer than `--timeout` (a second, by default). Each is shrunk as a property's are, and saved with the property's failing cases, so `qt` replays it first until it passes. Whatever one is found, fuzzing carries on looking for others.
+- **Guided by:** which edges between lines of your project's methods a case runs (not gems', tests' or Quickdraw's), and roughly how many times (1, 2–3, 4–7…), as AFL does. A case that reaches a new edge, or a new count, joins the corpus, kept in `.quickdraw/fuzz/`, which later runs start from, and every worker shares.
+- **New cases:** made by changing a kept case's choices rather than its value, so they keep its shape: a choice replaced or nudged, a value (an array's item, a string's character) deleted, duplicated or swapped for one from another case, or the end made afresh. A tenth are fresh. A `dictionary:` on `string` or `bytes` mixes in words a format uses, which random characters would rarely spell.
+- **Which property:** a test's first `check`. Its others run as usual.
+- **Results:** `--format human`, `agent` or `json`, with what's found, cases a second, edges reached, and when it reached them: if the last came long before the end, more time is unlikely to find more. It exits with 1 if it finds anything. `--seed N` makes the same cases on one worker, as long as nothing else changes the corpus.
+- **Speed:** 29,000–37,000 cases a second on one worker on a small JSON-like parser, and 70,000–113,000 on four. Tracing the edges costs about 9µs a case there, and saving each case before it runs, so a crash can be traced to it, about 4µs.
 
 ## Running tests
 
@@ -304,4 +349,5 @@ end
 - `qt doctor` checks that the machine and project are ready, and how long config takes to boot.
 - `qt counterpart lib/user.rb` prints a source file's test, or a test's source file.
 - `qt mutate` finds code the tests run but don't check (see Mutation testing).
+- `qt fuzz` runs properties for longer, guided by the code their cases reach (see Fuzzing).
 - `qt completions zsh` prints shell completions, for bash, zsh or fish.

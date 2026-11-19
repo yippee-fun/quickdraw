@@ -21,10 +21,13 @@ class Quickdraw::Choices
 		@prefix = prefix
 		@random = random
 		@values = []
+		@limits = []
 		@spans = []
 	end
 
-	attr_reader :values, :spans
+	# `limits` has each choice's limit, nil if unbounded, so fuzzing can make
+	# new choices in place of these.
+	attr_reader :values, :limits, :spans
 
 	def draw(generator)
 		raise ::ArgumentError, "Expected a Quickdraw::Generator, got #{generator.inspect}." unless Quickdraw::Generator === generator
@@ -63,6 +66,7 @@ class Quickdraw::Choices
 		end
 
 		@values << choice
+		@limits << limit
 		choice
 	end
 

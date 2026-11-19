@@ -2,12 +2,11 @@
 
 # Runs a property (see Quickdraw::Test#check): generates cases until one fails,
 # then shrinks its choices to the simplest that fail the same way. That case is
-# saved, and replayed first next time until it passes.
+# saved, and replayed first next time until it passes. Fuzzing (see
+# Quickdraw::Fuzz) saves what it finds here too, so a property can have several.
 #
 # Runs in workers alongside user code, so it must only use core Ruby.
 class Quickdraw::Property
-	SHRINK_ATTEMPTS = 2_000
-	SHRINK_SECONDS = 10
 	# Filters may discard this many cases for each that runs, after a grace.
 	DISCARDS = 10
 	INSPECT_LIMIT = 2_000
@@ -52,7 +51,7 @@ class Quickdraw::Property
 		end
 	end
 
-	Run = Data.define(:choices, :spans, :failure)
+	Run = Data.define(:choices, :limits, :spans, :failure)
 
 	Counterexample = Data.define(:failure, :input, :original, :cases, :shrinks) do
 		def report(runner)
@@ -78,6 +77,183 @@ class Quickdraw::Property
 		end
 	end
 
+	# Shrinks a failing Run to the simplest choices that fail the same way:
+	# fewer, or else smaller at the first that differs. It works on choices
+	# rather than values, so a value shrinks however it was built: it deletes and
+	# zeroes spans, lowers each choice by binary search, lowers a length while
+	# deleting what it would have generated, and deletes runs of adjacent spans
+	# together. The block runs choices,
+	# returning their Run, or nil if they were discarded.
+	class Shrinker
+		ATTEMPTS = 2_000
+		SECONDS = 10
+		RUN = 4
+
+		def initialize(run, attempts: ATTEMPTS, seconds: SECONDS, &execute)
+			raise ::ArgumentError, "Only a failing run can be shrunk." unless run.failure
+
+			@best = run
+			@signature = run.failure.signature
+			@execute = execute
+			@tried = {}
+			@attempts = 0
+			@attempt_limit = attempts
+			@deadline = now + seconds
+			@shrinks = 0
+		end
+
+		# How many times a simpler case was found.
+		attr_reader :shrinks
+
+		# The simplest Run found.
+		def call
+			loop do
+				before = @best.choices
+				delete_spans
+				zero_spans
+				minimize_choices
+				lower_and_delete if @best.choices == before
+				delete_runs if @best.choices == before
+				break if @best.choices == before || exhausted?
+			end
+
+			@best
+		end
+
+		# Deletes each span, largest first, such as an array's items.
+		private def delete_spans
+			index = 0
+
+			while !exhausted? && (span = spans[index])
+				index += 1 unless improve?(delete(@best.choices, span))
+			end
+		end
+
+		# Replaces each span's choices with zeros: the simplest value in its place.
+		private def zero_spans
+			index = 0
+
+			while !exhausted? && (span = spans[index])
+				choices = @best.choices
+				improve?(choices.dup.fill(0, span)) if choices[span].any?(&:positive?)
+				index += 1
+			end
+		end
+
+		# Lowers each choice as far as it can, by binary search.
+		private def minimize_choices
+			index = 0
+
+			while !exhausted? && index < @best.choices.size
+				choice = @best.choices[index]
+
+				if choice > 0 && !improve?(replace(index, 0))
+					low = 0
+					high = choice
+
+					while high - low > 1
+						middle = (low + high) / 2
+
+						if improve?(replace(index, middle))
+							high = middle
+						else
+							low = middle
+						end
+					end
+				end
+
+				index += 1
+			end
+		end
+
+		# Lowers a choice by one while deleting a span after it, for when the choice
+		# is how many values follow, as with a length chosen in flat_map. Only when
+		# the other passes are stuck, as it tries many cases.
+		private def lower_and_delete
+			index = 0
+
+			while !exhausted? && index < @best.choices.size
+				lowered = @best.choices[index] > 0 && spans.sort_by(&:begin).any? do |span|
+					span.begin > index && improve?(delete(replace(index, @best.choices[index] - 1), span))
+				end
+
+				index += 1 unless lowered
+			end
+		end
+
+		# Deletes runs of up to RUN adjacent spans, for values that only fail
+		# without each other, such as a key, colon and value a parser needs
+		# together. Only when the other passes are stuck, as it tries many cases.
+		# Stops at the first that's simpler, since the spans then change.
+		private def delete_runs
+			starts = @best.spans.group_by(&:begin)
+
+			@best.spans.uniq.sort_by(&:begin).any? do |first|
+				run_ends(first, starts).any? { |finish| exhausted? || improve?(@best.choices.take(first.begin) + @best.choices.drop(finish)) }
+			end
+		end
+
+		# Where runs of two or more adjacent spans from `first` end.
+		private def run_ends(first, starts)
+			ends = []
+			finish = first.end
+
+			(RUN - 1).times do
+				following = starts[finish]&.max_by(&:size) or break
+				ends << (finish = following.end)
+			end
+
+			ends
+		end
+
+		private def delete(choices, span)
+			choices.take(span.begin) + choices.drop(span.end)
+		end
+
+		private def spans
+			@best.spans.uniq.sort_by! { |span| [-span.size, span.begin] }
+		end
+
+		private def replace(index, choice)
+			choices = @best.choices.dup
+			choices[index] = choice
+			choices
+		end
+
+		# Runs the choices, keeping them if they fail as the best case did and are
+		# simpler.
+		private def improve?(choices)
+			return false if exhausted? || @tried.key?(choices)
+
+			@tried[choices] = true
+			@attempts += 1
+			run = @execute.call(choices)
+
+			return false unless run&.failure && run.failure.signature == @signature
+			return false unless simpler?(run.choices, @best.choices)
+
+			@best = run
+			@shrinks += 1
+			true
+		end
+
+		private def simpler?(choices, than)
+			case choices.size <=> than.size
+			in -1 then true
+			in 0 then (choices <=> than) == -1
+			in 1 then false
+			end
+		end
+
+		private def exhausted?
+			@attempts >= @attempt_limit || now > @deadline
+		end
+
+		private def now
+			Process.clock_gettime(Process::CLOCK_MONOTONIC)
+		end
+	end
+
 	# Where failing cases are saved, one file per property.
 	@directory = File.join(Quickdraw::ROOT, ".quickdraw/properties")
 
@@ -87,7 +263,60 @@ class Quickdraw::Property
 		@directory = path
 	end
 
-	# `key` names the property, for its saved case. The block runs a case with
+	# The file of the property named `key`'s saved cases.
+	def self.path(key)
+		File.join(directory, Quickdraw.stable_hash(key).to_s(16))
+	end
+
+	# The saved cases in the file at `path`, or none if it can't be read.
+	# They're text, one choice per line and a blank line between cases, so
+	# reading a file can't run code. Raises ArgumentError if it isn't valid.
+	def self.saved(path)
+		cases = File.read(path).split(/\n\s*\n/).map { |text| text.split.map { |line| Integer(line, 10) } }
+
+		unless cases.all? { |choices| choices.size <= Quickdraw::Choices::LIMIT && choices.none?(&:negative?) }
+			raise ::ArgumentError, "#{path} has invalid choices."
+		end
+
+		cases
+	rescue SystemCallError
+		[]
+	end
+
+	# A case that can't be saved, as in a read-only checkout, is still reported.
+	# Cases without choices can't be told apart from the separators, and a
+	# property that makes none fails every time anyway.
+	def self.save(path, cases)
+		make_directory(File.dirname(path))
+		temporary = "#{path}.#{Process.pid}"
+		File.write(temporary, cases.reject(&:empty?).uniq.map { |choices| choices.join("\n") }.join("\n\n"))
+		File.rename(temporary, path)
+	rescue SystemCallError
+		nil
+	end
+
+	# Adds a failing case to the property's saved cases, after those already there.
+	def self.remember(key, choices)
+		path = path(key)
+		cases = begin
+			saved(path)
+		rescue ::ArgumentError
+			[]
+		end
+
+		save(path, [*cases, choices]) unless cases.include?(choices)
+	end
+
+	private_class_method def self.make_directory(path)
+		return if Dir.exist?(path)
+
+		make_directory(File.dirname(path))
+		Dir.mkdir(path)
+	rescue Errno::EEXIST
+		nil
+	end
+
+	# `key` names the property, for its saved cases. The block runs a case with
 	# the generated values, returning its Failure, if it failed.
 	def initialize(generators, cases:, seconds:, key:, &body)
 		raise ::ArgumentError, "A property needs at least one generator." if generators.empty?
@@ -96,28 +325,59 @@ class Quickdraw::Property
 		@generators = generators
 		@cases = cases
 		@seconds = seconds
-		@path = File.join(self.class.directory, Quickdraw.stable_hash(key).to_s(16))
+		@key = key
+		@path = self.class.path(key)
 		@body = body
 		# From the test's seed, so --seed repeats the same cases.
 		@random = Random.new(Kernel.rand(1 << 64))
 	end
+
+	attr_reader :key
 
 	# A Counterexample, or nil if every case passed.
 	def check
 		replay || explore
 	end
 
+	# Runs the case that `prefix` starts, with further choices from `random`, or
+	# the simplest without it. A Run, or nil if the case was discarded. Yields
+	# the Choices made before running the case, which may crash the process.
+	def execute(prefix, random = nil)
+		choices = Quickdraw::Choices.new(prefix, random)
+		values = @generators.map { |generator| choices.draw(generator) }
+		yield choices if block_given?
+		Run.new(choices: choices.values, limits: choices.limits, spans: choices.spans, failure: @body.call(values))
+	rescue Quickdraw::Choices::Discard
+		nil
+	end
+
+	# The cases saved from earlier runs, oldest first.
+	def saved_cases
+		self.class.saved(@path)
+	rescue ::ArgumentError
+		forget
+		[]
+	end
+
+	# The values the choices make, inspected afresh: the test may have changed
+	# the ones it was given.
+	def inspect_values(choices)
+		replay = Quickdraw::Choices.new(choices)
+		text = @generators.map { |generator| Quickdraw.utf8(replay.draw(generator).inspect) }.join(", ")
+		(text.size > INSPECT_LIMIT) ? "#{text[0, INSPECT_LIMIT]}…" : text
+	end
+
+	# Replays each saved case, forgetting those that pass, until one fails.
 	private def replay
-		return unless (choices = saved_choices)
+		saved = saved_cases
 
-		run = execute(choices)
-
-		if run&.failure
-			counterexample(run, cases: nil)
-		else
-			forget
-			nil
+		saved.each_with_index do |choices, index|
+			run = execute(choices)
+			return counterexample(run, cases: nil, unreplayed: saved.drop(index + 1)) if run&.failure
 		end
+
+		forget if saved.any?
+		nil
 	end
 
 	private def explore
@@ -144,196 +404,24 @@ class Quickdraw::Property
 		raise Unsatisfiable, "Filters discarded #{discarded} cases while #{passed} ran. Generate fewer values to discard."
 	end
 
-	private def execute(prefix, random = nil)
-		choices = Quickdraw::Choices.new(prefix, random)
-		values = @generators.map { |generator| choices.draw(generator) }
-		Run.new(choices: choices.values, spans: choices.spans, failure: @body.call(values))
-	rescue Quickdraw::Choices::Discard
-		nil
-	end
-
-	private def counterexample(run, cases:)
-		minimal = shrink(run)
-		save(minimal.choices)
+	private def counterexample(run, cases:, unreplayed: [])
+		shrinker = Shrinker.new(run) { |choices| execute(choices) }
+		minimal = shrinker.call
+		self.class.save(@path, [minimal.choices, *unreplayed])
 
 		Counterexample.new(
 			failure: minimal.failure,
 			input: inspect_values(minimal.choices),
 			original: (inspect_values(run.choices) if cases),
 			cases:,
-			shrinks: @shrinks,
+			shrinks: shrinker.shrinks,
 		)
-	end
-
-	private def shrink(run)
-		@best = run
-		@signature = run.failure.signature
-		@tried = {}
-		@attempts = 0
-		@shrinks = 0
-		@deadline = now + SHRINK_SECONDS
-
-		loop do
-			before = @best.choices
-			delete_spans
-			zero_spans
-			minimize_choices
-			lower_and_delete if @best.choices == before
-			break if @best.choices == before || exhausted?
-		end
-
-		@best
-	end
-
-	# Deletes each span, largest first, such as an array's items.
-	private def delete_spans
-		index = 0
-
-		while !exhausted? && (span = spans[index])
-			index += 1 unless improve?(delete(@best.choices, span))
-		end
-	end
-
-	# Replaces each span's choices with zeros: the simplest value in its place.
-	private def zero_spans
-		index = 0
-
-		while !exhausted? && (span = spans[index])
-			choices = @best.choices
-			improve?(choices.dup.fill(0, span)) if choices[span].any?(&:positive?)
-			index += 1
-		end
-	end
-
-	# Lowers each choice as far as it can, by binary search.
-	private def minimize_choices
-		index = 0
-
-		while !exhausted? && index < @best.choices.size
-			choice = @best.choices[index]
-
-			if choice > 0 && !improve?(replace(index, 0))
-				low = 0
-				high = choice
-
-				while high - low > 1
-					middle = (low + high) / 2
-
-					if improve?(replace(index, middle))
-						high = middle
-					else
-						low = middle
-					end
-				end
-			end
-
-			index += 1
-		end
-	end
-
-	# Lowers a choice by one while deleting a span after it, for when the choice
-	# is how many values follow, as with a length chosen in flat_map. Only when
-	# the other passes are stuck, as it tries many cases.
-	private def lower_and_delete
-		index = 0
-
-		while !exhausted? && index < @best.choices.size
-			lowered = @best.choices[index] > 0 && spans.sort_by(&:begin).any? do |span|
-				span.begin > index && improve?(delete(replace(index, @best.choices[index] - 1), span))
-			end
-
-			index += 1 unless lowered
-		end
-	end
-
-	private def delete(choices, span)
-		choices.take(span.begin) + choices.drop(span.end)
-	end
-
-	private def spans
-		@best.spans.uniq.sort_by! { |span| [-span.size, span.begin] }
-	end
-
-	private def replace(index, choice)
-		choices = @best.choices.dup
-		choices[index] = choice
-		choices
-	end
-
-	# Runs the choices, keeping them if they fail as the best case did and are
-	# simpler: fewer, or else smaller at the first that differs.
-	private def improve?(choices)
-		return false if exhausted? || @tried.key?(choices)
-
-		@tried[choices] = true
-		@attempts += 1
-		run = execute(choices)
-
-		return false unless run&.failure && run.failure.signature == @signature
-		return false unless simpler?(run.choices, @best.choices)
-
-		@best = run
-		@shrinks += 1
-		true
-	end
-
-	private def simpler?(choices, than)
-		case choices.size <=> than.size
-		in -1 then true
-		in 0 then (choices <=> than) == -1
-		in 1 then false
-		end
-	end
-
-	private def exhausted?
-		@attempts >= SHRINK_ATTEMPTS || now > @deadline
-	end
-
-	# The values the choices make, inspected afresh: the test may have changed
-	# the ones it was given.
-	private def inspect_values(choices)
-		replay = Quickdraw::Choices.new(choices)
-		text = @generators.map { |generator| Quickdraw.utf8(replay.draw(generator).inspect) }.join(", ")
-		(text.size > INSPECT_LIMIT) ? "#{text[0, INSPECT_LIMIT]}…" : text
-	end
-
-	# Saved as text, one choice per line, so reading a file can't run code.
-	private def saved_choices
-		choices = File.read(@path).split.map { |line| Integer(line, 10) }
-		return choices if choices.size <= Quickdraw::Choices::LIMIT && choices.none?(&:negative?)
-
-		forget
-		nil
-	rescue ArgumentError
-		forget
-		nil
-	rescue SystemCallError
-		nil
-	end
-
-	# A case that can't be saved, as in a read-only checkout, is still reported.
-	private def save(choices)
-		make_directory(File.dirname(@path))
-		temporary = "#{@path}.#{Process.pid}"
-		File.write(temporary, choices.join("\n"))
-		File.rename(temporary, @path)
-	rescue SystemCallError
-		nil
 	end
 
 	# Another run may have deleted it already.
 	private def forget
 		File.delete(@path)
 	rescue SystemCallError
-		nil
-	end
-
-	private def make_directory(path)
-		return if Dir.exist?(path)
-
-		make_directory(File.dirname(path))
-		Dir.mkdir(path)
-	rescue Errno::EEXIST
 		nil
 	end
 

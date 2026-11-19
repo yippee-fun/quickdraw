@@ -130,9 +130,11 @@ class Quickdraw::BasicTest
 		error!(error)
 	end
 
+	private def run_block = instance_exec(&@block)
+
 	private def run_test
 		@runner.measure("setup") { setup }
-		around_test { @runner.measure("test") { instance_exec(&@block) } }
+		around_test { @runner.measure("test") { run_block } }
 	ensure
 		# Cleanup carries on after Ctrl-C, which then stops the worker.
 		interrupted = nil
