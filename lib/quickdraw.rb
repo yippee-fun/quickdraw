@@ -52,6 +52,7 @@ module Quickdraw
 	autoload :Generator, "quickdraw/generator"
 	autoload :Generators, "quickdraw/generators"
 	autoload :Property, "quickdraw/property"
+	autoload :Mutation, "quickdraw/mutation"
 	autoload :Coordinator, "quickdraw/coordinator"
 	autoload :ArgumentError, "quickdraw/errors/argument_error"
 	autoload :Configuration, "quickdraw/configuration"

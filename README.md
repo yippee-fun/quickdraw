@@ -136,6 +136,31 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
 
 A coverage run also records which source files each test file runs. `qt --changed` uses that to run only the tests affected by your uncommitted changes. Until there's been a coverage run, it runs each changed file's tests by name.
 
+## Mutation testing
+
+Coverage says which code your tests run, not whether they check it. `qt mutate` changes your code in small ways, one at a time, and runs the tests that run each change. If none fails, the change survives, and the tests don't notice that line being wrong:
+
+```sh
+qt mutate                      # the lines changed since the last commit
+qt mutate lib/cart.rb          # a file, or a directory
+qt mutate lib/cart.rb:12-20    # some of its lines
+```
+
+```
+✗ lib/cart.rb:14  > → >= in Cart#discount
+    - if total > 100
+    + if total >= 100
+    2 tests ran it and passed: CartTest › discounts big orders, CartTest › doesn't discount small orders
+
+Mutation score 90% · 18 killed · 2 survived
+20 mutants in 0.12s (167/s)
+```
+
+- **Changes:** comparisons (`>` to `>=`, `==` to `!=`), arithmetic (`+` to `-`, `*` to `/`), `&&` to `||`, removing a `!`, negating a condition, `true` to `false`, a number to one more or to 0, methods such as `select` to `reject` or `first` to `last`, removing a statement, and replacing a method's body with `nil`. Only in methods, and not changes that can't make a difference, such as `x + 0` to `x - 0`.
+- **Which tests:** the test files that run a file, from the last `qt --coverage` run, or else its counterpart by name. Those run once unchanged, tracing which lines of the changed methods each test runs, so each change runs only the tests that reach it, fastest first, and stops at the first failure. Tests that fail without changes don't count, and changes no test reaches aren't run, but are listed by line.
+- **Safely:** your files never change. Config boots once, and each change is made by redefining its method in a process forked for it, which exits when its tests finish. A change that makes tests run three times as long as they did (plus half a second) is taken to loop forever, and counts as noticed.
+- **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs.
+
 ## Profiling
 
 `qt --profile` samples tests as they run and lists the methods that take the most test time, and how many tests they run in. A method that takes a large share across most tests is a cost they share, such as a slow factory or setup hook, which you can fix once. `qt -t` lists the slowest tests and files.
@@ -187,4 +212,5 @@ Fixtures and Rails' test helpers aren't supported yet.
 - `qt init` sets a project up, with config and an example test.
 - `qt doctor` checks that the machine and project are ready, and how long config takes to boot.
 - `qt counterpart lib/user.rb` prints a source file's test, or a test's source file.
+- `qt mutate` finds code the tests run but don't check (see Mutation testing).
 - `qt completions zsh` prints shell completions, for bash, zsh or fish.

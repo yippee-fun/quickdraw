@@ -7,6 +7,9 @@
 class Quickdraw::Worker
 	ANONYMOUS_MODULE = /#<Module:0x\h+>::/
 
+	# How often to check that a fork running mutation tests is still alive.
+	FORK_CHECK_INTERVAL = 0.1
+
 	class Recorder
 		PHASE_INDICES = Quickdraw::PHASES.each_with_index.to_h.freeze
 		CPU = Quickdraw::STATS.index("cpu")
@@ -195,6 +198,10 @@ class Quickdraw::Worker
 				@capture&.stop
 				covered(path) if @coverage
 				@channel.write([:ready, Process.pid])
+			in [:baseline, path, subjects]
+				@channel.write([:baseline, path, *baseline(path, subjects)])
+			in [:mutant, mutant, tests, seconds]
+				@channel.write([:mutant, mutant.id, mutate(mutant, tests, seconds)])
 			in [:stop]
 				@channel.write([:coverage, Quickdraw::CoverageCollector.merge(@coverage_totals, Quickdraw::CoverageCollector.take)]) if @coverage
 				break
@@ -303,6 +310,113 @@ class Quickdraw::Worker
 		end
 
 		recorder.to_h
+	end
+
+	# Runs the file's tests unmutated, tracing what they run of `subjects` (see
+	# Mutation::Tracer), in a fork so that what they leave behind, such as
+	# memoized values, can't reach mutants. Returns the ids of the subjects
+	# traced and each test's result with its "lines", or nil if the fork died.
+	private def baseline(path, subjects)
+		in_fork do
+			# Its thread didn't survive the fork.
+			@watchdog &&= Quickdraw::Watchdog.new { nil }
+			tracer = Quickdraw::Mutation::Tracer.new
+			traced = tracer.trace(subjects)
+
+			results = @files.fetch(path).each_with_index.map do |test, index|
+				Kernel.srand(@file_seeds.fetch(path) + index)
+				run(test).merge("lines" => tracer.take)
+			end
+
+			[traced, results]
+		end
+	end
+
+	# Runs `tests`, as [path, index], against `mutant` in a fork until one fails.
+	# Returns the outcome: ["killed", [path, index]] with the test that failed,
+	# ["survived"], ["timeout"] after `seconds`, ["crashed"], or ["unapplied", why].
+	private def mutate(mutant, tests, seconds)
+		outcome = in_fork(seconds) do
+			# Its thread didn't survive the fork. This process times the fork out instead.
+			@watchdog = nil
+			run_mutant(mutant, tests)
+		end
+
+		case outcome
+		in nil then ["crashed"]
+		in :timeout then ["timeout"]
+		else outcome
+		end
+	end
+
+	# Returns what the block returns in a fork of this worker, so what it changes
+	# dies with the fork. Nil if the fork exits first, or :timeout once it's
+	# taken `seconds`, which kills it.
+	private def in_fork(seconds = nil)
+		# So a property's failing case is neither replayed in the fork nor saved
+		# from it, where it would change other mutants' runs.
+		Quickdraw::Property.directory = File::NULL
+		reader, writer = IO.pipe
+		deadline = seconds && (now + seconds)
+
+		pid = Process.fork do
+			reader.close
+			data = Marshal.dump(yield)
+			writer.write([data.bytesize].pack("N"), data)
+		ensure
+			# Without at_exit hooks, which are the worker's to run.
+			exit!(0)
+		end
+
+		writer.close
+
+		# Watches the fork as well as the pipe, which a process a test started
+		# can hold open after the fork has gone.
+		until reader.wait_readable(deadline ? (deadline - now).clamp(0, FORK_CHECK_INTERVAL) : FORK_CHECK_INTERVAL)
+			return :timeout if deadline && now >= deadline
+			next unless Process.wait2(pid, Process::WNOHANG)
+
+			pid = nil
+			return unless reader.wait_readable(0)
+
+			break
+		end
+
+		# Length-prefixed rather than read to the end, for the same reason.
+		header = reader.read(4)
+		data = reader.read(header.unpack1("N")) if header&.bytesize == 4
+		Marshal.load(data) if data
+	ensure
+		reader&.close
+		writer&.close
+
+		if pid
+			begin
+				Process.kill(:KILL, pid)
+			rescue Errno::ESRCH
+				nil
+			end
+
+			Process.wait(pid)
+		end
+	end
+
+	private def run_mutant(mutant, tests)
+		begin
+			mutant.apply
+		rescue Quickdraw::Interrupted
+			raise
+		rescue Exception => error
+			return ["unapplied", Quickdraw.plain_string("#{error.class}: #{error.message}")]
+		end
+
+		tests.each do |path, index|
+			Kernel.srand(@file_seeds.fetch(path) + index)
+			result = run(@files.fetch(path).fetch(index))
+			return ["killed", [path, index]] if result["failures"].any? || result["errors"].any?
+		end
+
+		["survived"]
 	end
 
 	private def run_test(test, recorder)

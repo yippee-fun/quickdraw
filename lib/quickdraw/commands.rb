@@ -11,6 +11,7 @@ module Quickdraw::Commands
 	autoload :Completions, "quickdraw/commands/completions"
 	autoload :Flaky, "quickdraw/commands/flaky"
 	autoload :Bisect, "quickdraw/commands/bisect"
+	autoload :Mutate, "quickdraw/commands/mutate"
 
 	# Name, constant, arguments and summary, in the order --help lists them.
 	LIST = [
@@ -19,6 +20,7 @@ module Quickdraw::Commands
 		["history", :History, "", "Recent runs, and the slowest and flakiest tests"],
 		["flaky", :Flaky, " [--runs N] …", "Run tests many times in different orders to find flaky ones"],
 		["bisect", :Bisect, " PATH:LINE", "Find the tests a failing test depends on running before it"],
+		["mutate", :Mutate, " [PATH[:LINE] …]", "Change code in small ways and list the changes no test notices"],
 		["counterpart", :Counterpart, " PATH", "The test file for a source file, or the source file for a test"],
 		["completions", :Completions, " SHELL", "Print completions for bash, zsh or fish"],
 	].freeze

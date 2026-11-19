@@ -60,7 +60,8 @@ module Quickdraw::Changes
 	private def git(*arguments)
 		# Without quotePath, names outside ASCII would be quoted as octal escapes.
 		output = IO.popen(["git", "-c", "core.quotePath=false", *arguments], err: File::NULL, &:read)
-		output if $?.success?
+		# Whatever the locale, as diffs of source can hold any text.
+		Quickdraw.utf8(output) if $?.success?
 	rescue Errno::ENOENT
 		nil
 	end
