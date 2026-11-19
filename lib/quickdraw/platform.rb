@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "etc"
-
 module Quickdraw::Platform
 	extend self
 
@@ -49,6 +47,7 @@ module Quickdraw::Platform
 	end
 
 	def cpu_cores
+		require "etc"
 		Etc.nprocessors
 	end
 

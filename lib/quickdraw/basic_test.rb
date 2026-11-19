@@ -2,7 +2,7 @@
 
 class Quickdraw::BasicTest
 	def self.test(description = nil, &block)
-		$quickdraw_runner << [self, description, block]
+		Quickdraw.register([self, description, block])
 	end
 
 	def initialize(description:, block:, runner:)
@@ -14,15 +14,14 @@ class Quickdraw::BasicTest
 	def run
 		setup
 		around_test { instance_exec(&@block) }
-		teardown
 	rescue Exception => error
-		error!({
-			"location" => @block.source_location,
-			"description" => @description,
-			"message" => error.message,
-			"name" => error.class.name,
-			"backtrace" => error.backtrace,
-		})
+		error!(error)
+	ensure
+		begin
+			teardown
+		rescue Exception => error
+			error!(error)
+		end
 	end
 
 	def match
@@ -56,17 +55,16 @@ class Quickdraw::BasicTest
 	end
 
 	# Indicate that an assertion failed.
-	def failure!(&)
-		test_location = @block.source_location
+	def failure!
+		test_path = @block.source_location[0]
 		locations = caller_locations
-		location = locations.find { |it| it.path.end_with?(".test.rb") } || locations.first
+
+		location = locations.find { |it| it.path == test_path } ||
+			locations.find { |it| !it.path.start_with?(Quickdraw::LIB) } ||
+			locations.first
 
 		@runner.failure!({
-			"class_name" => self.class.name,
-			"test_path" => test_location[0],
-			"test_line" => test_location[1],
-			"description" => @description,
-			"message" => yield,
+			"message" => Quickdraw.plain_string(yield),
 			"path" => location.path,
 			"line" => location.lineno,
 		})
@@ -74,8 +72,8 @@ class Quickdraw::BasicTest
 		nil
 	end
 
-	def error!(...)
-		@runner.error!(...)
+	def error!(error)
+		@runner.error!(Quickdraw.serialize_error(error))
 
 		nil
 	end

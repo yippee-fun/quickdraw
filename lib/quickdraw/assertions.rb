@@ -52,15 +52,22 @@ module Quickdraw::Assertions
 		if actual == expected
 			success!
 		else
+			begin
+				Quickdraw::Box.require("prism")
+				Quickdraw::Box.require("refract")
+			rescue LoadError
+				raise LoadError, "assert_equivalent_ruby needs the `refract` gem in your Gemfile."
+			end
+
 			normalized_actual = Quickdraw::Box::Refract::Formatter.new.format_node(
 				Quickdraw::Box::Refract::Converter.new.visit(
-					Prism.parse(actual).value
+					Quickdraw::Box::Prism.parse(actual).value
 				)
 			).source
 
 			normalized_expected = Quickdraw::Box::Refract::Formatter.new.format_node(
 				Quickdraw::Box::Refract::Converter.new.visit(
-					Prism.parse(expected).value
+					Quickdraw::Box::Prism.parse(expected).value
 				)
 			).source
 

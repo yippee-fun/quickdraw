@@ -1,132 +1,126 @@
 # frozen_string_literal: true
 
-Quickdraw::Box.require("optparse")
-
 class Quickdraw::CLI
-	CONFIG_PATH = File.expand_path("config/quickdraw.rb")
+	DEFAULT_PATTERN = "./**/*.test.rb"
+
+	LISTENER = <<~RUBY
+		require "listen"
+		$stdout.sync = true
+		Listen.to(".", wait_for_delay: 0.01) { puts "changed" }.start
+		sleep
+	RUBY
 
 	def initialize(args)
 		@args = args
 	end
 
 	def call
-		parse_options
-		parse_files
-		run
+		# optparse, etc and anything else needed to parse options load in a
+		# throwaway process so they don’t leak into the processes that run tests.
+		options = Quickdraw.isolate { parse }
+
+		if options[:watch]
+			watch(options)
+		else
+			exit(run(options) ? 0 : 1)
+		end
 	end
 
-	def parse_options
-		Quickdraw::Box::OptionParser.new do |parser|
-			parser.banner = "Usage: bundle exec qt [options]"
+	private def parse
+		require "optparse"
+
+		options = { backtrace: false, processes: nil, watch: false, seed: nil, efficiency: false }
+
+		OptionParser.new do |parser|
+			parser.banner = "Usage: quickdraw [options] [paths or globs]"
 
 			parser.on("-h", "--help", "Prints this help") do
 				puts parser
 				exit
 			end
 
-			parser.on("-b", "--backtrace", "Backtrace past test into Quickdraw") do |it|
-				self.backtrace = true
+			parser.on("-b", "--backtrace", "Show backtrace frames inside Quickdraw") do
+				options[:backtrace] = true
 			end
 
-			parser.on("-p N", "--processes N", Integer, "Number of Ruby Processes to fork") do |it|
-				self.processes = it
+			parser.on("-p N", "--processes N", Integer, "Number of worker processes") do |it|
+				options[:processes] = it
 			end
 
 			parser.on("-m", "--max", "Use all available CPU cores") do
-				max!
+				options[:max] = true
 			end
 
 			parser.on("-e", "--efficiency", "Use efficiency cores (Apple M-series Macs only)") do
-				efficiency!
+				options[:efficiency] = true
 			end
 
 			parser.on("-w", "--watch", "Watch for changes") do
-				self.watch = true
+				options[:watch] = true
 			end
 
 			parser.on("-s N", "--seed N", Integer, "Seed for randomization") do |it|
-				self.seed = it
+				options[:seed] = it
 			end
 		end.parse!(@args)
-	end
 
-	def parse_files
-		@files = @args.empty? ? "./**/*.test.rb" : @args
-	end
-
-	def backtrace=(value)
-		@backtrace = value
-	end
-
-	def processes=(value)
-		if Process.respond_to?(:fork)
-			@processes = value
-		else
-			fail "Forking processes is not supported on this platform."
+		if [options[:processes], options[:max], options[:efficiency]].count(&:itself) > 1
+			abort "Use only one of --processes, --max and --efficiency."
 		end
-	end
 
-	def watch=(value)
-		if Quickdraw::Platform.supports_forking?
-			@watch = true
-		else
-			fail "You cannot use the watch mode on this platform because forking processes is not supported."
+		if options[:efficiency] && !Quickdraw::Platform.m_series?
+			abort "Efficiency cores are only available on M-series Macs."
 		end
-	end
 
-	def seed=(value)
-		@seed = value
-	end
+		if options[:watch] && !Quickdraw::Platform.supports_forking?
+			abort "Watch mode needs fork, which this platform doesn’t support."
+		end
 
-	def efficiency!
-		if Quickdraw::Platform.m_series?
-			fail "You cannot use the efficiency flag with the processes flag." if @processes
-
+		options[:processes] = if !Quickdraw::Platform.supports_forking?
+			1
+		elsif options[:max]
+			Quickdraw::Platform.cpu_cores
+		elsif options[:efficiency]
 			Quickdraw::Platform.efficiency_cores
-			`taskpolicy -b -p #{Process.pid}`
 		else
-			fail "Efficiency cores are only available on M-series Macs."
+			options[:processes] || Quickdraw::Platform.non_blocking_cores
 		end
+
+		abort "--processes must be at least 1." if options[:processes] < 1
+
+		options[:seed] ||= Random.new_seed % 100_000
+		options[:patterns] = @args.empty? ? [DEFAULT_PATTERN] : @args.dup
+		options
 	end
 
-	def max!
-		fail "You cannot use the max flag with the processes flag." if @processes
+	private def run(options)
+		system("taskpolicy", "-b", "-p", Process.pid.to_s) if options[:efficiency]
 
-		Quickdraw::Platform.cpu_cores
+		Quickdraw::Coordinator.new(
+			files: Dir.glob(options[:patterns]).uniq,
+			processes: options[:processes],
+			seed: options[:seed],
+			reporter: Quickdraw::Reporter.new(backtrace: options[:backtrace]),
+		).call
 	end
 
-	def fail(message)
-		warn message
-		exit(1)
+	private def watch(options)
+		listener = IO.popen([RbConfig.ruby, "-e", LISTENER])
+
+		run_in_fork(options)
+		listener.each_line { run_in_fork(options) }
+		listener.close
+		abort "The file watcher stopped (#{$?})." unless $?.success?
+	ensure
+		Process.kill("TERM", listener.pid) if listener && !listener.closed?
 	end
 
-	def run
-		@watch ? watch : run_once
-	end
+	private def run_in_fork(options)
+		pid = Process.fork do
+			print "\e[H\e[2J"
+			exit(run(options) ? 0 : 1)
+		end
 
-	def watch
-		Quickdraw::Box.require("listen")
-
-		Quickdraw::Box::Listen.to(".", wait_for_delay: 0.01) do |modified, added, removed|
-			Process.fork do
-				print "\e[H\e[2J"
-				run_once
-			end
-		end.start
-
-		sleep
-	end
-
-	def run_once
-		require CONFIG_PATH if File.exist?(CONFIG_PATH)
-
-		$quickdraw_runner = Quickdraw::Runner.new(
-			backtrace: @backtrace,
-			processes: @processes || Quickdraw::Config.processes,
-			files: Dir.glob(@files),
-			seed: @seed || Random.new_seed,
-		)
-
-		$quickdraw_runner.call
+		Process.wait(pid)
 	end
 end
