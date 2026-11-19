@@ -37,6 +37,122 @@ class WatchTest < Quickdraw::Test
 		end
 	end
 
+	# Config that counts the times it boots, and notes when the loader exits by
+	# itself, in logs, which watch mode ignores.
+	BOOT_COUNTER = <<~RUBY
+		File.write("boots.log", "x", mode: "a")
+		loader = Process.pid
+		at_exit { File.write("exited.log", "x", mode: "a") if Process.pid == loader }
+	RUBY
+
+	def boots(project) = File.read(File.join(project.directory, "boots.log")).size
+
+	def summaries(result) = result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests? · .*$/)
+
+	test "keeps config booted between runs, and stops its loader when quitting", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => BOOT_COUNTER,
+			"test/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
+		)
+
+		result = watch(project, -> (keyboard) { keyboard.write("\r") }, -> (keyboard) { keyboard.write("\r") })
+
+		assert result.success?
+		assert_equal summaries(result).size, 3
+		assert_equal boots(project), 1
+		assert_equal File.read(File.join(project.directory, "exited.log")), "x"
+	end
+
+	test "stops its loader on Ctrl-C", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => BOOT_COUNTER,
+			"test/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
+		)
+
+		project.run("-p", "1", "--watch", tty: [40, 120], interrupt_when: /^Watching/, timeout: 30)
+
+		assert_equal File.read(File.join(project.directory, "exited.log")), "x"
+	end
+
+	test "boots again when config, or a file it loaded, changes, but not for a file only tests load", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => "#{BOOT_COUNTER}require_relative '../lib/helper'\n",
+			"lib/helper.rb" => "HELPER = 1\n",
+			"lib/calculator.rb" => "def add(a, b) = a + b\n",
+			"test/calculator.test.rb" => <<~RUBY,
+				require_relative "../lib/calculator"
+
+				class Calculator < Quickdraw::Test
+					test("adds") { assert_equal add(1, 2), 3 }
+					test("helps") { assert_equal HELPER, 2 }
+				end
+			RUBY
+		)
+
+		result = project.watch(
+			{ "lib/calculator.rb" => "def add(a, b) = b + a\n" },
+			{ "lib/helper.rb" => "HELPER = 2\n" },
+			{ "config/quickdraw.rb" => "#{BOOT_COUNTER}require_relative '../lib/helper'\n" },
+		)
+
+		assert result.success?
+		assert_equal summaries(result).map { |summary| summary[/\d+ (?:failed|errored)|\z/] }, ["1 failed", "1 failed", "", ""]
+		assert_equal boots(project), 3
+	end
+
+	test "boots again once broken config is fixed", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => "raise 'broken'\n",
+			"test/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
+		)
+
+		result = project.watch({ "config/quickdraw.rb" => "" })
+
+		assert result.success?
+		assert_includes result.stdout, "broken"
+		assert_match summaries(result).last, /\A1 test · 1 assertion/
+	end
+
+	test "starts a loader again when it dies", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => BOOT_COUNTER,
+			"test/a.test.rb" => <<~RUBY,
+				class A < Quickdraw::Test
+					test("kills its loader the first time") do
+						Process.kill("KILL", Process.ppid) unless File.exist?("killed.log")
+						File.write("killed.log", "")
+						assert true
+					end
+				end
+			RUBY
+		)
+
+		result = watch(project, -> (keyboard) { keyboard.write("\r") })
+
+		assert result.success?
+		assert_equal boots(project), 2
+		assert_match summaries(result).last, /\A1 test · 1 assertion/
+	end
+
+	test "keeps a group's loader booted after its first run", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => <<~RUBY,
+				Quickdraw.configure do |config|
+					config.group(:slow, "test/slow/**/*.test.rb") { File.write("group_boots.log", "x", mode: "a") }
+				end
+			RUBY
+			"test/slow/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
+			"test/b.test.rb" => "class B < Quickdraw::Test; test('b') { assert true }; end\n",
+		)
+
+		result = watch(project, -> (keyboard) { keyboard.write("\r") }, -> (keyboard) { keyboard.write("\r") })
+
+		assert result.success?
+		assert_equal summaries(result).map { |summary| summary[/\A\d+ tests?/] }, ["2 tests"] * 3
+		# Once for the first run, and once more to keep it booted.
+		assert_equal File.read(File.join(project.directory, "group_boots.log")).size, 2
+	end
+
 	test "reruns only the tests for a changed file", timeout: 40 do
 		project = calculator
 		source = File.join(project.directory, "lib/calculator.rb")

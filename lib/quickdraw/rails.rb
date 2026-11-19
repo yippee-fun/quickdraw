@@ -19,6 +19,25 @@ module Quickdraw::Rails
 		config.before_forking { boot(environment, fixtures:, fixture_paths:) }
 		config.after_forking { start_worker }
 		config.around_test { |_test, run| in_transactions(&run) }
+		config.reloader { |paths| reload(paths) }
+	end
+
+	# Reloads app code in watch mode's loader, when the test environment enables
+	# reloading and the main autoloader manages every path. It can't tell
+	# whether it ignores a deleted file, which reloading drops anyway.
+	def reload(paths)
+		autoloader = ::Rails.autoloaders.main
+		return false unless ::Rails.application.config.reloading_enabled?
+
+		managed = paths.all? do |path|
+			File.exist?(path) ? autoloader.cpath_expected_at(path) : autoloader.dirs.any? { |dir| path.start_with?("#{dir}/") }
+		end
+
+		return false unless managed
+
+		::Rails.application.reloader.reload!
+		ActiveRecord::Base.connection_handler.clear_all_connections! if defined?(ActiveRecord::Base)
+		true
 	end
 
 	def boot(environment, fixtures:, fixture_paths:)

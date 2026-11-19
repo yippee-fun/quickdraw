@@ -123,6 +123,60 @@ class RailsTest < Quickdraw::Test
 		end
 	end
 
+	# For watch mode: an app with `test` in test/user.test.rb, whose config
+	# counts the times it boots, in a log, which watch mode ignores.
+	def watched_app(test:, reloading:, eager_load: false) = app(
+		"config/quickdraw.rb" => "File.write('boots.log', 'x', mode: 'a')\nQuickdraw.configure(&:rails)\n",
+		"config/application.rb" => APP["config/application.rb"].sub("config.eager_load = false", "config.eager_load = #{eager_load}\n\tconfig.enable_reloading = #{reloading}"),
+		"app/models/user.rb" => "class User < ActiveRecord::Base\n\tdef greeting = 'hi'\nend\n",
+		"test/user.test.rb" => test,
+	)
+
+	def boots(project) = File.read(File.join(project.directory, "boots.log")).size
+
+	# Each run's failures or errors.
+	def problems(result) = result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests? · .*$/).map { |summary| summary[/\d+ (?:failed|errored)|\z/] }
+
+	test "reloads app code it loaded between runs in watch mode, and boots again when an initializer changes", timeout: 60 do
+		project = watched_app(
+			test: "class UserTest < Quickdraw::Test; test('greets') { assert_equal User.new.greeting, 'hello' }; end\n",
+			reloading: true,
+			eager_load: true,
+		)
+
+		result = project.watch(
+			{ "app/models/user.rb" => "class User < ActiveRecord::Base\n\tdef greeting = 'hello'\nend\n" },
+			{ "config/initializers/greeting.rb" => "GREETING = 'hello'\n" },
+		)
+
+		assert result.success? do
+			result.output
+		end
+
+		assert_equal problems(result), ["1 failed", "", ""]
+		assert_equal boots(project), 2
+	end
+
+	test "without reloading, boots again in watch mode only when the autoloader would miss a change", timeout: 60 do
+		project = watched_app(reloading: false, test: <<~RUBY)
+			class UserTest < Quickdraw::Test
+				test("greets") { assert_equal [User.new.greeting, (Post.name if Object.const_defined?(:Post))], ["hello", "Post"] }
+			end
+		RUBY
+
+		result = project.watch(
+			{ "app/models/user.rb" => "class User < ActiveRecord::Base\n\tdef greeting = 'hello'\nend\n" },
+			{ "app/models/post.rb" => "class Post < ActiveRecord::Base; end\n" },
+		)
+
+		assert result.success? do
+			result.output
+		end
+
+		assert_equal problems(result), ["1 failed", "1 failed", ""]
+		assert_equal boots(project), 2
+	end
+
 	test "won't run in a protected environment, since it empties databases", timeout: 30 do
 		result = app(
 			"config/database.yml" => "#{APP['config/database.yml']}production:\n  adapter: sqlite3\n  database: db/production.sqlite3\n",

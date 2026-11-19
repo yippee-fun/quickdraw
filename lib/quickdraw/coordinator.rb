@@ -232,12 +232,14 @@ class Quickdraw::Coordinator
 	# (a Hash keyed by key), except files in `whole_files`, which run in full.
 	# `capture` and `leaks` are for workers (see Worker#initialize). A selection
 	# that isn't `repeatable` (such as --changed) picks different tests from run
-	# to run, so it isn't compared with the last.
+	# to run, so it isn't compared with the last. In watch mode, `warm_loaders`
+	# are loaders that stay booted between runs.
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: false, leaks: nil, retries: 0, allow_flaky: false
+		capture: false, leaks: nil, retries: 0, allow_flaky: false, warm_loaders: nil
 	)
+		@warm_loaders = warm_loaders
 		@repeatable = repeatable
 		@retries = retries
 		@pending_retries = []
@@ -428,8 +430,17 @@ class Quickdraw::Coordinator
 	# Forks a loader for `group`, with a channel for every worker it could run,
 	# plus spares for replacing workers that crash. The loader for tests in no
 	# group starts first, before the worker count is chosen, and reports groups.
+	# In watch mode, a warm loader stands in, once there is one for `group`.
 	private def start_loader(group)
 		capacity = @forking ? channel_capacity((@processes || @max_processes) + spare_channels) : 1
+
+		session = @warm_loaders&.session(
+			group, gemfile: @gemfiles[group], capacity:,
+			test_files: @test_files, seed: @seed, profile: @profile, coverage: !@coverage.nil?, test_output_to_stderr: @test_output_to_stderr,
+			capture: @capture, leaks: @leaks,
+		)
+		return session if session
+
 		coordinator_channels, worker_channels = Array.new(capacity) { Quickdraw::Channel.pair }.transpose
 
 		unless @forking
@@ -451,6 +462,7 @@ class Quickdraw::Coordinator
 			report.close
 			# Or a process this loader starts could keep the others' pipes open.
 			@loaders&.each_value(&:close)
+			@warm_loaders&.disconnect
 			@history&.disconnect
 		end
 

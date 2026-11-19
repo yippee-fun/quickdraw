@@ -3,7 +3,8 @@
 # Runs tests, then again whenever files change: a changed test file on its own,
 # a changed source file's tests (see Commands::Counterpart), or everything
 # selected when a change has no tests of its own. On a terminal, keys rerun,
-# run only failures, or filter by path or name.
+# run only failures, or filter by path or name. Loaders stay booted between
+# runs (see WarmLoaders).
 #
 # Tests run in forks of this process, so it uses only core Ruby. File events
 # come from a separate process running listen, and keys are read with the
@@ -55,6 +56,7 @@ class Quickdraw::Watch
 		@wake_reader, wake_writer = IO.pipe
 		previous_handler = trap("INT") { wake_writer.write_nonblock("q", exception: false) }
 		@terminal = take_keyboard if @interactive
+		@loaders = Quickdraw::WarmLoaders.new(coverage: @options[:coverage], test_output_to_stderr: !@for_people)
 
 		run
 		watch
@@ -62,6 +64,7 @@ class Quickdraw::Watch
 		trap("INT", previous_handler || "DEFAULT") if @wake_reader
 		release_keyboard
 		Process.kill("TERM", @listener.pid) if @listener && !@listener.closed?
+		@loaders&.stop
 	end
 
 	private def watch
@@ -94,8 +97,7 @@ class Quickdraw::Watch
 		paths = paths.uniq.grep_v(Quickdraw::CLI::IGNORED_DIRECTORIES).grep_v(WRITTEN_BY_TESTS)
 		return if paths.empty?
 
-		affected = affected_tests(paths)
-		affected ? run(affected, because: paths) : run
+		run(affected_tests(paths), changed: paths)
 	end
 
 	# The test files that cover the changed paths, or nil to run everything
@@ -152,12 +154,17 @@ class Quickdraw::Watch
 		status_line
 	end
 
-	# Filters narrow what was asked for on the command line.
-	private def run(tests = nil, because: nil)
+	# Filters narrow what was asked for on the command line. `changed` paths
+	# may mean loaders have to boot again (see WarmLoaders#prepare).
+	private def run(tests = nil, changed: [])
+		# Interrupted, which #watch then sees.
+		return unless @loaders.prepare(changed, interrupt: @wake_reader)
+
 		options = @options.merge(
 			failed: @options[:failed] || @failed_only,
 			path_contains: @path_filter,
 			required_names: [@name_filter].compact,
+			warm_loaders: @loaders,
 		)
 
 		if tests
@@ -166,8 +173,9 @@ class Quickdraw::Watch
 		end
 
 		@out.print "\e[H\e[2J" if @for_people
-		@out.puts dim("Changed #{because.join(', ')}, so running #{tests.join(', ')}") if because
+		@out.puts dim("Changed #{changed.join(', ')}, so running #{tests.join(', ')}") if tests
 		@run.call(options)
+		@loaders.warm_up
 		status_line
 	end
 

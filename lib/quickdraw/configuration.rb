@@ -63,6 +63,16 @@ class Quickdraw::Configuration
 		@before_forking_callbacks << block
 	end
 
+	# In watch mode, the loader stays booted between runs. When files it loaded
+	# change, it boots again, unless this block, given their absolute paths,
+	# reloads them and returns true. See Rails#reload.
+	def reloader(&block)
+		@reloader = block
+	end
+
+	# Whether the reloader reloaded `paths`.
+	def reload(paths) = !!@reloader&.call(paths)
+
 	# Runs in each worker after it forks. `QUICKDRAW_WORKER` holds the worker’s index.
 	def after_forking(&block)
 		@after_forking_callbacks << block

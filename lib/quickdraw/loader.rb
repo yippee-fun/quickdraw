@@ -26,7 +26,11 @@ class Quickdraw::Loader
 	# or [:failed, error] if booting raised.
 	#
 	# `capture` and `leaks` are for workers (see Worker#initialize).
-	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, leaks: nil)
+	#
+	# With a `link` instead (see WarmLoaders), the loader stays booted for
+	# watch mode, and serves a run at a time, each with the commands, report
+	# and channels above as named pipes in a directory, rather than once.
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, leaks: nil, link: nil)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
@@ -38,6 +42,7 @@ class Quickdraw::Loader
 		@report = report
 		@capture = capture
 		@leaks = leaks
+		@link = link
 		@running = {}
 		@statuses = []
 	end
@@ -58,7 +63,7 @@ class Quickdraw::Loader
 		end
 
 		settings_reader, settings_writer = IO.pipe
-		inherited = [settings_reader, options[:control], options[:report], *channels.flat_map { |channel| [channel.reader, channel.writer] }].compact
+		inherited = [settings_reader, options[:control], options[:report], *[*channels, options[:link]].compact.flat_map { |channel| [channel.reader, channel.writer] }].compact
 		# Before Bundler starts, which can print.
 		output = if quiet
 			{ out: File::NULL, err: File::NULL }
@@ -84,7 +89,11 @@ class Quickdraw::Loader
 				channels: channels.map { |channel| [channel.reader.fileno, channel.writer.fileno] },
 				test_files:,
 				seed:,
-				options: options.merge(control: options[:control]&.fileno, report: options[:report]&.fileno),
+				options: options.merge(
+					control: options[:control]&.fileno,
+					report: options[:report]&.fileno,
+					link: options[:link]&.then { |link| [link.reader.fileno, link.writer.fileno] },
+				),
 			}))
 		rescue Errno::EPIPE
 			# Bundler failed, and said why. Without a report, the loader counts as
@@ -106,6 +115,7 @@ class Quickdraw::Loader
 		options = settings.fetch(:options)
 		options[:control] &&= inherit(options[:control])
 		options[:report] &&= inherit(options[:report], "w")
+		options[:link] &&= options[:link].then { |reader, writer| Quickdraw::Channel.new(inherit(reader), inherit(writer, "w")) }
 
 		new(channels, settings.fetch(:test_files), settings.fetch(:seed), **options)
 	end
@@ -117,7 +127,8 @@ class Quickdraw::Loader
 
 	# Reports that booting failed before #call, as #call does when it fails.
 	def boot_failed(error)
-		report([:failed, Quickdraw.serialize_error(error)])
+		@boot_report = [:failed, Quickdraw.serialize_error(error)]
+		@link ? serve_runs : report(@boot_report)
 	end
 
 	# Returns whether booting and every worker succeeded.
@@ -135,16 +146,26 @@ class Quickdraw::Loader
 		begin
 			self.class.boot(group: @group)
 		rescue Exception => error
-			raise unless @report
+			raise unless @report || @link
 
-			report([:failed, Quickdraw.serialize_error(error)])
+			boot_failed(error)
 			return false
 		end
 
-		if @report
+		if @report || @link
 			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile] }
-			report([:booted, groups, (Quickdraw::CoverageCollector.take if @coverage)])
+			@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage)]
 		end
+
+		return serve_runs if @link
+
+		report(@boot_report) if @report
+		serve
+	end
+
+	# Starts workers as the coordinator asks, until it closes `control`.
+	# Returns whether every worker succeeded.
+	private def serve
 		test_files = real_paths
 
 		while @control
@@ -165,6 +186,89 @@ class Quickdraw::Loader
 		end
 
 		@statuses.all?
+	end
+
+	# For a warm loader: answers the watch process about changes, and serves
+	# runs, one at a time, until the watch process stops it, or exits.
+	private def serve_runs
+		@autoloadable = autoloadable_files
+
+		while (message = @link.read)
+			case message
+			in [:changed, paths] then @link.write(refresh(paths))
+			in [:run, directory] then serve_run(directory)
+			in [:stop] then break
+			end
+		end
+
+		true
+	end
+
+	# The run's settings and named pipes are in `directory` (see
+	# WarmLoaders::Session). Writes whether every worker succeeded to its
+	# `finished` pipe, closing which tells the run that the loader is done.
+	# Skipped if the run has already gone, after Ctrl-C, say.
+	private def serve_run(directory)
+		settings = Marshal.load(File.binread(File.join(directory, "settings")))
+		@test_files, @seed, @profile, @capture, @leaks = settings.values_at(:test_files, :seed, :profile, :capture, :leaks)
+		@directory = directory
+		@running = {}
+		@statuses = []
+		@control = open_pipe("control", File::RDONLY | File::NONBLOCK)
+		@report = open_pipe("report", File::WRONLY | File::NONBLOCK)
+		@finished = open_pipe("finished", File::WRONLY | File::NONBLOCK)
+
+		report(@boot_report)
+		success = @boot_report.first == :booted && serve
+		@finished.write(success ? "1" : "0")
+	rescue SystemCallError
+		nil
+	ensure
+		[@control, @report, @finished].compact.each(&:close)
+		@control = @report = @finished = @directory = nil
+	end
+
+	# What changes to `paths` (absolute) mean to a warm loader: :fresh if it
+	# didn't load them, :reloaded if config's reloader reloaded them (see
+	# Configuration#reloader), or :stale if it has to boot again.
+	private def refresh(paths)
+		return :stale unless @boot_report.first == :booted
+
+		loaded = paths.select { |path| loaded?(path) }
+		return :fresh if loaded.empty?
+		return :stale unless Quickdraw::Config.reload(loaded)
+
+		if @coverage
+			# Taken, so workers don't inherit it, in place of what loading the
+			# reloaded files' old versions covered. Other files have zero counts.
+			reloaded = Quickdraw::CoverageCollector.take
+			@boot_report.last.merge!(reloaded.slice(*Quickdraw::CoverageCollector.run(reloaded)))
+		end
+
+		@autoloadable = autoloadable_files
+		:reloaded
+	rescue StandardError, ScriptError
+		# Booting again reports what's wrong.
+		:stale
+	end
+
+	# Whether booting loaded `path`, or the autoloader's idea of it is out of
+	# date, since it's been added or deleted.
+	private def loaded?(path)
+		path = File.realpath(path) if File.exist?(path)
+		return true if $LOADED_FEATURES.include?(path)
+
+		autoloadable = path.end_with?(".rb") && autoload_dirs.any? { |dir| path.start_with?("#{dir}/") }
+		autoloadable && File.exist?(path) != @autoloadable.key?(path)
+	end
+
+	private def autoloadable_files
+		autoload_dirs.flat_map { |dir| Dir.glob("**/*.rb", base: dir).map { |path| File.join(dir, path) } }.to_h { |path| [path, true] }
+	end
+
+	# Zeitwerk's, if config loaded it.
+	private def autoload_dirs
+		defined?(::Zeitwerk::Loader) ? ::Zeitwerk::Loader.all_dirs : []
 	end
 
 	# Used where fork isn’t available: a single worker in a thread of this process.
@@ -195,13 +299,16 @@ class Quickdraw::Loader
 	end
 
 	private def start(channel_index, slot, test_files)
-		channel = @channels.fetch(channel_index)
+		channel = open_channel(channel_index)
 
 		pid = Process.fork do
 			# A handler rather than "IGNORE", which processes that tests exec would inherit.
 			trap("INT") { raise Quickdraw::Interrupted }
 			@control.close
 			@channels.each { |other| other.close unless other.equal?(channel) }
+			# Only the loader holds these, so closing them says it's done.
+			@link&.close
+			@finished&.close
 			start_worker(channel, slot, test_files)
 		end
 
@@ -214,6 +321,19 @@ class Quickdraw::Loader
 	ensure
 		# The worker has its own copy. Closing ours means its exit closes the pipes.
 		channel&.close
+	end
+
+	# In a warm loader's run, the named pipes the run made for the channel.
+	private def open_channel(index)
+		return @channels.fetch(index) unless @directory
+
+		Quickdraw::Channel.new(open_pipe("#{index}.down", File::RDONLY | File::NONBLOCK), open_pipe("#{index}.up", File::WRONLY | File::NONBLOCK))
+	end
+
+	# Binary, since Marshal data can't be transcoded, as it would be if config
+	# sets Encoding.default_internal (Rails does).
+	private def open_pipe(name, flags)
+		File.open(File.join(@directory, name), flags, binmode: true)
 	end
 
 	# Only this loader's workers, not processes that config may have started.

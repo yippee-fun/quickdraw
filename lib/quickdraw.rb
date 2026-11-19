@@ -20,6 +20,7 @@ module Quickdraw
 	autoload :CLI, "quickdraw/cli"
 	autoload :Commands, "quickdraw/commands"
 	autoload :Watch, "quickdraw/watch"
+	autoload :WarmLoaders, "quickdraw/warm_loaders"
 	autoload :Replay, "quickdraw/replay"
 	autoload :Sampler, "quickdraw/sampler"
 	autoload :Profile, "quickdraw/profile"

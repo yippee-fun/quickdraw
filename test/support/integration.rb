@@ -103,6 +103,30 @@ module Integration
 			input&.close
 		end
 
+		# Runs in watch mode with one worker, on a terminal. Each of `changes` is
+		# written (as by #write) once the output shows `Watching` one more time,
+		# and again, with a different comment, if no run has started (clearing
+		# the screen) within a second, in case the watcher missed it. Then quits.
+		def watch(*changes)
+			saved_at = {}
+			quit = false
+
+			run("-p", "1", "--watch", tty: [40, 120], timeout: 30) do |output, keyboard|
+				watching = output.scan(/^Watching/).size
+				next if watching == 0
+
+				if (files = changes[watching - 1])
+					next if saved_at[watching] && (now - saved_at[watching] < 1 || output.scan("\e[2J").size > watching)
+
+					write(files.transform_values { |source| "#{source}# #{now}\n" })
+					saved_at[watching] = now
+				elsif !quit
+					keyboard.write("q")
+					quit = true
+				end
+			end
+		end
+
 		private def spawn(environment, command)
 			stdout_reader, stdout_writer = IO.pipe
 			stderr_reader, stderr_writer = IO.pipe

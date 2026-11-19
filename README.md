@@ -91,7 +91,7 @@ qt --watch                 # run again when files change
 - **Workers:** Quickdraw chooses the number of workers from previous runs, exploring until it finds the fastest. Pass `-p N` to choose, `--max` for every core, or `--efficiency` for an Apple silicon Mac's efficiency cores.
 - **Order:** tests run in a random order. The seed is printed after each run, and `--seed N` repeats it.
 - **Stopping:** `--fail-fast` stops starting tests after the first problem. Ctrl-C stops the run, lets running tests clean up, and reports what finished.
-- **Watch mode:** a changed test file reruns on its own, and a changed source file reruns its tests. Keys rerun everything, run only failures, or filter by path or name.
+- **Watch mode:** a changed test file reruns on its own, and a changed source file reruns its tests. Keys rerun everything, run only failures, or filter by path or name. Config stays booted between runs, so only the first waits for it (a Rails app's rerun takes about 100ms rather than 600ms). It boots again when `config/`, the Gemfile or a file it loaded changes, or a file is added to or deleted from an autoloaded directory.
 
 ## Output
 
@@ -204,6 +204,7 @@ Quickdraw.configure(&:rails)
 - Each worker gets its own databases, named as Rails' parallel tests name them (`myapp_test_2`, `test.sqlite3_2`). They're created and loaded from the schema when a worker starts, or emptied if the schema hasn't changed.
 - Each test runs in a transaction on every database, rolled back afterwards. Threads the test starts share it.
 - The summary shows SQL queries and factory_bot factories per test, and their time.
+- In watch mode, the app stays booted between runs. With `config.enable_reloading = true` in the test environment, app code that booting loaded (all of it, with eager loading) is reloaded when it changes, rather than booting again.
 
 ### Fixtures
 

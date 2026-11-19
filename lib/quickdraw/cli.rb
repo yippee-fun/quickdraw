@@ -546,6 +546,7 @@ class Quickdraw::CLI
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
 			repeatable: !options[:changed],
+			warm_loaders: options[:warm_loaders],
 		).call
 	end
 
