@@ -41,17 +41,19 @@ class Quickdraw::Commands::Bisect
 	end
 
 	private def bisect(test, before, seed:, slot:)
-		@io.puts "#{location(test)} failed after #{pluralize(before.size, 'test')} in its worker (seed #{seed})."
+		@io.puts "#{label('BISECT', 44)} #{heading(test)}"
+		@io.puts "#{beside_label('BISECT')}#{dim("failed after #{pluralize(before.size, 'test')} in its worker · seed #{seed}")}"
+		@io.puts
 
 		replay = Quickdraw::Replay.new([test, *before].map(&:path).uniq, seed:, slot:, attempts: (2 * before.size.bit_length) + 2)
 
 		if failed?(replay, [], test)
-			@io.puts "It fails on its own too, so it doesn’t depend on the tests before it."
+			@io.puts "#{label('FAILS ALONE', 41)} It fails on its own too, so it doesn’t depend on the tests before it."
 			return 1
 		end
 
 		unless failed?(replay, before, test)
-			@io.puts "It passed when replayed after the same tests, so it may depend on timing, or on what other workers do at the same time."
+			@io.puts "#{label('INCONCLUSIVE', 43)} It passed when replayed after the same tests, so it may depend on timing, or on what other workers do at the same time."
 			return 1
 		end
 
@@ -66,10 +68,10 @@ class Quickdraw::Commands::Bisect
 			end
 		end
 
-		@io.puts
-		@io.puts bold(suspects.one? ? "It fails after:" : "It fails after these, together:")
-		suspects.each { |suspect| @io.puts "  #{red('✗')} #{location(suspect)}" }
-		@io.puts dim("Found in #{pluralize(replay.attempts, 'replay')}.")
+		indent = beside_label("FOUND")
+		@io.puts "#{label('FOUND', 42)} #{suspects.one? ? 'It fails after this test:' : 'It fails after these tests, together:'}"
+		suspects.each { |suspect| @io.puts "#{indent}#{red('✗')} #{heading(suspect)}" }
+		@io.puts "#{indent}#{dim("Found in #{pluralize(replay.attempts, 'replay')}.")}"
 		0
 	rescue Quickdraw::Replay::BootFailed => error
 		@io.puts "Couldn’t boot to replay tests: #{error.message}"
@@ -109,15 +111,24 @@ class Quickdraw::Commands::Bisect
 	end
 
 	private def step(test)
-		Quickdraw::Replay::Step.new(
+		@tests ||= {}
+		step = Quickdraw::Replay::Step.new(
 			path: File.expand_path(test[:path]),
 			line: test[:line],
 			name: Quickdraw::Filter.name_of({ "class_name" => test[:class_name], "description" => test[:description] }),
 		)
+		@tests[step] = test
+		step
 	end
 
 	private def location(step)
 		"#{step.path.delete_prefix("#{Dir.pwd}/")}:#{step.line} #{step.name}"
+	end
+
+	# As test runs show a test.
+	private def heading(step)
+		test = @tests.fetch(step)
+		test_heading(test[:path], test[:line], test[:class_name], test[:description])
 	end
 
 	private def pluralize(count, noun)

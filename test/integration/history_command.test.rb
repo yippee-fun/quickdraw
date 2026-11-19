@@ -63,8 +63,8 @@ class HistoryCommandTest < Quickdraw::Test
 
 		assert(result.success?) { result.output }
 		assert_includes result.stdout, "Recent runs"
-		assert_match result.stdout, /✓ +\d+s ago  2 tests · .* · 2 workers \(manual\) · seed \d+\n  ✓ +\d+s ago  2 tests · .* · 1 worker \(manual\)/
-		assert_match result.stdout, /Slowest tests\n +\S+  a\.test\.rb:3 A › slow\n +\S+  a\.test\.rb:2 A › fast\n/
+		assert_match result.stdout, /✓ +\d+s ago  2 tests +\S+  2 workers \(manual\) · seed \d+\n  ✓ +\d+s ago  2 tests +\S+  1 worker \(manual\)/
+		assert_match result.stdout, /Slowest tests\n +\S+ +\S+  slow  A · a\.test\.rb:3\n +\S+ +\S+  fast  A · a\.test\.rb:2\n/
 		refute_includes result.stdout, "Flaky tests"
 	end
 
@@ -84,8 +84,8 @@ class HistoryCommandTest < Quickdraw::Test
 		result = project.run("history")
 
 		assert(result.success?) { result.output }
-		assert_match result.stdout, /✗ +\d+s ago  2 tests · 1 failed · /
-		assert_match result.stdout, /Flaky tests.*\n  failed 1 of 3  a\.test\.rb:3 A › flaky\n\z/
+		assert_match result.stdout, /✗ +\d+s ago  2 tests  1 failed  /
+		assert_match result.stdout, /Flaky tests.*\n  failed 1 of 3  flaky  A · a\.test\.rb:3\n  ⌕ .*bisect PATH:LINE.*\n\z/
 	end
 
 	test "doesn't count a test that failed on one commit and passed on the next as flaky", timeout: 30 do
@@ -105,7 +105,7 @@ class HistoryCommandTest < Quickdraw::Test
 		result = project.run("history")
 
 		assert(result.success?) { result.output }
-		assert_match result.stdout, /✓ +\d+s ago  1 test · .* · \h{7} \S+\n  ✗ +\d+s ago  1 test · 1 failed · .* · \h{7} \S+\n/
+		assert_match result.stdout, /✓ +\d+s ago  1 test +\d\S*  .* · \h{7} \S+\n  ✗ +\d+s ago  1 test  1 failed  .* · \h{7} \S+\n/
 		refute_includes result.stdout, "Flaky tests"
 	end
 
@@ -129,7 +129,7 @@ class HistoryCommandTest < Quickdraw::Test
 
 		# The same uncommitted code, passing and failing, is flaky.
 		project.run("-p", "1", env: { "QUICKDRAW_FIXTURE_FAIL" => "1" })
-		assert_includes project.run("history").stdout, "failed 1 of 3  a.test.rb:2 A › fixed"
+		assert_includes project.run("history").stdout, "failed 1 of 3  fixed  A · a.test.rb:2"
 	end
 
 	private def git(project, *)

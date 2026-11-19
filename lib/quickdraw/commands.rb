@@ -51,9 +51,29 @@ module Quickdraw::Commands
 		private def red(text) = style(text, 31)
 		private def green(text) = style(text, 32)
 		private def yellow(text) = style(text, 33)
+		private def cyan(text) = style(text, 36)
+
+		# Dark text on a coloured background, as test runs show their verdicts.
+		private def label(text, background)
+			color? ? "\e[1;30;#{background}m #{text} \e[0m" : text
+		end
+
+		# Spaces that line text up with what follows a label of `text`.
+		private def beside_label(text)
+			" " * ((color? ? text.size + 2 : text.size) + 1)
+		end
+
+		# A test as runs show it: its name, then its class and location, dimmed.
+		private def test_heading(path, line, class_name, description)
+			"#{bold(description || "line #{line}")}  #{dim([class_name, "#{path}:#{line}"].compact.join(' · '))}"
+		end
 
 		private def style(text, code)
-			(@io.tty? && !ENV.key?("NO_COLOR")) ? "\e[#{code}m#{text}\e[0m" : text
+			color? ? "\e[#{code}m#{text}\e[0m" : text
+		end
+
+		private def color?
+			@io.tty? && !ENV.key?("NO_COLOR")
 		end
 	end
 end

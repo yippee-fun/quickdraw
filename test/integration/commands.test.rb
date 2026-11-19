@@ -25,7 +25,7 @@ class CommandsTest < Quickdraw::Test
 		project = project(".gitignore" => ".quickdraw/\n!.quickdraw/\n", "a.test.rb" => "")
 		system("git", "init", "--quiet", project.directory)
 
-		assert_includes project.run("doctor").stdout, "! git doesn’t ignore .quickdraw/"
+		assert_match project.run("doctor").stdout, %r{^  ! Git +git doesn’t ignore \.quickdraw/$}
 		project.run("init")
 		refute_includes project.run("doctor").stdout, "git doesn’t ignore"
 	end
@@ -47,15 +47,18 @@ class CommandsTest < Quickdraw::Test
 		healthy = project("a.test.rb" => "", "config/quickdraw.rb" => "Quickdraw.configure { |config| config.timeout = 5 }\n").run("doctor")
 
 		assert healthy.success?
-		assert_includes healthy.stdout, "✓ Ruby #{RUBY_VERSION}"
-		assert_includes healthy.stdout, "✓ 1 test file (**/*.test.rb)"
-		assert_match healthy.stdout, %r{^✓ config/quickdraw\.rb boots in }
+		assert_match healthy.stdout, /^  ✓ Ruby +#{Regexp.escape(RUBY_VERSION)}( with YJIT)?$/
+		assert_match healthy.stdout, %r{^  ✓ Tests +1 test file \(\*\*/\*\.test\.rb\)$}
+		assert_match healthy.stdout, %r{^  ✓ Config +config/quickdraw\.rb boots in }
+		# Some platforms warn, such as those without fork.
+		assert_match healthy.stdout, /\n\nREADY Tests can run( · \d+ warnings?)?\n/
 
 		broken = project("config/quickdraw.rb" => "raise 'no database'\n").run("doctor")
 
 		assert_equal broken.status.exitstatus, 1
-		assert_includes broken.stdout, "✗ No test files match **/*.test.rb"
-		assert_includes broken.stdout, "✗ config/quickdraw.rb fails to boot\n  RuntimeError: no database"
+		assert_match broken.stdout, %r{^  ✗ Tests +No test files match \*\*/\*\.test\.rb$}
+		assert_match broken.stdout, %r{^  ✗ Config +config/quickdraw\.rb fails to boot\n +RuntimeError: no database$}
+		assert_includes broken.stdout, "\n\nNOT READY 2 problems to fix before tests can run\n"
 	end
 
 	test "counterpart finds a source file's test and a test's source file", timeout: 20 do

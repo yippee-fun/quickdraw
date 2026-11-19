@@ -55,7 +55,7 @@ class Quickdraw::Commands::Flaky
 			end
 
 			outcomes.concat(recorded)
-			@io.puts "#{dim("Run #{run + 1} of #{runs} · seed #{seed} ·")} #{status.success? ? green('passed') : red('failed')}"
+			@io.puts "  #{status.success? ? green('✓') : red('✗')} run #{(run + 1).to_s.rjust(runs.to_s.size)} of #{runs}  #{dim("seed #{seed}")}"
 		end
 
 		report(runs, outcomes)
@@ -93,21 +93,22 @@ class Quickdraw::Commands::Flaky
 			[test, failed.size, statuses.size, failed.map { |result| result[:seed] }] if failed.any? && failed.size < statuses.size
 		end
 
-		@io.puts
-
 		if flaky.empty?
-			@io.puts "#{green('✓')} No flaky tests in #{runs} runs."
+			@io.puts
+			@io.puts "#{label('PASSED', 42)} No flaky tests in #{runs} runs"
 			return 0
 		end
 
-		@io.puts bold("Flaky tests")
-
 		flaky.sort_by { |_test, failures, *| -failures }.each do |(path, line, class_name, description), failures, total, seeds|
-			name = Quickdraw::Filter.name_of({ "class_name" => class_name, "description" => description })
-			@io.puts "  #{yellow("failed #{failures} of #{total}")}  #{path}:#{line} #{name}"
-			@io.puts dim("    Seeds #{seeds.uniq.join(', ')}. Find what it depends on with #{Quickdraw::Reporters.command} bisect #{path}:#{line}")
+			indent = beside_label("FLAKY")
+			@io.puts
+			@io.puts "#{label('FLAKY', 43)} #{test_heading(path, line, class_name, description)}"
+			@io.puts "#{indent}#{yellow("failed #{failures} of #{total} runs")} #{dim("· #{seeds.uniq.one? ? 'seed' : 'seeds'} #{seeds.uniq.join(', ')}")}"
+			@io.puts "#{indent}#{dim("⌕ #{Quickdraw::Reporters.command} bisect #{path}:#{line}")}"
 		end
 
+		@io.puts
+		@io.puts "#{label('FAILED', 41)} #{flaky.size} flaky #{flaky.one? ? 'test' : 'tests'} in #{runs} runs"
 		1
 	end
 

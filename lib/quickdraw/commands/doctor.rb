@@ -9,7 +9,8 @@ class Quickdraw::Commands::Doctor
 	# Each worker needs four file descriptors (see Coordinator#channel_capacity).
 	DESCRIPTORS_PER_WORKER = 4
 
-	Check = Data.define(:level, :message, :hint)
+	# `topic` is a word or two for the column on the left.
+	Check = Data.define(:level, :topic, :message, :hint)
 
 	def initialize(args, io: $stdout)
 		@args = args
@@ -23,6 +24,7 @@ class Quickdraw::Commands::Doctor
 		end
 
 		checks = [ruby, forking, cores, file_descriptors, test_files, config, history, watching, ignored_history].compact
+		width = checks.map { |check| check.topic.size }.max
 
 		checks.each do |check|
 			symbol = case check.level
@@ -31,18 +33,28 @@ class Quickdraw::Commands::Doctor
 			in :problem then red("✗")
 			end
 
-			@io.puts "#{symbol} #{check.message}"
-			@io.puts "  #{dim(check.hint)}" if check.hint
+			@io.puts "  #{symbol} #{dim(check.topic.ljust(width))}  #{check.message}"
+			@io.puts "    #{' ' * width}  #{dim(check.hint)}" if check.hint
 		end
 
-		(checks.any? { |check| check.level == :problem }) ? 1 : 0
+		problems = checks.count { |check| check.level == :problem }
+		warnings = checks.count { |check| check.level == :warning }
+		@io.puts
+
+		if problems > 0
+			@io.puts "#{label('NOT READY', 41)} #{pluralize(problems, 'problem')} to fix before tests can run"
+			1
+		else
+			@io.puts "#{label('READY', 42)} Tests can run#{dim(" · #{pluralize(warnings, 'warning')}") if warnings > 0}"
+			0
+		end
 	end
 
 	private def ruby
 		if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new(MINIMUM_RUBY)
-			Check.new(:ok, "Ruby #{RUBY_VERSION}#{' with YJIT' if yjit?}", nil)
+			Check.new(:ok, "Ruby", "#{RUBY_VERSION}#{' with YJIT' if yjit?}", nil)
 		else
-			Check.new(:problem, "Ruby #{RUBY_VERSION} is older than #{MINIMUM_RUBY}", "Quickdraw supports the Ruby versions that are still maintained.")
+			Check.new(:problem, "Ruby", "#{RUBY_VERSION} is older than #{MINIMUM_RUBY}", "Quickdraw supports the Ruby versions that are still maintained.")
 		end
 	end
 
@@ -52,9 +64,9 @@ class Quickdraw::Commands::Doctor
 
 	private def forking
 		if Quickdraw::Platform.supports_forking?
-			Check.new(:ok, "fork is available, so tests run in parallel", nil)
+			Check.new(:ok, "Parallel", "fork is available, so tests run in parallel", nil)
 		else
-			Check.new(:warning, "fork isn’t available on #{RUBY_PLATFORM}, so tests run one at a time", nil)
+			Check.new(:warning, "Parallel", "fork isn’t available on #{RUBY_PLATFORM}, so tests run one at a time", nil)
 		end
 	end
 
@@ -63,9 +75,9 @@ class Quickdraw::Commands::Doctor
 
 		total = Quickdraw::Platform.cpu_cores
 		for_tests = Quickdraw::Platform.non_blocking_cores
-		detail = Quickdraw::Platform.m_series? ? " (#{Quickdraw::Platform.efficiency_cores} efficiency cores, used with --efficiency)" : ""
+		detail = Quickdraw::Platform.m_series? ? dim(" · #{Quickdraw::Platform.efficiency_cores} efficiency cores, used with --efficiency") : ""
 
-		Check.new(:ok, "#{total} CPU cores; #{for_tests} workers to start with, tuned from run history#{detail}", nil)
+		Check.new(:ok, "Workers", "#{total} CPU cores · #{for_tests} workers to start with, tuned from run history#{detail}", nil)
 	end
 
 	private def file_descriptors
@@ -73,11 +85,11 @@ class Quickdraw::Commands::Doctor
 		needed = Quickdraw::Platform.cpu_cores * 3 * DESCRIPTORS_PER_WORKER
 
 		if soft >= needed
-			Check.new(:ok, "#{soft} file descriptors, enough for the most workers Quickdraw will start", nil)
+			Check.new(:ok, "Descriptors", "#{delimit(soft)}, enough for the most workers Quickdraw will start", nil)
 		elsif hard >= needed
-			Check.new(:ok, "#{soft} file descriptors; Quickdraw raises this to #{needed} for the most workers it will start", nil)
+			Check.new(:ok, "Descriptors", "#{delimit(soft)}, which Quickdraw raises to #{delimit(needed)} for the most workers it will start", nil)
 		else
-			Check.new(:warning, "#{hard} file descriptors limits Quickdraw to #{hard / DESCRIPTORS_PER_WORKER} workers", "Raise the limit with `ulimit -n #{needed}`.")
+			Check.new(:warning, "Descriptors", "#{delimit(hard)} at most, which limits Quickdraw to #{hard / DESCRIPTORS_PER_WORKER} workers", "Raise the limit with `ulimit -n #{needed}`.")
 		end
 	end
 
@@ -85,16 +97,16 @@ class Quickdraw::Commands::Doctor
 		count = Dir.glob(Quickdraw::CLI::DEFAULT_PATTERN).grep_v(Quickdraw::CLI::IGNORED_DIRECTORIES).size
 
 		if count > 0
-			Check.new(:ok, "#{count} test #{(count == 1) ? 'file' : 'files'} (#{Quickdraw::CLI::DEFAULT_PATTERN})", nil)
+			Check.new(:ok, "Tests", "#{pluralize(count, 'test file')} #{dim("(#{Quickdraw::CLI::DEFAULT_PATTERN})")}", nil)
 		else
-			Check.new(:problem, "No test files match #{Quickdraw::CLI::DEFAULT_PATTERN}", "Run #{Quickdraw::Reporters.command} init for an example.")
+			Check.new(:problem, "Tests", "No test files match #{Quickdraw::CLI::DEFAULT_PATTERN}", "Run #{Quickdraw::Reporters.command} init for an example.")
 		end
 	end
 
 	# Booted in a fork, as the loader does, since it's the user's code.
 	private def config
 		path = Quickdraw::Loader::CONFIG_PATH
-		return Check.new(:ok, "No #{path}, so nothing is shared between tests", nil) unless File.exist?(path)
+		return Check.new(:ok, "Config", "No #{path}, so nothing is shared between tests", nil) unless File.exist?(path)
 
 		result = Quickdraw.isolate do
 			started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -107,16 +119,16 @@ class Quickdraw::Commands::Doctor
 
 		case result
 		in Float => seconds
-			Check.new(:ok, "#{path} boots in #{Quickdraw::Timer::Duration.new(seconds * 1_000_000_000)}", nil)
+			Check.new(:ok, "Config", "#{path} boots in #{Quickdraw::Timer::Duration.new(seconds * 1_000_000_000)}", nil)
 		in String => error
-			Check.new(:problem, "#{path} fails to boot", Quickdraw.utf8(error).lines.first.chomp)
+			Check.new(:problem, "Config", "#{path} fails to boot", Quickdraw.utf8(error).lines.first.chomp)
 		end
 	end
 
 	private def history
 		require "sqlite3"
 		path = Quickdraw::CLI::HISTORY_PATH
-		return Check.new(:ok, "Run history will be kept in #{path}", nil) unless File.exist?(path)
+		return Check.new(:ok, "History", "Will be kept in #{path}", nil) unless File.exist?(path)
 
 		database = SQLite3::Database.new(path, readonly: true)
 		integrity = database.get_first_value("PRAGMA quick_check")
@@ -124,30 +136,38 @@ class Quickdraw::Commands::Doctor
 		size = File.size(path)
 
 		if integrity == "ok"
-			Check.new(:ok, "Run history has #{runs} runs (#{size / 1024}KB)", nil)
+			Check.new(:ok, "History", "#{pluralize(runs, 'run')} #{dim("· #{size / 1024}KB")}", nil)
 		else
-			Check.new(:warning, "Run history is damaged (#{integrity})", "It’s only a cache, so Quickdraw rebuilds it. You can also delete #{path}.")
+			Check.new(:warning, "History", "Damaged (#{integrity})", "It’s only a cache, so Quickdraw rebuilds it. You can also delete #{path}.")
 		end
 	rescue LoadError
-		Check.new(:warning, "sqlite3 isn’t installed, so runs aren’t recorded", "Without it there’s no worker tuning, --failed or time estimates. Add the sqlite3 gem.")
+		Check.new(:warning, "History", "sqlite3 isn’t installed, so runs aren’t recorded", "Without it there’s no worker tuning, --failed or time estimates. Add the sqlite3 gem.")
 	rescue SQLite3::Exception => error
-		Check.new(:warning, "Run history can’t be read (#{error.message})", "It’s only a cache, so Quickdraw rebuilds it. You can also delete #{path}.")
+		Check.new(:warning, "History", "Can’t be read (#{error.message})", "It’s only a cache, so Quickdraw rebuilds it. You can also delete #{path}.")
 	ensure
 		database&.close
 	end
 
 	private def watching
 		require "listen"
-		Check.new(:ok, "listen is installed, for --watch", nil)
+		Check.new(:ok, "Watch", "listen is installed, for --watch", nil)
 	rescue LoadError
-		Check.new(:warning, "listen isn’t installed, so --watch won’t work", "Add the listen gem.")
+		Check.new(:warning, "Watch", "listen isn’t installed, so --watch won’t work", "Add the listen gem.")
 	end
 
 	private def ignored_history
 		return unless File.exist?(".git")
 
 		unless Quickdraw::Commands.history_ignored?
-			Check.new(:warning, "git doesn’t ignore .quickdraw/", "Run history is per machine. #{Quickdraw::Reporters.command} init adds it to .gitignore.")
+			Check.new(:warning, "Git", "git doesn’t ignore .quickdraw/", "Run history is per machine. #{Quickdraw::Reporters.command} init adds it to .gitignore.")
 		end
+	end
+
+	private def pluralize(count, noun)
+		"#{count} #{noun}#{'s' unless count == 1}"
+	end
+
+	private def delimit(number)
+		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 	end
 end

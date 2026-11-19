@@ -169,7 +169,7 @@ class GroupsTest < Quickdraw::Test
 		result = project.run("bisect", "test/browser/victim.test.rb:2")
 
 		assert(result.success?) { result.output }
-		assert_includes result.stdout, "It fails after:\n  ✗ test/browser/polluter.test.rb:2 Polluter › pollutes\n"
+		assert_includes result.stdout, "FOUND It fails after this test:\n      ✗ pollutes  Polluter · test/browser/polluter.test.rb:2\n"
 	end
 
 	test "group loaders don't inherit what the coordinator loads for run history", timeout: 20 do

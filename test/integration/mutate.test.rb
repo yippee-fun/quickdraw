@@ -84,8 +84,8 @@ class MutateTest < Quickdraw::Test
 		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => WEAK)
 		human = project.run("mutate", "lib/pricing.rb", "--format", "human")
 
-		assert_includes human.stdout, "✗ lib/pricing.rb:6  > → >= in Shop::Pricing#discount\n    - if total > 100\n    + if total >= 100\n"
-		match { human => { stdout: /^Mutation score 66.7% · 6 killed · 3 survived$/ } }
+		assert_includes human.stdout, "SURVIVED > → >=  Shop::Pricing#discount · lib/pricing.rb:6\n\n    - if total > 100\n    + if total >= 100\n"
+		match { human => { stdout: /^FAILED 66.7% mutation score · 6 killed · 3 survived$/ } }
 
 		require "json"
 		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json").stdout, symbolize_names: true)

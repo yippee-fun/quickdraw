@@ -41,9 +41,10 @@ class FlakinessTest < Quickdraw::Test
 		).run("flaky", "--runs", "4", "-p", "1")
 
 		assert_equal result.status.exitstatus, 1
-		assert_equal result.stdout.scan(/^Run \d of 4 · seed \d+ · (\w+)$/).flatten, ["passed", "failed", "passed", "failed"]
-		assert_includes result.stdout, "failed 2 of 4  alternates.test.rb:2 Alternates › fails every other run"
-		assert_includes result.stdout, "bisect alternates.test.rb:2"
+		assert_equal result.stdout.scan(/^  ([✓✗]) run \d of 4  seed \d+$/).flatten, ["✓", "✗", "✓", "✗"]
+		assert_includes result.stdout, "FLAKY fails every other run  Alternates · alternates.test.rb:2\n      failed 2 of 4 runs · seeds "
+		assert_includes result.stdout, "⌕ quickdraw bisect alternates.test.rb:2"
+		assert_includes result.stdout, "\n\nFAILED 1 flaky test in 4 runs\n"
 		refute_includes result.stdout, "Steady"
 	end
 
@@ -51,7 +52,7 @@ class FlakinessTest < Quickdraw::Test
 		result = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n").run("flaky", "--runs", "2", "-p", "1")
 
 		assert result.success?
-		assert_includes result.stdout, "✓ No flaky tests in 2 runs."
+		assert_includes result.stdout, "PASSED No flaky tests in 2 runs\n"
 	end
 
 	test "flaky explains bad arguments", timeout: 20 do
@@ -92,7 +93,7 @@ class FlakinessTest < Quickdraw::Test
 		result = project.run("bisect", "victim.test.rb:2")
 
 		assert result.success?
-		assert_includes result.stdout, "It fails after:\n  ✗ polluter.test.rb:3 Polluter › sets a global\n"
+		assert_includes result.stdout, "FOUND It fails after this test:\n      ✗ sets a global  Polluter · polluter.test.rb:3\n"
 	end
 
 	test "bisect explains a failure that doesn't depend on order", timeout: 30 do

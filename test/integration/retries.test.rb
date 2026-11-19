@@ -106,6 +106,6 @@ class RetriesTest < Quickdraw::Test
 		assert_includes project.run("-p", "1", "--format", "human").output, "⌕ quickdraw bisect once.test.rb:2"
 
 		flaky = project.run("history").output[/^Flaky tests.*\z/m]
-		assert_includes flaky, "once.test.rb:2 Once › fails the first time"
+		assert_includes flaky, "fails the first time  Once · once.test.rb:2"
 	end
 end

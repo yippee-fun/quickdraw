@@ -168,7 +168,11 @@ class Quickdraw::Commands::Mutate
 		in "json" then report_json
 		end
 
-		# A run that couldn't run everything it should have isn't a pass, whatever its score.
+		exit_status
+	end
+
+	# A run that couldn't run everything it should have isn't a pass, whatever its score.
+	private def exit_status
 		if @interrupted then 130
 		elsif @score && @score < @threshold then 1
 		elsif @errors.any? || @broken.any? then 1
@@ -177,25 +181,31 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def report_for_people
+		# As test runs show problems: a badge, what changed and where, then the
+		# change as a diff of the original (-) and the mutant (+).
 		@survived.each do |job, _outcome|
 			mutant = job.mutant
-			@io.puts "#{red('✗')} #{bold("#{relative(mutant.subject.path)}:#{mutant.line}")}  #{mutant.description} #{dim("in #{mutant.subject.label}")}"
-			snippet(mutant).each { |line| @io.puts "    #{line.start_with?('-') ? red(line) : green(line)}" }
-			@io.puts dim("    #{pluralize(job.tests.size, 'test')} ran it and passed: #{tests(job)}")
+			@io.puts "#{label('SURVIVED', 43)} #{bold(mutant.description)}  #{dim("#{mutant.subject.label} · #{relative(mutant.subject.path)}:#{mutant.line}")}"
+			@io.puts
+			snippet(mutant).each { |line| @io.puts "    #{line.start_with?('-') ? green(line) : red(line)}" }
+			@io.puts
+			@io.puts "  #{dim("#{pluralize(job.tests.size, 'test')} ran it and passed: #{tests(job)}")}"
 			@io.puts
 		end
 
-		problems.each { |problem| @io.puts yellow(problem) }
+		problems.each { |problem| @io.puts "#{yellow('!')} #{problem}" }
 
-		summary = if @score
-			["Mutation score #{format_score(@score)}", "#{@killed.size} killed", ("#{@survived.size} survived" if @survived.any?)]
+		counts = if @score
+			["#{format_score(@score)} mutation score", "#{@killed.size} killed", (red("#{@survived.size} survived") if @survived.any?)]
 		else
 			["No mutants ran"]
 		end
 
-		summary << "#{@uncovered.size} on lines no test runs" if @uncovered.any?
-		@io.puts summary.compact.join(" · ").then { |text| (@score.nil? || @score >= @threshold) ? green(text) : red(text) }
-		@io.puts dim(rate)
+		counts << yellow("#{@uncovered.size} on lines no test runs") if @uncovered.any?
+		badge, background = (exit_status == 0) ? ["PASSED", 42] : ["FAILED", 41]
+		@io.puts if problems.any? || @survived.empty?
+		@io.puts "#{label(badge, background)} #{counts.compact.join(dim(' · '))}"
+		@io.puts "#{beside_label(badge)}#{dim(rate)}"
 	end
 
 	private def report_for_agents
