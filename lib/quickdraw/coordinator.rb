@@ -230,12 +230,15 @@ class Quickdraw::Coordinator
 	# of the same selection can be compared. `history_path` is nil to run without
 	# history. `only_keys` limits each file to the tests with those history keys
 	# (a Hash keyed by key), except files in `whole_files`, which run in full.
-	# `capture` and `leaks` are for workers (see Worker#initialize).
+	# `capture` and `leaks` are for workers (see Worker#initialize). A selection
+	# that isn't `repeatable` (such as --changed) picks different tests from run
+	# to run, so it isn't compared with the last.
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
-		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
+		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
 		capture: false, leaks: nil, retries: 0, allow_flaky: false
 	)
+		@repeatable = repeatable
 		@retries = retries
 		@pending_retries = []
 		@retries_started = 0
@@ -598,9 +601,10 @@ class Quickdraw::Coordinator
 
 	# From the last run of the same selection. --failed runs a different subset each time.
 	private def estimate
-		return if @only_keys || !@runs&.last_run
+		return if @only_keys || !@repeatable || !@runs&.last_run
 
-		Quickdraw::Reporters::Estimate.new(tests: @runs.last_run.tests, duration: @runs.last_run.duration)
+		last = @runs.last_run
+		Quickdraw::Reporters::Estimate.new(tests: last.tests, duration: last.duration, test_time: last.test_time)
 	end
 
 	# Returns [count, how it was chosen].

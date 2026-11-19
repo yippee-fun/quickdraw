@@ -16,7 +16,6 @@ class Quickdraw::Reporters::Human
 	BAR_WIDTH = 24
 	# Lines shown either side of a failing line.
 	CODE_FRAME_CONTEXT = 1
-	RULE_WIDTH = 72
 
 	def initialize(io: $stdout, backtrace: false, timings: false)
 		@io = io
@@ -93,13 +92,53 @@ class Quickdraw::Reporters::Human
 
 		print_coverage(outcome.coverage) if outcome.coverage
 
+		# The verdict and counts, with the details beneath them.
+		badge, width = verdict(outcome)
+		@detail_indent = " " * (width + 1)
 		@io.puts
-		@io.puts dim("─" * rule_width)
-		row "Tests", counts_line(outcome)
-		row "Run", "#{pluralize(@processes, 'worker')} (#{@worker_choice}) · seed #{@seed} · #{dim("#{Quickdraw::Reporters.command} --seed #{@seed}")}"
+		@io.puts "#{badge} #{counts_line(outcome)}"
+
+		# --failed reads history, so it's suggested only to runs that record it.
+		detail "↻ #{Quickdraw::Reporters.command} --failed" if @problems.any? && outcome.recorded && !outcome.interrupted
+		detail dim([
+			"#{pluralize(@processes, 'worker')} (#{@worker_choice})",
+			"seed #{@seed}",
+			"#{Quickdraw::Reporters.command} --seed #{@seed}",
+		].join(" · ")) + comparison(outcome).to_s
 		print_timing_summary(outcome.duration) unless outcome.interrupted
-		@io.puts
-		@io.puts status_line(outcome)
+	end
+
+	# The badge, and how many columns it takes.
+	private def verdict(outcome)
+		text, background = if outcome.interrupted then ["INTERRUPTED", 43]
+		elsif outcome.passed? then ["PASSED", 42]
+		else ["FAILED", 41]
+		end
+
+		[label(text, background), @color ? text.size + 2 : text.size]
+	end
+
+	# The tests' total time against the last run of the same tests, when it's a
+	# real difference. Total test time, unlike the run's, doesn't depend on how
+	# many workers ran or how long booting took.
+	private def comparison(outcome)
+		estimate = @estimate
+		return unless estimate && estimate.tests == outcome.tests && estimate.test_time > 0 && !outcome.interrupted
+
+		test_time = @timings.test_time
+		change = (test_time / estimate.test_time) - 1
+		return if change.abs < 0.1 || (test_time - estimate.test_time).abs < 0.05
+
+		if change.negative?
+			" #{dim('·')} #{green("tests #{percent(-change)} faster than the last run")}"
+		else
+			" #{dim('·')} #{yellow("tests #{percent(change)} slower than the last run")}"
+		end
+	end
+
+	# A line of the summary, under the counts.
+	private def detail(text)
+		@io.puts "#{@detail_indent}#{text}"
 	end
 
 	# Each count in the colour of what it means.
@@ -121,48 +160,26 @@ class Quickdraw::Reporters::Human
 		].compact.join(dim(" · "))
 	end
 
-	private def status_line(outcome)
-		if outcome.interrupted
-			label("INTERRUPTED", 43)
-		elsif outcome.passed?
-			label("PASSED", 42)
-		elsif @problems.any?
-			# --failed reads history, so the hint is for runs that record it.
-			rerun = dim(" · ↻ #{Quickdraw::Reporters.command} --failed") if outcome.recorded
-			"#{label('FAILED', 41)} #{pluralize(@problems.size, 'problem')}#{rerun}"
-		else
-			label("FAILED", 41)
-		end
-	end
-
-	# A labelled line of the summary, with the labels in a column.
-	private def row(label, text)
-		@io.puts "  #{dim(label.ljust(7))} #{text}"
-	end
-
-	private def rule_width
-		_rows, columns = terminal_size
-		columns ? [columns, RULE_WIDTH].min : RULE_WIDTH
-	end
-
+	# Shares that are too small to matter are left out.
 	private def print_timing_summary(elapsed)
 		return if @timings.count == 0
 
 		timings = @timings
 		utilization = timings.utilization(elapsed:, processes: @processes)
+		split = " (#{phase_breakdown(timings)})" if timings.setup_and_teardown_share >= 0.1 || timings.outside_phases_time / timings.count >= 0.001
 
-		row "Spent", dim([
-			"#{seconds(timings.test_time)} in tests: #{phase_breakdown(timings)}",
-			"waiting #{percent(timings.waiting_share)}",
-			"GC #{percent(timings.gc_share)}",
+		detail dim([
+			"#{seconds(timings.test_time)} of test time#{split}",
+			("#{percent(timings.waiting_share)} waiting" if timings.waiting_share >= 0.1),
+			("#{percent(timings.gc_share)} in GC" if timings.gc_share >= 0.05),
 			"#{delimit(timings.allocations_per_test)} allocations per test",
-			"workers running tests #{percent(utilization)}",
-		].join(" · "))
+			"workers busy #{percent(utilization)}",
+		].compact.join(" · "))
 
 		counts = timings.counts_per_test
 		unless counts.empty?
 			per_test = counts.map { |name, count, time| "#{format('%.1f', count)} #{name}#{" (#{seconds(time)})" if time > 0}" }
-			row "Counts", "#{per_test.join(dim(' · '))} #{dim('per test')}"
+			detail "#{per_test.join(dim(' · '))} #{dim('per test')}"
 		end
 
 		return if timings.test_time < HINT_THRESHOLD
@@ -193,8 +210,8 @@ class Quickdraw::Reporters::Human
 				"(booting, loading files or waiting for work)."
 		end
 
-		hints.each { |hint| @io.puts "#{yellow('!')} #{hint}" }
-		@io.puts "  #{dim('Run with --timings to see the slowest tests and files.')}" if hints.any? && !@show_timings
+		hints.each { |hint| detail "#{yellow('!')} #{hint}" }
+		detail dim("Run with --timings to see the slowest tests and files.") if hints.any? && !@show_timings
 	end
 
 	# Totals, then the lines most worth testing: changed ones first.

@@ -545,6 +545,7 @@ class Quickdraw::CLI
 			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
+			repeatable: !options[:changed],
 		).call
 	end
 

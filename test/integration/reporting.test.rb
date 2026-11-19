@@ -10,7 +10,19 @@ class ReportingTest < Quickdraw::Test
 
 		assert result.success?
 		match { result => { summary: /\A1 test · 1 assertion · / } }
-		assert_match result.output, /^  Run     1 worker \(manual\) · seed 7 · (bundle exec )?quickdraw --seed 7$/
+		assert_match result.output, /^       1 worker \(manual\) · seed 7 · (bundle exec )?quickdraw --seed 7$/
+	end
+
+	test "compares the tests' time with the last run of the same tests", timeout: 30 do
+		project = project("a.test.rb" => "class A < Quickdraw::Test; 2.times { |i| test(\"t\#{i}\") { sleep Float(ENV['NAP']); assert true } }; end\n")
+
+		project.run("-p", "1", env: { "NAP" => "0.05" })
+		slower = project.run("-p", "1", "--format", "human", env: { "NAP" => "0.2" })
+		faster = project.run("-p", "1", "--format", "human", env: { "NAP" => "0.05" })
+
+		assert_match slower.output, /tests \d+% slower than the last run$/
+		assert_match faster.output, /tests \d+% faster than the last run$/
+		refute_match project.run("-p", "1", "--format", "human", "--no-history", env: { "NAP" => "0.2" }).output, /than the last run/
 	end
 
 	test "reports failures with the failing line, then exits unsuccessfully", timeout: 20 do

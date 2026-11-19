@@ -149,6 +149,6 @@ class RailsTest < Quickdraw::Test
 			result.output
 		end
 
-		assert_match result.output, /^  Counts  2\.0 queries \(\d.*\) · 1\.0 factories \(\d/
+		assert_match result.output, /^ +2\.0 queries \(\d.*\) · 1\.0 factories \(\d/
 	end
 end

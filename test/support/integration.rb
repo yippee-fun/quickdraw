@@ -7,7 +7,7 @@ module Integration
 	ROOT = File.expand_path("../..", __dir__)
 	EXECUTABLE = File.join(ROOT, "exe", "quickdraw")
 
-	# `output` is stdout then stderr. `summary` is the "N tests · …" counts, from the summary’s Tests row. They're
+	# `output` is stdout then stderr. `summary` is the "N tests · …" counts, after the summary’s PASSED or FAILED. They're
 	# members, rather than methods, so pattern matching can use them.
 	Result = Data.define(:stdout, :stderr, :output, :summary, :status, :exit_status, :duration) do
 		def success? = status.success?
@@ -96,7 +96,7 @@ module Integration
 			Quickdraw::History.wait_for_writer(File.join(@directory, Quickdraw::CLI::HISTORY_PATH))
 			output = "#{stdout.force_encoding(Encoding::UTF_8)}#{stderr.force_encoding(Encoding::UTF_8)}"
 
-			Result.new(stdout:, stderr:, output:, summary: output[/^(?:  Tests +)?\K\d+ tests? ·.*$/], status:, exit_status: status.exitstatus, duration: now - started_at)
+			Result.new(stdout:, stderr:, output:, summary: output[/^(?:[A-Z]+ +)?\K\d+ tests? ·.*$/], status:, exit_status: status.exitstatus, duration: now - started_at)
 		ensure
 			stdout_reader&.close
 			stderr_reader&.close

@@ -60,7 +60,7 @@ class WatchTest < Quickdraw::Test
 
 		assert result.success?
 		assert_includes result.stdout, "Changed lib/calculator.rb, so running test/calculator.test.rb"
-		assert_match result.stdout, %r{Changed lib/calculator\.rb.*\n  Tests   1 test · 1 assertion}m
+		assert_match result.stdout, %r{Changed lib/calculator\.rb.*\n(?:PASSED|FAILED) 1 test · 1 assertion}m
 	end
 
 	test "keys run only failures, filter by name and path, and run everything again", timeout: 40 do
@@ -74,7 +74,7 @@ class WatchTest < Quickdraw::Test
 		)
 
 		assert result.success?
-		runs = result.stdout.scan(/^  Tests   \K\d+ tests? · .*$/)
+		runs = result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests? · .*$/)
 		assert_equal runs.map { |run| run[/\A\d+ tests?/] }, ["3 tests", "1 test", "3 tests", "1 test", "0 tests", "0 tests"]
 		assert_includes result.stdout, "Watching (failed) · Enter rerun"
 		assert_includes result.stdout, "Watching (name matches passes) · Enter rerun"
@@ -102,7 +102,7 @@ class WatchTest < Quickdraw::Test
 			end
 		end
 
-		assert_equal result.stdout.scan(/^  Tests   \K\d+ tests?/), ["2 tests", "1 test"]
+		assert_equal result.stdout.scan(/^(?:PASSED|FAILED) \K\d+ tests?/), ["2 tests", "1 test"]
 	end
 
 	test "f explains that it needs run history with --no-history", timeout: 40 do

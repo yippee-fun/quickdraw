@@ -25,7 +25,9 @@ module Quickdraw::Reporters
 	# unless another is asked for.
 	AGENT_VARIABLES = ["CLAUDECODE", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI", "AI_AGENT"].freeze
 
-	Estimate = Data.define(:tests, :duration)
+	# From the last run of the same tests: how many there were, how long the run
+	# took, and the total of their durations.
+	Estimate = Data.define(:tests, :duration, :test_time)
 
 	def self.agent?
 		AGENT_VARIABLES.any? { |name| ENV[name] && !ENV[name].empty? }
