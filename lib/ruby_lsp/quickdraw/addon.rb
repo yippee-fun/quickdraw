@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "ruby_lsp/addon"
+require_relative "../../quickdraw/version"
 
 module RubyLsp
 	module Quickdraw
@@ -15,9 +16,7 @@ module RubyLsp
 				"Quickdraw"
 			end
 
-			def version
-				"0.1.0"
-			end
+			def version = ::Quickdraw::VERSION
 		end
 
 		module NodeContextPatch

@@ -116,6 +116,7 @@ class ConcurrencyTest < Quickdraw::Test
 			"Quickdraw::Fuzz::Edges::INSTANCE_METHODS",
 			"Quickdraw::Fuzz::Edges::PRIVATE_INSTANCE_METHODS",
 			"Quickdraw::Inspector::DATA_TO_H",
+			"Quickdraw::Inspector::PUBLIC_SEND",
 			"Quickdraw::Inspector::STRUCT_EACH_PAIR",
 		]
 	end

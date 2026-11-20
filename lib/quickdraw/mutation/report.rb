@@ -205,8 +205,8 @@ class Quickdraw::Mutation::Report
 			end,
 			"uncovered_lines" => @uncovered.group_by { |mutant| relative(mutant.subject.path) }.transform_values { |list| list.map(&:line).uniq.sort },
 			"missing_methods" => @missing.map { |subject| { "path" => relative(subject.path), "line" => subject.line, "method" => subject.label } },
-			**({ "matrix" => matrix_json } if @matrix),
-			**({ "unique_kills" => unique_kills_json } if @not_unique),
+			**(@matrix ? { "matrix" => matrix_json } : {}),
+			**(@not_unique ? { "unique_kills" => unique_kills_json } : {}),
 		})
 	end
 

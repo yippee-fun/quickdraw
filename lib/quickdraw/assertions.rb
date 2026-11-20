@@ -322,6 +322,28 @@ module Quickdraw::Assertions
 		refute(nil == value) { "expected not to be nil" }
 	end
 
+	# What the block did, as a value to compare: Returned with what it
+	# returned, or Raised with the class and message of the error it raised,
+	# with object addresses in the message hidden, since they differ from run
+	# to run. So two ways of doing something can be compared, errors included:
+	# `assert_equal outcome { cached }, outcome { uncached }`.
+	def outcome
+		Quickdraw::Assertions::Returned.new(yield)
+	rescue StandardError, ScriptError => error
+		raised(error.class, error.message)
+	end
+
+	# The outcome of a block that raises `error` with `message`, to compare with.
+	def raised(error, message)
+		Quickdraw::Assertions::Raised.new(error, Quickdraw::Assertions.without_addresses(message))
+	end
+
+	Returned = Data.define(:value)
+	Raised = Data.define(:error, :message)
+
+	# Only addresses in inspected objects, as in #<Object:0x000…>, not other hex.
+	def self.without_addresses(message) = Quickdraw.utf8(message).gsub(/(#<[^\s:>]+:)0x\h+/) { "#{$1}0x" }
+
 	# Passes once the block returns something truthy, trying it again every
 	# `interval` seconds until `within` seconds have passed, for what another
 	# thread or process does, rather than sleeping for long enough.

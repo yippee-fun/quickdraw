@@ -6,7 +6,9 @@ module Quickdraw::Inspector
 	extend self
 
 	INDENT = "  "
-	DATA_TO_H = Data.instance_method(:to_h)
+	# Not on TruffleRuby, which defines to_h on each Data class rather than on Data.
+	DATA_TO_H = (Data.instance_method(:to_h) if Data.method_defined?(:to_h))
+	PUBLIC_SEND = Kernel.instance_method(:public_send)
 	STRUCT_EACH_PAIR = Struct.instance_method(:each_pair)
 
 	def pretty(value)
@@ -33,7 +35,8 @@ module Quickdraw::Inspector
 		# Through Data and Struct's own methods, since a member can be named to_h or each_pair.
 		in Data
 			nested(value, seen) do
-				fields = DATA_TO_H.bind_call(value).map { |name, item| "#{name}: #{format(item, depth + 1, seen)}" }
+				members = DATA_TO_H ? DATA_TO_H.bind_call(value) : value.class.members.to_h { |member| [member, PUBLIC_SEND.bind_call(value, member)] }
+				fields = members.map { |name, item| "#{name}: #{format(item, depth + 1, seen)}" }
 				container("#<data #{class_name(value)}", ">", fields, depth)
 			end
 		in Struct

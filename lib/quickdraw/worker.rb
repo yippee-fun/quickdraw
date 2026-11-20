@@ -313,7 +313,7 @@ class Quickdraw::Worker
 			"class_name" => (@class_names[definition.test_class] ||= definition.test_class.name&.then { |it| without_anonymous_modules(Quickdraw.utf8(it)) }),
 			# So the coordinator can kill a worker whose watchdog can't run.
 			"timeout" => (definition.timeout || Quickdraw::Config.timeout if @timeouts),
-			**({ "mutation" => false } unless definition.mutation),
+			**(definition.mutation ? {} : { "mutation" => false }),
 		}
 	end
 
