@@ -21,7 +21,7 @@ class Quickdraw::CLI
 
 		# A file or directory with a command's name is still run as tests.
 		case @args
-		in [("all" | "browser") => scope, *rest] if !File.exist?(scope) && !(@args in ["browser", "install", *])
+		in ["all" | "browser" => scope, *rest] if !File.exist?(scope) && !(@args in ["browser", "install", *])
 			@scope = scope
 			@args = rest
 		in [name, *] if !File.exist?(name) && (command = Quickdraw::Commands.find(name))

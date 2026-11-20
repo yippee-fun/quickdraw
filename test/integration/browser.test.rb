@@ -508,6 +508,8 @@ class BrowserTest < Quickdraw::Test
 	end
 
 	test "--failed reruns failing browser tests, and their rerun commands run them", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = mixed("", "test/browser/b.test.rb" => "class BTest < Quickdraw::Test; test('b') { assert false }; end\n")
 
 		failed = run_mixed(project, "browser", "--retry", "0", "--format", "human")
