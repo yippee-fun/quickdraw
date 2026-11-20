@@ -49,6 +49,19 @@ class Quickdraw::BasicTest
 		@block = block
 		@runner = runner
 		@deferred = nil
+		@contexts = nil
+		@raised_context = nil
+	end
+
+	# Shows what the block returns with each failure or error later in the
+	# test, such as a command's output: `context { result.output }`. The block
+	# is only called when there's one to show it with.
+	def context(&block)
+		raise ::ArgumentError, "context needs a block." unless block
+
+		(@contexts ||= []) << block
+
+		nil
 	end
 
 	# Stops the test and reports it as skipped, with an optional reason.
@@ -112,19 +125,55 @@ class Quickdraw::BasicTest
 			locations.find { |it| !it.path.start_with?(Quickdraw::LIB) } ||
 			locations.first
 
-		runner.failure!({
+		failure = {
 			"message" => Quickdraw.plain_string(yield),
 			"path" => location.path,
 			"line" => location.lineno,
-		})
+		}
+		failure["context"] = context_text if context?
+
+		runner.failure!(failure)
 
 		nil
 	end
 
 	def error!(error)
-		runner.error!(Quickdraw.serialize_error(error))
+		problem = Quickdraw.serialize_error(error)
+
+		if context?
+			# As it was when the test raised the error, if it did, since cleanup
+			# may remove what the context shows.
+			raised, text = @raised_context
+			problem["context"] = raised.equal?(error) ? text : context_text
+		end
+
+		runner.error!(problem)
 
 		nil
+	end
+
+	# Whether there's context to show with a problem: not for one inside a
+	# context block, in this fiber, which would show them again.
+	private def context? = @contexts && !Thread.current[:quickdraw_showing_context]
+
+	private def context_text
+		Thread.current[:quickdraw_showing_context] = true
+		@contexts.dup.map { |block| Quickdraw.utf8(Quickdraw.plain_string(context_of(block))) }.join("\n")
+	ensure
+		Thread.current[:quickdraw_showing_context] = nil
+	end
+
+	# A context block's text, or what it raised, even a skip, which would
+	# otherwise hide the failure it's shown with.
+	private def context_of(block)
+		case block.call
+		in String => text then text
+		in value then Quickdraw::Inspector.pretty(value)
+		end
+	rescue Quickdraw::Interrupted
+		raise
+	rescue Exception => error
+		"context { … } raised #{error.class}: #{error.message}"
 	end
 
 	# What records assertions: a property's case while one of this test's runs
@@ -155,6 +204,11 @@ class Quickdraw::BasicTest
 	private def run_test
 		@runner.measure("setup") { setup }
 		around_test { @runner.measure("test") { run_block } }
+	rescue Skip, Quickdraw::Interrupted
+		raise
+	rescue Exception => error
+		@raised_context = [error, context_text] if context?
+		raise
 	ensure
 		# Cleanup carries on after Ctrl-C, which then stops the worker.
 		interrupted = nil

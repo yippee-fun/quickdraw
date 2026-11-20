@@ -64,6 +64,20 @@ class Quickdraw::Reporters::Human
 		@path_width = [paths.map(&:size).max || 0, PATH_WIDTH].min
 		# As config may have said, tests print to the terminal, under which the status line would be lost.
 		@status_line.stop unless capture
+		# A downloaded CI log loses the job's name, so it says what it ran on.
+		@status_line.above { @io.puts dim(header) } if Quickdraw::Reporters.ci?
+	end
+
+	# "Ruby 3.4.7 (x86_64-linux) · 4 cores · 2 workers · seed 4130"
+	private def header
+		ruby = case RUBY_ENGINE
+			in "ruby" then "Ruby #{RUBY_VERSION} (#{RUBY_PLATFORM})"
+			in "jruby" then "JRuby #{JRUBY_VERSION} (Ruby #{RUBY_VERSION}, #{RUBY_PLATFORM})"
+			in "truffleruby" then "TruffleRuby #{RUBY_ENGINE_VERSION} (Ruby #{RUBY_VERSION}, #{RUBY_PLATFORM})"
+			else "#{RUBY_ENGINE} #{RUBY_ENGINE_VERSION} (Ruby #{RUBY_VERSION}, #{RUBY_PLATFORM})"
+		end
+
+		"#{ruby} · #{pluralize(Quickdraw::Platform.cpu_cores, 'core')} · #{pluralize(@processes, 'worker')} · seed #{@seed}"
 	end
 
 	def result(path, test, result)
@@ -189,7 +203,8 @@ class Quickdraw::Reporters::Human
 			@io.puts "  #{cyan("#{failure_path}:#{failure['line']}")}" unless failure_path == path
 			print_code_frame(failure_path, failure["line"])
 			@io.puts
-			@io.puts indent(clean(failure["message"]).chomp, 4)
+			@io.puts indent(fit(clean(failure["message"])).chomp, 4)
+			print_context(failure)
 		end
 
 		result["errors"].each { |error| print_error(error) }
@@ -197,7 +212,7 @@ class Quickdraw::Reporters::Human
 		if (output = result["output"])
 			@io.puts
 			@io.puts "  #{dim('Output')}"
-			@io.puts indent(clean(output).chomp, 4)
+			@io.puts indent(fit(clean(output)).chomp, 4)
 		end
 
 		if result["passed_on_retry"]
@@ -217,14 +232,12 @@ class Quickdraw::Reporters::Human
 
 	# The message, then the code where it was raised, then the rest of the backtrace.
 	private def print_error(error)
-		first_line, *rest = clean(error["message"]).lines(chomp: true)
+		first_line, rest = fit(clean(error["message"])).split(/\r?\n|\r/, 2)
 		@io.puts
 		@io.puts "  #{red("#{error['name']}:")} #{first_line}"
-		rest.each { |line| @io.puts "  #{line}" }
+		@io.puts indent(rest.chomp, 4) if rest
 
-		# Only the test's own frames: when Quickdraw raised, they say nothing more.
-		frames = error["backtrace"]
-		frames = frames.reject { |frame| frame.start_with?(LIBRARY) }.take_while { |frame| !frame.start_with?(EXECUTABLES) } unless @backtrace
+		frames = @backtrace ? error["backtrace"] : user_backtrace(error["backtrace"])
 		frames = frames.map { |frame| relative(frame.scrub) }
 
 		# The first frame of the project's own code, which a gem's error was raised from.
@@ -243,13 +256,25 @@ class Quickdraw::Reporters::Human
 
 		if frames.any?
 			@io.puts
+			@io.puts "  #{dim('Raised inside Quickdraw, whose frames are usually hidden (--backtrace shows them all):')}" if !@backtrace && raised_in_quickdraw?(error["backtrace"])
 			frames.each { |frame| @io.puts "  #{dim(frame)}" }
 		end
 
 		if (details = error["details"])
 			@io.puts
-			@io.puts indent(relative_paths(clean(details)), 4)
+			@io.puts indent(relative_paths(fit(clean(details))), 4)
 		end
+
+		print_context(error)
+	end
+
+	# What the test's `context` blocks showed, under the failure or error.
+	private def print_context(problem)
+		return unless (context = problem["context"])
+
+		@io.puts
+		@io.puts "    #{dim('Context')}"
+		@io.puts indent(fit(clean(context)).chomp, 6)
 	end
 
 	# The line, with the lines around it, numbered, and indented as little as
@@ -597,10 +622,6 @@ class Quickdraw::Reporters::Human
 
 	private def percent(ratio)
 		"#{(ratio * 100).round}%"
-	end
-
-	private def delimit(number)
-		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 	end
 
 	private def clean(text)

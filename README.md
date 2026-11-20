@@ -43,7 +43,8 @@ end
 ```
 
 - **Assertions:** `assert`, `refute`, `assert_equal`, `assert_includes`, `assert_match` (uses `===`, so regexes, ranges and classes work), `assert_in_delta`, `assert_operator`, `assert_raises`, `assert_same`, `assert_nil`, `assert_equivalent_html` and `assert_equivalent_ruby`, most with a `refute_` form. `assert_eventually(within: 1) { ready? }` waits for what another thread or process does, rather than sleeping long enough. `outcome { … }` is what a block returned or raised (its error's class and message, with object addresses hidden), so two ways of doing something can be compared, errors included: `assert_equal outcome { cached }, outcome { uncached }`, or `assert_equal outcome { parse("x") }, raised(ArgumentError, "bad input")`. `match { value => pattern }` asserts a pattern match. Failure messages are only built when a test fails, so detailed ones cost nothing.
-- **Diffs:** `assert_equal` diffs strings line by line, and hashes, arrays, sets, `Data`, structs and plain objects one element per line.
+- **Diffs:** `assert_equal` diffs strings line by line, and hashes, arrays, sets, `Data`, structs and plain objects one element per line. When `assert_includes` or `assert_match` (with a regex) fails on a string longer than 200 characters, the failure shows where it comes closest, with its line and column, 60 characters either side, and a caret where it first differs, then the whole string. `refute_includes` and `refute_match` show where it was found.
+- **Context:** `context { result.output }` shows what the block returns with any failure or error later in the test, under the heading Context (in JSON, the failure's or error's `context`), such as a command's output and exit status, when an assertion on its stdout fails. The block is only called when there's a failure to show it with, and if it raises, the error is shown instead.
 - **Groups of tests:** `describe` blocks nest, and their names join the test's name (`CalculatorTest › #divide › divides`). Each block is a subclass, so `setup` and helper methods work with `super`.
 - **Skipping:** `skip "needs a network"` stops a test and reports it as skipped. A `test` without a block is pending. A test with a block must make at least one assertion (a property counts as one, as do assertions made in threads it starts), or it fails, unless it skips.
 - **Cleanup:** `defer { … }` runs after the test, even if it fails, in reverse order. `tmpdir` gives a fresh directory that's removed afterwards.
@@ -190,13 +191,43 @@ Runs with `--no-history` aren't kept, so their agent report shows the first prob
 qd --format human --format junit:reports/junit.xml
 ```
 
-Under GitHub Actions, failures are annotated and a summary is written for the job.
+Under GitHub Actions, failures are annotated and a summary is written for the job (see CI).
+
+In a terminal, a line of a failure's message, context or output is cut to 500 characters, saying how many more there were. Anywhere else, such as a CI log or a file, it's shown in full (up to 100,000 characters), since that's read after the run. With `CI` set, the output counts as a CI log even on a terminal, starts with a line saying what it ran on (`Ruby 3.4.7 (x86_64-linux) · 4 cores · 2 workers · seed 4130`), and agents get all of a failing test's captured output (its last 64KB) rather than its last 20 lines.
+
+Backtraces leave out Quickdraw's own frames, unless an error has no others, as when Quickdraw raised it itself, when its first 10 are shown. `--backtrace` shows every frame.
 
 What a test prints, to stdout or stderr, from Ruby, a subprocess or a C extension writing to the file descriptor, is shown with its failure rather than as it's printed, so output from parallel tests can't interleave. Passing tests' output isn't shown. A test that crashes or hangs its worker still has its output shown. What config and test files print while loading shows as usual, above the live block. `--no-capture` turns off both capturing and the live block.
 
 `--no-capture` shows output as it's printed instead.
 
 Debuggers work in any run. When a test reaches `binding.irb`, `debugger`, `binding.break` or `binding.pry`, Quickdraw pauses its display and gives that worker the terminal, one debugger at a time, while other workers keep going. The test's timeout is paused, and Ctrl-C goes to the debugger.
+
+## CI
+
+Under GitHub Actions, each problem is an annotation on the line it failed on, and the job gets a summary. An annotation's message starts with the test's name and location, as in `UserTest › greets · test/user.test.rb:3`, with the rest indented under it, since raw logs (`gh run view --log`) show only the message.
+
+Logs cut long values short, so keep the run itself: `.quickdraw/last-run.jsonl` has each problem in full, with its message, backtrace, output and rerun command, and the run's arguments, seed, Ruby and platform. Each problem is written once it's final (after any retry), so a run that's killed or crashes keeps those it had. Upload it when the tests fail:
+
+```yaml
+- run: bundle exec qd
+- if: failure()
+  uses: actions/upload-artifact@v4
+  with:
+    name: quickdraw-${{ matrix.ruby-version }} # unique for each job
+    path: .quickdraw/last-run.jsonl
+    include-hidden-files: true # .quickdraw is hidden
+```
+
+Then download it and read it with the same commands as a local run:
+
+```sh
+gh run download RUN_ID --name quickdraw-3.4 --dir tmp/ci
+qd last --from tmp/ci/last-run.jsonl                         # the result, a line per problem
+qd last --from tmp/ci/last-run.jsonl test/cart.test.rb:12    # a problem in full
+```
+
+A file another version of Quickdraw kept differently says which version to read it with.
 
 ## Leaks
 
