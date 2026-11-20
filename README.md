@@ -203,7 +203,13 @@ Mutation score 90% · 18 killed · 2 survived
 20 mutants in 0.12s (167/s)
 ```
 
-- **Changes:** comparisons (`>` to `>=`, `==` to `!=`), arithmetic (`+` to `-`, `*` to `/`), `&&` to `||`, removing a `!`, negating a condition, `true` to `false`, a number to one more or to 0, methods such as `select` to `reject` or `first` to `last`, removing a statement, and replacing a method's body with `nil`. Only in methods, and not changes that can't make a difference, such as `x + 0` to `x - 0`.
+- **Changes:** only in methods.
+  - Conditions: negating one, or making it `true` or `false` (in `if`, `unless`, ternaries, loops and `in … if` guards); `a && b` to `a || b`, `a` or `b`; removing a `!`.
+  - Operators: comparisons (`>` to `>=`, `==` to `!=`), arithmetic (`+` to `-`, `*` to `/`, `+=` to `-=`), `..` to `...`, and `||=` to `=`.
+  - Literals: `true` to `false`, a number to one more or to 0, emptying a string, array or hash or dropping one of its elements or pairs, and a regexp to one that never matches.
+  - Calls: methods such as `select` to `reject`, `first` to `last`, `map` to `each` or `is_a?` to `instance_of?`; dropping a call that changes its receiver (`name.strip` to `name`), a block, an argument the method doesn't need, or `&.`'s check for nil; `fetch(key)` to `[key]`; `super(a)` and `super` to `super()`, and `yield(a)` to `yield`.
+  - Control flow: removing a statement, a `when` or `in` branch, a `return`, `next` or `break` value, or a modifier `rescue`; doing nothing in a `rescue` or `ensure`; and replacing a method's body with `nil`.
+  - Not changes that can't make a difference, such as `x + 0` to `x - 0`, `map` to `each` where the value isn't used, or dropping `to_s` in interpolation, and not changes that could only raise, such as removing an argument the method requires, or a block `tap` needs.
 - **Which tests:** the test files that run a file, from the last `qt --coverage` run, or else its counterpart by name. Those run once unchanged, tracing which lines of the changed methods each test runs, so each change runs only the tests that reach it, fastest first, and stops at the first failure. Tests that fail without changes don't count, and changes no test reaches aren't run, but are listed by line.
 - **Safely:** your files never change. Config boots once, and each change is made by redefining its method in a process forked for it, which exits when its tests finish. A change that makes tests run three times as long as they did (plus half a second) is taken to loop forever, and counts as noticed.
 - **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs.

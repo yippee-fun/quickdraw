@@ -56,7 +56,7 @@ class MutateTest < Quickdraw::Test
 		result = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => STRONG).run("mutate", "lib/pricing.rb", "--format", "agent")
 
 		assert result.success?
-		match { result => { stdout: /^MUTATION SCORE: 100% \(9 of 9 killed\)\. 9 mutants in [\d.]+s/ } }
+		match { result => { stdout: /^MUTATION SCORE: 100% \(11 of 11 killed\)\. 11 mutants in [\d.]+s/ } }
 		refute_includes result.stdout, "SURVIVED"
 	end
 
@@ -69,15 +69,43 @@ class MutateTest < Quickdraw::Test
 		match { result => { stdout: %r{^SURVIVED: lib/pricing.rb:6 Shop::Pricing#discount \(> → >=\)\. Tests that ran it and passed: (.+)\n- if total > 100\n\+ if total >= 100\n} } }
 		assert_equal $1.split(", ").sort, ["test/pricing.test.rb:4 PricingTest › discounts big orders", "test/pricing.test.rb:5 PricingTest › doesn't discount small orders"]
 		assert_includes result.stdout, "SURVIVED: lib/pricing.rb:6 Shop::Pricing#discount (100 → 101)"
-		match { result => { stdout: /^MUTATION SCORE: 66.7% \(6 of 9 killed, 3 survived\)/ } }
+		match { result => { stdout: /^MUTATION SCORE: 63.6% \(7 of 11 killed, 4 survived\)/ } }
 		assert_equal File.read(File.join(project.directory, "lib/pricing.rb")), PRICING
+	end
+
+	test "notices code the tests can do without, such as a call to strip", timeout: 30 do
+		greeter = <<~'RUBY'
+			module Greeter
+				def self.greet(name) = "Hello, #{name.strip}!"
+			end
+		RUBY
+		weak = <<~RUBY
+			require_relative "../lib/greeter"
+
+			class GreeterTest < Quickdraw::Test
+				test("greets") { assert_equal Greeter.greet("Ada"), "Hello, Ada!" }
+			end
+		RUBY
+		strong = weak.sub("\nend", "\n\ttest(\"trims\") { assert_equal Greeter.greet(\" Ada \"), \"Hello, Ada!\" }\nend")
+
+		project = project("lib/greeter.rb" => greeter, "test/greeter.test.rb" => weak)
+		result = project.run("mutate", "lib/greeter.rb", "--format", "agent")
+
+		assert_includes result.stdout, "SURVIVED: lib/greeter.rb:2 Greeter.greet (removed .strip). Tests that ran it and passed: test/greeter.test.rb:4 GreeterTest › greets\n- def self.greet(name) = \"Hello, \#{name.strip}!\"\n+ def self.greet(name) = \"Hello, \#{name}!\"\n"
+		assert_includes result.stdout, "MUTATION SCORE: 66.7% (2 of 3 killed, 1 survived)"
+
+		project.write("test/greeter.test.rb" => strong)
+		result = project.run("mutate", "lib/greeter.rb", "--format", "agent")
+
+		assert result.success?
+		assert_includes result.stdout, "MUTATION SCORE: 100% (3 of 3 killed)"
 	end
 
 	test "passes when the score reaches --threshold", timeout: 30 do
 		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => WEAK)
 
-		assert project.run("mutate", "lib/pricing.rb", "--threshold", "66").success?
-		assert_equal project.run("mutate", "lib/pricing.rb", "--threshold", "67").exit_status, 1
+		assert project.run("mutate", "lib/pricing.rb", "--threshold", "63").success?
+		assert_equal project.run("mutate", "lib/pricing.rb", "--threshold", "64").exit_status, 1
 	end
 
 	test "reports survivors for people, and as JSON", timeout: 30 do
@@ -85,17 +113,17 @@ class MutateTest < Quickdraw::Test
 		human = project.run("mutate", "lib/pricing.rb", "--format", "human")
 
 		assert_includes human.stdout, "SURVIVED > → >=  Shop::Pricing#discount · lib/pricing.rb:6\n\n    - if total > 100\n    + if total >= 100\n"
-		match { human => { stdout: /^FAILED 66.7% mutation score · 6 killed · 3 survived$/ } }
+		match { human => { stdout: /^FAILED 63.6% mutation score · 7 killed · 4 survived$/ } }
 
 		require "json"
 		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json").stdout, symbolize_names: true)
 
 		match do
 			report => {
-				score: 66.67,
-				killed: 6,
-				survived: 3,
-				survivors: [{ path: "lib/pricing.rb", line: 6, method: "Shop::Pricing#discount", description: "> → >=", tests: [_, _] }, *],
+				score: 63.64,
+				killed: 7,
+				survived: 4,
+				survivors: [{ path: "lib/pricing.rb", line: 6, method: "Shop::Pricing#discount", description: "condition → true", tests: [_, _] }, *],
 			}
 		end
 	end
@@ -172,7 +200,7 @@ class MutateTest < Quickdraw::Test
 
 		assert with_map.success?
 		assert_equal with_map.stderr, ""
-		assert_includes with_map.stdout, "MUTATION SCORE: 100% (9 of 9 killed)"
+		assert_includes with_map.stdout, "MUTATION SCORE: 100% (11 of 11 killed)"
 	end
 
 	test "skips mutants on lines no test runs, and tests that fail without mutations", timeout: 30 do
@@ -214,7 +242,7 @@ class MutateTest < Quickdraw::Test
 
 		# count += 0 never finishes.
 		assert result.success?
-		assert_includes result.stdout, "MUTATION SCORE: 100% (6 of 6 killed)"
+		assert_includes result.stdout, "MUTATION SCORE: 100% (7 of 7 killed)"
 	end
 
 	test "keeps a mutated method's visibility, and module functions' copies", timeout: 30 do
@@ -310,7 +338,7 @@ class MutateTest < Quickdraw::Test
 
 	test "mutates methods in files with another encoding", timeout: 30 do
 		result = project(
-			"lib/menu.rb" => "# encoding: iso-8859-1\n# frozen_string_literal: true\nmodule Menu\n\tdef self.item(hot) = hot ? \"caf\xE9\" : \"th\xE9\"\n\tdef self.acute?(word) = !word.ascii_only? && word.match?(/\\xE9/)\nend\n",
+			"lib/menu.rb" => "# encoding: iso-8859-1\n# frozen_string_literal: true\nmodule Menu\n\tdef self.item(hot) = hot ? \"caf\xE9\" : \"th\xE9\"\n\tdef self.acute?(word) = word.match?(/\\xE9/)\nend\n",
 			"test/menu.test.rb" => <<~RUBY,
 				require_relative "../lib/menu"
 				class MenuTest < Quickdraw::Test
@@ -324,7 +352,7 @@ class MutateTest < Quickdraw::Test
 		).run("mutate", "lib/menu.rb", "--format", "agent")
 
 		assert result.success?
-		assert_includes result.stdout, "MUTATION SCORE: 100% (5 of 5 killed)"
+		assert_includes result.stdout, "MUTATION SCORE: 100% (8 of 8 killed)"
 	end
 
 	test "fails, in every format, when a method is replaced before its tests run", timeout: 30 do
@@ -334,12 +362,12 @@ class MutateTest < Quickdraw::Test
 		)
 
 		agent = project.run("mutate", "lib/pricing.rb", "--format", "agent")
-		match { agent => { exit_status: 1, stdout: %r{^Couldn’t find Shop::Pricing#discount \(lib/pricing.rb:5\) once tests had loaded, so 9 mutants didn’t run\.$} } }
+		match { agent => { exit_status: 1, stdout: %r{^Couldn’t find Shop::Pricing#discount \(lib/pricing.rb:5\) once tests had loaded, so 11 mutants didn’t run\.$} } }
 
 		require "json"
 		json = project.run("mutate", "lib/pricing.rb", "--format", "json")
 		assert_equal json.exit_status, 1
-		match { JSON.parse(json.stdout, symbolize_names: true) => { missing: 9, missing_methods: [{ path: "lib/pricing.rb", line: 5, method: "Shop::Pricing#discount" }] } }
+		match { JSON.parse(json.stdout, symbolize_names: true) => { missing: 11, missing_methods: [{ path: "lib/pricing.rb", line: 5, method: "Shop::Pricing#discount" }] } }
 	end
 
 	test "fails when a test file that ran a mutant unmutated doesn't load in the worker running it", timeout: 30 do
@@ -381,7 +409,7 @@ class MutateTest < Quickdraw::Test
 		).run("mutate", "lib/pricing.rb", "--format", "agent")
 
 		assert result.success?
-		assert_includes result.stdout, "MUTATION SCORE: 100% (9 of 9 killed)"
+		assert_includes result.stdout, "MUTATION SCORE: 100% (11 of 11 killed)"
 	end
 
 	test "stops on Ctrl-C and reports what finished", timeout: 30 do
