@@ -571,6 +571,36 @@ class MutatorTest < Quickdraw::Test
 		]
 	end
 
+	test "a bare equivalence mark covers the mutants that end on its line" do
+		source = <<~RUBY
+			class Example
+				def call(a)
+					if a
+						a.strip # quickdraw:equivalent
+					end
+					@log.push(
+						a,
+					) # quickdraw:equivalent -- logging
+					a
+				end
+			end
+		RUBY
+
+		kept, equivalent = Quickdraw::Mutation::Marks.new("lib/example.rb", source).partition(mutants(source))
+
+		assert_equal kept.map { |mutant| [mutant.description, mutant.line] }, [
+			["replaced the body with nil", 3],
+			["removed the statement", 3],
+			["negated the condition", 3],
+			["condition → true", 3],
+		]
+
+		assert_equal equivalent.map { |mutant, reason| [mutant.description, mutant.line, reason] }, [
+			["removed .strip", 4, "no reason given"],
+			["removed the statement", 6, "logging"],
+		]
+	end
+
 	test "raises on a syntax error" do
 		assert_raises(SyntaxError) { mutants("class A; def b(; end") }
 	end

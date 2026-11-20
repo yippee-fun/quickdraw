@@ -107,9 +107,8 @@ module Quickdraw::Rails
 		@shared_pool_configs.each { |manager, role, shard, pool_config| manager.set_pool_config(role, shard, pool_config) }
 		@shared_pool_configs.clear
 
-		raise failure if failure
-
 		Fixtures.reload if committed
+		raise failure if failure
 	end
 
 	private def transact(pool)

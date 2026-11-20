@@ -65,6 +65,11 @@ class GeneratorsTest < Quickdraw::Test
 			assert samples(float(0.0..1e-18)).any? { |it| it > 0 && it < 1e-18 }
 		end
 
+		test "treats an infinite exclusive end as no end" do
+			assert_equal Quickdraw::Generators.float_bounds(0.0...Float::INFINITY), [0.0, nil]
+			assert_equal samples(float(0.0...Float::INFINITY)), samples(float(0.0..))
+		end
+
 		test "rejects ranges without finite floats" do
 			assert_raises(ArgumentError) { float(Float::INFINITY..) }
 			assert_raises(ArgumentError) { float(..-Float::INFINITY) }

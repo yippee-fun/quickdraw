@@ -256,14 +256,15 @@ class Quickdraw::Property
 			run = @execute.call(choices)
 
 			return false unless run&.failure && run.failure.signature == @signature
-			return false unless simpler?(run.choices, @best.choices)
+			return false unless Shrinker.simpler?(run.choices, @best.choices)
 
 			@best = run
 			@shrinks += 1
 			true
 		end
 
-		private def simpler?(choices, than)
+		# Shorter, or the same length and lexicographically smaller.
+		def self.simpler?(choices, than)
 			case choices.size <=> than.size
 			in -1 then true
 			in 0 then (choices <=> than) == -1

@@ -74,8 +74,9 @@ class Quickdraw::Mutation::Planner
 
 	private def given_sources
 		@targets.each_with_object({}) do |target, sources|
-			match = SPECIFICATION.match(target)
+			match = SPECIFICATION.match(target) or raise Error, "#{target} doesn’t exist."
 			path = match[:path].delete_prefix("#{Dir.pwd}/").delete_prefix("./")
+			path = "." if path.empty?
 
 			if File.directory?(path)
 				files = Dir.glob("**/*.rb", base: path).map { |file| File.join(path, file).delete_prefix("./") }
@@ -232,11 +233,9 @@ class Quickdraw::Mutation::Planner
 		covered = covered_sources([*test_files, Quickdraw::History::BOOT])
 		digest = -> (paths) { Digest::SHA256.hexdigest(paths.uniq.sort.map { |path| "#{path}\0#{digests[path]}" }.join("\0")) }
 
-		# Helpers beside the tests, such as test/support/, which coverage doesn't
-		# map, since it leaves out test directories.
-		helpers = test_files.map { |path| path.split("/").first }.uniq.flat_map do |directory|
-			File.directory?(directory) ? Dir.glob("#{directory}/**/*.rb").reject { |path| path.end_with?(Quickdraw::Commands::Counterpart::TEST_SUFFIX) } : []
-		end
+		# Helpers in test directories, such as test/support/, which coverage
+		# doesn't map. Not lib/ for colocated tests, or every source would count.
+		helpers = Dir.glob("{#{Quickdraw::Commands::Counterpart::TEST_DIRECTORIES.join(',')}}/**/*.rb").reject { |path| path.end_with?(Quickdraw::Commands::Counterpart::TEST_SUFFIX) }
 
 		# What a test file the coverage map doesn't have runs is unknown, so
 		# every source in the project, which any change invalidates.

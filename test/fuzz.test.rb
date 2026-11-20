@@ -102,6 +102,23 @@ class FuzzTest < Quickdraw::Test
 		end
 	end
 
+	test "keeps the simplest finding of each failure across workers" do
+		target = Quickdraw::Commands::Fuzz::Target.new("test/example.test.rb", {}, 0)
+		failure = Quickdraw::Property::Failure.new(failures: [], errors: [{ "name" => "RuntimeError", "backtrace" => ["lib/example.rb:1"] }])
+		finding = -> (choices) { Quickdraw::Fuzz::Finding.new(kind: "errored", key: "key", choices:, input: choices.inspect, original: nil, failure:, cases: 1, shrinks: 0) }
+
+		target.found(finding.([1, 2]))
+		target.found(finding.([3, 0]))
+		target.found(finding.([1, 2, 0]))
+		assert_equal target.findings.map(&:choices), [[1, 2]]
+
+		target.found(finding.([1, 1]))
+		assert_equal target.findings.map(&:choices), [[1, 1]]
+
+		target.found(finding.([9]))
+		assert_equal target.findings.map(&:choices), [[9]]
+	end
+
 	test "fuzz defines a test that checks its block with the generators" do
 		test_class = Class.new(Quickdraw::Test)
 		inputs = []

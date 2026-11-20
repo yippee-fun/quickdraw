@@ -34,8 +34,8 @@ class Quickdraw::Mutation::Runner
 
 	# Loads and runs every test in `paths` unmutated, tracing `subjects`, spread
 	# across the workers. Returns the Baselines, and the paths whose tests
-	# couldn't run because they failed to load, crashed their process or
-	# timed out.
+	# couldn't run because they failed to load, crashed their process, timed
+	# out or their worker exited.
 	def baseline(paths, subjects)
 		queue = Thread::Queue.new(paths).close
 
@@ -45,12 +45,12 @@ class Quickdraw::Mutation::Runner
 
 			while (path = queue.pop)
 				tests = slot.load(path)
-				traced, results = (run_baseline(slot, path, subjects) if tests)
-				next failed << path unless results
+				traced, test_results = (run_baseline(slot, path, subjects) if tests)
+				next failed << path unless test_results
 
 				@lock.synchronize { traced.each { |id| @traced[id] = true } }
 
-				results.each_with_index do |result, index|
+				test_results.each_with_index do |result, index|
 					test = tests.fetch(index)
 
 					baselines << Baseline.new(
@@ -68,15 +68,18 @@ class Quickdraw::Mutation::Runner
 
 			[baselines, failed]
 		rescue Quickdraw::WorkerPool::Gone
+			failed << path if path
 			[baselines, failed]
 		end
 
-		[results.flat_map(&:first), results.flat_map(&:last)]
+		# Those left when every worker exited.
+		remaining = Array.new(queue.size) { queue.pop }
+		[results.flat_map(&:first), results.flat_map(&:last) + remaining]
 	end
 
 	# Runs each Job, yielding it, its outcome (see #mutate) and, with
 	# `matrix`, its row, as it finishes. The outcome is ["lost"] if the
-	# worker running it exited.
+	# worker running it exited, or every worker had before it ran.
 	def call(jobs)
 		queue = Thread::Queue.new(jobs).close
 		finished = Thread::Queue.new
@@ -103,6 +106,7 @@ class Quickdraw::Mutation::Runner
 		end
 
 		threads.each(&:join)
+		queue.size.times { yield queue.pop, ["lost"], nil }
 	end
 
 	# The ids of the subjects traced, and each test's result, in order (see

@@ -499,6 +499,47 @@ class MutateTest < Quickdraw::Test
 		match { project.run("mutate", "--threshold", "lots") => { stderr: /--threshold needs a percentage/, exit_status: 2 } }
 		match { project.run("mutate", "missing.rb") => { stderr: /missing.rb doesn’t exist/, exit_status: 2 } }
 		match { project.run("mutate", "--frobnicate") => { stderr: /Unknown option --frobnicate/, exit_status: 2 } }
+		match { project.run("mutate", "") => { stderr: /\A doesn’t exist/, exit_status: 2 } }
+	end
+
+	test "reports mutants left when every worker exited as unfinished", timeout: 30 do
+		project = project(
+			"lib/pricing.rb" => PRICING,
+			"test/pricing.test.rb" => <<~RUBY,
+				require_relative "../lib/pricing"
+
+				class PricingTest < Quickdraw::Test
+					test("kills its worker when mutated") { Process.kill(:KILL, Process.ppid) unless Shop::Pricing.new.discount(200) == 20 }
+				end
+			RUBY
+		)
+
+		result = project.run("mutate", "lib/pricing.rb", "--processes", "1", "--format", "agent")
+
+		refute result.success?
+		assert_includes result.stdout, "10 mutants didn’t finish, since the worker running them exited."
+	end
+
+	test "counts test files left when the worker loading them exited as broken", timeout: 30 do
+		project = project(
+			"lib/pricing.rb" => PRICING,
+			"test/pricing.test.rb" => STRONG,
+			"test/dies.test.rb" => STRONG.sub("class PricingTest", "Process.kill(:KILL, Process.pid) if File.exist?(\"die\")\n\nclass DiesTest"),
+		)
+		assert project.run("--coverage").success?
+		project.write("die" => "")
+
+		result = project.run("mutate", "lib/pricing.rb", "--processes", "1", "--format", "agent")
+
+		refute result.success?
+		assert_match result.stderr, %r{test/dies\.test\.rb.* failed to load, crashed or timed out}
+	end
+
+	test "mutates the whole project given ./", timeout: 30 do
+		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => STRONG)
+
+		match { project.run("mutate", "./", "--format", "agent") => { stdout: /^MUTATION SCORE: 100% \(11 of 11 killed\)/ } }
+		match { project.run("mutate", "#{File.realpath(project.directory)}/", "--format", "agent") => { stdout: /^MUTATION SCORE: 100% \(11 of 11 killed\)/ } }
 	end
 
 	MATRIX = <<~RUBY
@@ -785,5 +826,19 @@ class MutateTest < Quickdraw::Test
 
 		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json").stdout, symbolize_names: true)
 		match { report => { cached: 11, killed: 11 } }
+	end
+
+	test "reuses outcomes when a source beside colocated tests that they don't run changes", timeout: 60 do
+		project = project(
+			"lib/pricing.rb" => PRICING,
+			"lib/other.rb" => "module Other\n\tdef self.double(n) = n * 2\nend\n",
+			"lib/pricing.test.rb" => WEAK.sub("../lib/pricing", "pricing"),
+		)
+		mutate = -> { project.run("mutate", "lib/pricing.rb", "--format", "agent").stdout[/^MUTATION SCORE: .*/] }
+		assert project.run("--coverage").success?
+
+		assert_match mutate.(), /\(7 of 11 killed, 4 survived\)\. 11 mutants in /
+		project.write("lib/other.rb" => "module Other\n\tdef self.double(n) = n + n\nend\n")
+		assert_match mutate.(), /All 11 mutants unchanged/
 	end
 end
