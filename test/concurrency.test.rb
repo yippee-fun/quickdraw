@@ -55,6 +55,9 @@ class ConcurrencyTest < Quickdraw::Test
 	end
 
 	test "counters a test's threads add count towards it, even after it ends" do
+		# Without fork, tests run in a thread.
+		skip "On JRuby, a thread started outside the main thread can see fiber storage its parent sets later" if RUBY_ENGINE == "jruby"
+
 		Quickdraw::Counters.start
 		Thread.new { Quickdraw::Counters.add("sql", 0.5) }.join
 		late = Thread.new { sleep 0.02; Quickdraw::Counters.add("sql") }

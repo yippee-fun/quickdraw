@@ -305,6 +305,11 @@ class Quickdraw::Worker
 	end
 
 	private def describe(definition)
+		if definition.timeout && !@timeouts && !@warned_about_timeouts
+			warn "Test timeouts need fork, which this platform doesn’t support, so they aren’t enforced."
+			@warned_about_timeouts = true
+		end
+
 		{
 			"description" => definition.description&.then { |it| without_anonymous_modules(Quickdraw.utf8(Quickdraw.plain_string(it))) },
 			"line" => definition.line,

@@ -8,7 +8,8 @@ class OutcomeTest < Quickdraw::Test
 
 	test "two blocks that raise the same error have the same outcome, whatever objects' addresses" do
 		assert_equal outcome { raise ArgumentError, "bad #{Object.new.inspect}" }, outcome { raise ArgumentError, "bad #{Object.new.inspect}" }
-		assert_equal outcome { Integer("x") }, raised(ArgumentError, 'invalid value for Integer(): "x"')
+		invalid = assert_raises(ArgumentError) { Integer("x") }
+		assert_equal outcome { Integer("x") }, raised(ArgumentError, invalid.message)
 		refute_equal outcome { raise ArgumentError, "a" }, outcome { raise TypeError, "a" }
 		refute_equal outcome { raise ArgumentError, "opcode 0xdead" }, outcome { raise ArgumentError, "opcode 0xbeef" }
 		assert_equal outcome { raise ArgumentError, "bad \xFF".b }, raised(ArgumentError, "bad �")

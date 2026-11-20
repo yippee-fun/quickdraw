@@ -23,6 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         ruby-version: ${{ fromJson(needs.ruby-versions.outputs.versions) }}
+    env:
+      BUNDLE_WITHOUT: development
 
     steps:
       - uses: actions/checkout@v3
@@ -31,7 +33,12 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby-version }}
           bundler-cache: true # runs 'bundle install' and caches installed gems automatically
-          bundler-args: --without development
+      # Only CRuby's bundle has Puma, which browser tests need.
+      - name: Install browsers
+        if: ${{ !startsWith(matrix.ruby-version, 'jruby') && !startsWith(matrix.ruby-version, 'truffleruby') }}
+        run: |
+          npx --yes "playwright@$(bundle exec ruby -rquickdraw -e 'print Quickdraw::Browser::Executables::PLAYWRIGHT_VERSION')" install-deps chromium firefox webkit
+          bundle exec qt browser install chromium firefox webkit
       - name: Quickdraw tests
         run: bundle exec qt
   rubocop:

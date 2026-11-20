@@ -18,6 +18,8 @@ class LeaksTest < Quickdraw::Test
 	def leaky = project("leaky.test.rb" => LEAKY)
 
 	test "warns about threads, child processes and ENV changes a test leaves behind", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		result = leaky.run("-p", "1", "--no-history", "--format", "human")
 
 		assert result.success?
@@ -31,6 +33,8 @@ class LeaksTest < Quickdraw::Test
 	end
 
 	test "reports a child process that exited without being waited for", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		result = project("zombie.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "agent")
 			class Zombie < Quickdraw::Test
 				test("forks") { fork { exit!(4) }; sleep 0.2; assert true }
@@ -43,6 +47,8 @@ class LeaksTest < Quickdraw::Test
 	end
 
 	test "leaves processes config started alone", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		result = project(
 			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.after_forking { $pid = spawn('true') } }\n",
 			"a.test.rb" => <<~RUBY,
@@ -58,6 +64,8 @@ class LeaksTest < Quickdraw::Test
 	end
 
 	test "--leaks fail makes a leak an error", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		result = leaky.run("-p", "1", "--no-history", "--leaks", "fail", "--format", "human")
 
 		refute result.success?
@@ -73,6 +81,8 @@ class LeaksTest < Quickdraw::Test
 	end
 
 	test "lists leaks in JSON events", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		require "json"
 		result = leaky.run("-p", "1", "--no-history", "--format", "json")
 		events = result.stdout.lines.map { |line| JSON.parse(line, symbolize_names: true) }
@@ -82,6 +92,8 @@ class LeaksTest < Quickdraw::Test
 	end
 
 	test "warns about a fiber scheduler or Ractor left running, a failure after a test, and a thread that died", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		project = project(
 			"concurrent.test.rb" => <<~RUBY,
 				class Concurrent < Quickdraw::Test

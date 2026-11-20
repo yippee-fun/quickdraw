@@ -23,7 +23,7 @@ class Quickdraw::CLI
 			exit(command.new(@args.drop(1)).call)
 		end
 
-		# Before parsing takes the options out, for the last run's report.
+		# For the last run's report.
 		@command_line = [Quickdraw::Reporters.command, *@args.map { |argument| argument.match?(%r{\A[\w./:=@%+,-]+\z}) ? argument : argument.inspect }].join(" ")
 
 		# optparse, etc and anything else needed to parse options load in a
@@ -78,7 +78,7 @@ class Quickdraw::CLI
 		parser = option_parser(options)
 
 		begin
-			parser.parse!(@args)
+			operands = parser.parse(@args)
 		rescue OptionParser::ParseError => error
 			usage_error(*explain(parser, error))
 		end
@@ -164,7 +164,7 @@ class Quickdraw::CLI
 		usage_error "--flakes is for a single run, so it can’t be used with --watch." if options[:flakes_path] && options[:watch]
 
 		if options[:changed]
-			usage_error "--changed chooses the test files, so it can’t be used with paths." if @args.any?
+			usage_error "--changed chooses the test files, so it can’t be used with paths." if operands.any?
 			usage_error "--changed can’t be used with --watch, which runs the tests for each change." if options[:watch]
 			usage_error "--changed can’t be used with --failed, which chooses the tests too." if options[:failed]
 		end
@@ -186,6 +186,12 @@ class Quickdraw::CLI
 			usage_error "--leaks fail needs fork, which this platform doesn’t support."
 		end
 
+		usage_error "--processes must be at least 1." if options[:processes]&.< 1
+
+		if !Quickdraw::Platform.supports_forking? && (options[:max] || options[:efficiency] || options[:processes]&.>(1))
+			warn "More than one worker needs fork, which this platform doesn’t support, so tests run in one."
+		end
+
 		# nil lets the coordinator tune the count from run history.
 		options[:processes] = if !Quickdraw::Platform.supports_forking?
 			1
@@ -196,8 +202,6 @@ class Quickdraw::CLI
 		else
 			options[:processes]
 		end
-
-		usage_error "--processes must be at least 1." if options[:processes]&.< 1
 
 		options[:cores] = Quickdraw::Platform.supports_forking? ? Quickdraw::Platform.non_blocking_cores : 1
 		# Tests that mostly wait can use more workers than cores; beyond this the
@@ -215,7 +219,7 @@ class Quickdraw::CLI
 		options[:patterns] = []
 		options[:lines] = {}
 
-		@args.each do |argument|
+		operands.each do |argument|
 			path, *lines = split_lines(argument)
 			usage_error(*missing_path(path)) if test_files([path]).empty?
 			options[:patterns] << path
@@ -568,7 +572,17 @@ class Quickdraw::CLI
 			by_path[File.expand_path(path)] = options[:lines][File.realpath(path)] if options[:lines].key?(File.realpath(path))
 		end
 
-		reporter = reporter(options)
+		terminal = $stdout
+
+		# Without fork, tests print in this process, so what they print goes to
+		# stderr here, as loaders send it there with fork.
+		if machine_readable?(options) && !Quickdraw::Platform.supports_forking?
+			terminal = $stdout.dup
+			terminal.sync = true
+			$stdout.reopen($stderr)
+		end
+
+		reporter = reporter(options, terminal)
 
 		Quickdraw::Coordinator.new(
 			files:,
@@ -622,15 +636,18 @@ class Quickdraw::CLI
 		options[:outputs].any? { |format, path| path.nil? && MACHINE_FORMATS.include?(format) }
 	end
 
-	private def reporter(options)
+	private def reporter(options, terminal)
 		# First, so it's saved before the agent format, which points to it, finishes.
 		last_run = Quickdraw::Reporters::LastRun.new(command: @command_line, backtrace: options[:backtrace]) if options[:history]
 
+		# A status line, which what tests print would garble unless it's captured, which needs fork.
+		live = options[:capture] != false && Quickdraw::Platform.supports_forking?
+
 		reporters = options[:outputs].map do |format, path|
-			io = path ? File.open(path, "w") : $stdout
+			io = path ? File.open(path, "w") : terminal
 
 			case format
-			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live: options[:capture] != false)
+			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live:)
 			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace], kept: (-> { last_run.saved? } if last_run))
 			in "json" then Quickdraw::Reporters::JSON.new(io:)
 			in "junit" then Quickdraw::Reporters::JUnit.new(io:)

@@ -134,7 +134,7 @@ class Quickdraw::Coordinator
 	# A loader process, the pipe to send it commands, the pipe it reports on
 	# once booted (see Loader#initialize), and its unused channels. `group` is
 	# the group whose tests its workers run, or nil for tests in none. Without
-	# fork, the loader is a thread, with no pid, commands or report.
+	# fork, the loader is a thread, with no pid or commands.
 	class LoaderProcess
 		def initialize(group:, pid:, control:, report:, channels:)
 			@group = group
@@ -393,10 +393,9 @@ class Quickdraw::Coordinator
 
 		# Group loaders fork from this process, so they start before run history
 		# (sqlite3) loads, once the first loader says which groups there are.
-		report = @forking ? first_report(interrupt_reader) : [:booted, [], nil]
+		report = first_report(interrupt_reader)
 		groups, settings = case report
 		in [:booted, groups, _coverage, settings] then [groups, settings]
-		in [:booted, groups, *] then [groups, {}]
 		else [[], {}]
 		end
 		# Before the group loaders start, so they get what config set too.
@@ -484,7 +483,7 @@ class Quickdraw::Coordinator
 		@outcome.interrupted = @interrupted
 		@outcome.coverage = @coverage
 		# An interrupted run isn't saved (see #save_history).
-		@outcome.recorded = !@history.nil? && !@interrupted
+		@outcome.recorded = !@history.nil? && @history.recordable? && !@interrupted
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
 		@outcome.files = @display_paths.size
@@ -572,15 +571,15 @@ class Quickdraw::Coordinator
 		return session if session
 
 		coordinator_channels, worker_channels = Array.new(capacity) { Quickdraw::Channel.pair }.transpose
+		report, report_writer = IO.pipe
 
 		unless @forking
 			# Without fork, tests share this process, so leaks can't be told apart.
-			Quickdraw::Loader.new(worker_channels, @test_files, @seed, profile: @profile, leaks: :off).call_in_thread
-			return LoaderProcess.new(group:, pid: nil, control: nil, report: nil, channels: coordinator_channels)
+			Quickdraw::Loader.new(worker_channels, @test_files, @seed, profile: @profile, leaks: :off, report: report_writer).call_in_thread
+			return LoaderProcess.new(group:, pid: nil, control: nil, report:, channels: coordinator_channels)
 		end
 
 		control, control_writer = IO.pipe
-		report, report_writer = IO.pipe
 
 		pid = Quickdraw::Loader.start(
 			worker_channels, @test_files, @seed,
@@ -662,6 +661,10 @@ class Quickdraw::Coordinator
 		@elastic_allowed = settings.fetch(:elastic, false) if @elastic_allowed.nil?
 		@configured_processes = settings[:processes] unless @processes
 		@processes ||= @configured_processes
+
+		if !@forking && (@retry_count || settings[:retries])&.positive?
+			warn "Retries need fork, which this platform doesn’t support, so failures aren’t retried."
+		end
 
 		if !@forking && @leaks.nil? && settings[:leaks] == :fail
 			warn "config.leaks = :fail needs fork, which this platform doesn’t support, so leaks aren’t checked."

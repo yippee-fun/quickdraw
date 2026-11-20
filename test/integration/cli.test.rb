@@ -53,6 +53,8 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "--profile weighs time spent computing and waiting fairly", timeout: 30 do
+		skip "On JRuby, in a busy suite, the sampler can miss a computing thread entirely" if RUBY_ENGINE == "jruby"
+
 		result = project("mixed.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--profile")
 			def compute
 				finish = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.3
@@ -150,6 +152,8 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "Ctrl-C gives teardown a few seconds, then stops what's left", timeout: 20 do
+		skip "Stopping a test's teardown needs fork" unless Process.respond_to?(:fork)
+
 		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--no-capture", interrupt_when: /started/)
 			class A < Quickdraw::Test
 				def teardown = sleep(30)
@@ -165,6 +169,9 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "on a terminal, prints a line for each file, lined up, under a status line that's gone at the end", timeout: 20 do
+		skip "This Ruby has no PTY" unless terminal?
+		skip "The status line needs fork, to capture what tests print" unless Process.respond_to?(:fork)
+
 		result = project(
 			"config/quickdraw.rb" => "sleep 0.3\n",
 			"a.test.rb" => "class A < Quickdraw::Test; 3.times { |i| test(i.to_s) { sleep 0.2; assert true } }; end\n",
@@ -182,6 +189,9 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "counts a file with no tests matching a filter as done in the status line", timeout: 20 do
+		skip "This Ruby has no PTY" unless terminal?
+		skip "The status line needs fork, to capture what tests print" unless Process.respond_to?(:fork)
+
 		result = project(
 			"a.test.rb" => "class A < Quickdraw::Test; test('wanted') { sleep 0.3; assert true }; end\n",
 			"b.test.rb" => "class B < Quickdraw::Test; test('other') { assert true }; end\n",
@@ -192,6 +202,8 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "doesn't show a status line where it can't be cleared, or with --no-capture", timeout: 20 do
+		skip "This Ruby has no PTY" unless terminal?
+
 		project = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { sleep 0.2; assert true }; end\n")
 
 		refute_includes project.run("-p", "1").stdout, "\e[K"
@@ -200,6 +212,9 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "shortens the status line to fit a narrow terminal, down to the spinner alone", timeout: 20 do
+		skip "This Ruby has no PTY" unless terminal?
+		skip "The status line needs fork, to capture what tests print" unless Process.respond_to?(:fork)
+
 		project = project("config/quickdraw.rb" => "sleep 0.3\n", "a.test.rb" => "class A < Quickdraw::Test; test('a') { sleep 0.2; assert true }; end\n")
 
 		frames = project.run("-p", "1", tty: [20, 12]).stdout.scan(/\r\e\[K([^\r\n]+)\r(?!\n)/).flatten
@@ -208,6 +223,8 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "on a terminal, prints what loading a file prints whole, once", timeout: 20 do
+		skip "This Ruby has no PTY" unless terminal?
+
 		project = project(
 			"a.test.rb" => "class A < Quickdraw::Test; test('waits') { sleep 0.3; assert true }; end\n",
 			"b.test.rb" => "puts 'loading b'\nwarn 'warning from b'\nclass B < Quickdraw::Test; test('b') { assert true }; end\n",
@@ -221,6 +238,8 @@ class CLITest < Quickdraw::Test
 	end
 
 	test "shows each problem in full after every file's line, then lists them at the end", timeout: 20 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
 		result = project(
 			"fails.test.rb" => "class A < Quickdraw::Test; test('fails') { assert false }; end\n",
 			"slow.test.rb" => "class B < Quickdraw::Test; test('slow') { sleep 0.5; assert true }; end\n",

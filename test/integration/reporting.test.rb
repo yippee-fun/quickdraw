@@ -16,10 +16,19 @@ class ReportingTest < Quickdraw::Test
 		failed = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert false }; end\n").run("-p", "1", "--seed", "7")
 
 		refute failed.success?
-		assert_match failed.output, /^  Rerun failures  (bundle exec )?quickdraw --failed\n  Same order      (bundle exec )?quickdraw --seed 7$/
+
+		if bundled?("sqlite3")
+			assert_match failed.output, /^  Rerun failures  (bundle exec )?quickdraw --failed\n  Same order      (bundle exec )?quickdraw --seed 7$/
+		else
+			# Without run history, --failed has nothing to rerun.
+			refute_includes failed.output, "--failed"
+			assert_match failed.output, /^  Same order  (bundle exec )?quickdraw --seed 7$/
+		end
 	end
 
 	test "compares the tests' time with the last run of the same tests with --timings", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project("a.test.rb" => "class A < Quickdraw::Test; 2.times { |i| test(\"t\#{i}\") { sleep Float(ENV['NAP']); assert true } }; end\n")
 
 		project.run("-p", "1", env: { "NAP" => "0.05" })
@@ -145,6 +154,8 @@ class ReportingTest < Quickdraw::Test
 	end
 
 	test "--failed doesn't rerun skipped or pending tests", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project("a.test.rb" => <<~RUBY)
 			class A < Quickdraw::Test
 				test "to write later"

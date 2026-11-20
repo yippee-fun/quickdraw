@@ -31,6 +31,16 @@ class Quickdraw::HistoryProcess
 		history_channel.close
 	end
 
+	# Without fork, whether sqlite3, which records the run in this process, loads.
+	def recordable?
+		return true if @channel
+
+		require "sqlite3"
+		true
+	rescue LoadError
+		false
+	end
+
 	# For processes forked from the coordinator, which mustn't hold its pipe open.
 	def disconnect
 		@channel&.close

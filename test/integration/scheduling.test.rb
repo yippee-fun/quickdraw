@@ -6,6 +6,8 @@ class SchedulingTest < Quickdraw::Test
 	include Integration
 
 	test "runs tests that history knows are slow first", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project("slow.test.rb" => <<~RUBY)
 			class Slow < Quickdraw::Test
 				10.times { |i| test("fast \#{i}") { puts "ran fast"; assert true } }
@@ -22,6 +24,9 @@ class SchedulingTest < Quickdraw::Test
 	end
 
 	test "starts slow tests on separate workers before loading other files", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
 		project = project(
 			"slow.test.rb" => "class Slow < Quickdraw::Test; 3.times { |i| test(\"slow \#{i}\") { puts \"started slow\"; sleep 0.3; assert true } }; end\n",
 			**(1..12).to_h { |i| ["fast#{i}.test.rb", "puts 'loaded fast'\nclass Fast#{i} < Quickdraw::Test; test('fast') { assert true }; end\n"] },

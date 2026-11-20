@@ -27,6 +27,8 @@ class OutputTest < Quickdraw::Test
 	)
 
 	test "shows what a failing test printed with its failure, and hides what passing tests print", timeout: 20 do
+		skip "Capturing what tests print needs fork" unless Process.respond_to?(:fork)
+
 		result = noisy.run("-p", "1", "--no-history", "--format", "human")
 
 		refute result.success?
@@ -45,6 +47,8 @@ class OutputTest < Quickdraw::Test
 	end
 
 	test "shows the end of a failing test's output for agents", timeout: 20 do
+		skip "Capturing what tests print needs fork" unless Process.respond_to?(:fork)
+
 		result = project("long.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "agent")
 			class Long < Quickdraw::Test
 				test("prints a lot") { 30.times { |i| puts "line \#{i}" }; assert false }
@@ -56,6 +60,8 @@ class OutputTest < Quickdraw::Test
 	end
 
 	test "keeps only the end of very long output", timeout: 20 do
+		skip "Capturing what tests print needs fork" unless Process.respond_to?(:fork)
+
 		result = project("huge.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "human")
 			class Huge < Quickdraw::Test
 				test("prints a lot") { $stdout.write("x" * 100_000); puts "the end"; assert false }
@@ -68,6 +74,8 @@ class OutputTest < Quickdraw::Test
 	end
 
 	test "shows what a test printed before it crashed or hung", timeout: 20 do
+		skip "Replacing crashed workers needs fork" unless Process.respond_to?(:fork)
+
 		result = project("crash.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "human")
 			class Crash < Quickdraw::Test
 				test("crashes") { puts "before crashing"; exit!(3) }
@@ -82,6 +90,8 @@ class OutputTest < Quickdraw::Test
 	end
 
 	test "Ctrl-C shows what the interrupted test printed", timeout: 20 do
+		skip "Capturing what tests print needs fork" unless Process.respond_to?(:fork)
+
 		# A copy of stdout from before capture starts, to say when to press Ctrl-C.
 		result = project(
 			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.after_forking { $terminal = STDOUT.dup } }\n",
@@ -99,6 +109,8 @@ class OutputTest < Quickdraw::Test
 	end
 
 	test "Ctrl-C shows what the interrupted test printed even if its teardown has to be stopped", timeout: 20 do
+		skip "Stopping a test's teardown needs fork" unless Process.respond_to?(:fork)
+
 		result = project(
 			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.after_forking { $terminal = STDOUT.dup } }\n",
 			"a.test.rb" => <<~RUBY,

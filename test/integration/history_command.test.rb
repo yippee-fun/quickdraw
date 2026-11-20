@@ -32,6 +32,8 @@ class HistoryCommandTest < Quickdraw::Test
 	end
 
 	test "leaves a history from another version of Quickdraw alone", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		require "sqlite3"
 		project = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n")
 		project.run("-p", "1")
@@ -48,6 +50,9 @@ class HistoryCommandTest < Quickdraw::Test
 	end
 
 	test "lists recent runs and the slowest tests", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
 		project = project(
 			"a.test.rb" => <<~RUBY,
 				class A < Quickdraw::Test
@@ -70,6 +75,8 @@ class HistoryCommandTest < Quickdraw::Test
 	end
 
 	test "lists tests that passed and failed on the same code as flaky", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project(
 			"a.test.rb" => <<~RUBY,
 				class A < Quickdraw::Test
@@ -90,6 +97,8 @@ class HistoryCommandTest < Quickdraw::Test
 	end
 
 	test "doesn't count a test that failed on one commit and passed on the next as flaky", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project(
 			"a.test.rb" => <<~RUBY,
 				class A < Quickdraw::Test
@@ -111,6 +120,8 @@ class HistoryCommandTest < Quickdraw::Test
 	end
 
 	test "doesn't count a test that failed, then passed after an uncommitted change, as flaky", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		test_file = <<~RUBY
 			class A < Quickdraw::Test
 				test("fixed") { refute ENV["QUICKDRAW_FIXTURE_FAIL"] }

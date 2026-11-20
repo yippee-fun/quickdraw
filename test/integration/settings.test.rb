@@ -10,6 +10,8 @@ class SettingsTest < Quickdraw::Test
 	end
 
 	test "config sets leak checks, which the command line overrides", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		project = configured(["leaks = :off"], "leaky.test.rb" => "class Leaky < Quickdraw::Test\n\ttest('sets ENV') { ENV['LEAKY'] = '1'; assert true }\nend\n")
 
 		refute_includes project.run("-p", "1", "--no-history").output, "left state behind"
@@ -17,6 +19,8 @@ class SettingsTest < Quickdraw::Test
 	end
 
 	test "config sets retries and allowing flaky tests, which the command line overrides", timeout: 30 do
+		skip "Retries need fork" unless Process.respond_to?(:fork)
+
 		flaky = "class Flaky < Quickdraw::Test\n\ttest('fails once') { File.write('runs', 'x', mode: 'a'); assert File.read('runs').size > 1 }\nend\n"
 		project = configured(["retries = 0"], "flaky.test.rb" => flaky)
 

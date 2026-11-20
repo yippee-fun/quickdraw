@@ -6,6 +6,8 @@ class IsolationTest < Quickdraw::Test
 	include Integration
 
 	test "doesn't load Quickdraw's own dependencies into tests", timeout: 20 do
+		skip "Keeping Quickdraw's dependencies out of tests needs fork" unless Process.respond_to?(:fork)
+
 		result = project("leak.test.rb" => <<~RUBY).run("-p", "2", "leak.test.rb")
 			class Leak < Quickdraw::Test
 				{

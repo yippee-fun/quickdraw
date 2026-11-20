@@ -41,6 +41,8 @@ class FuzzTest < Quickdraw::Test
 
 	describe "Edges" do
 		test "tells cases that take different paths through the project's own methods apart" do
+			skip "Edge tracing needs CRuby's TracePoint, and fuzz needs fork anyway" unless RUBY_ENGINE == "ruby"
+
 			root, example = load_example
 			edges = Quickdraw::Fuzz::Edges.new(root)
 			# Not the test helper's, nor attr_reader's, which has no code.
@@ -58,6 +60,8 @@ class FuzzTest < Quickdraw::Test
 		end
 
 		test "counts how often an edge runs, in buckets" do
+			skip "Edge tracing needs CRuby's TracePoint, and fuzz needs fork anyway" unless RUBY_ENGINE == "ruby"
+
 			root, example = load_example
 			edges = Quickdraw::Fuzz::Edges.new(root)
 			edges.trace
