@@ -3,7 +3,7 @@
 # Mutants' outcomes from earlier runs, so `quickdraw mutate` runs again only
 # those whose method, tests, or the code their tests run have changed. Each
 # is keyed by a hash of the mutant's id and what its outcome depends on (see
-# Mutate#fingerprints), and kept in PATH as JSON, with paths relative to the
+# Planner#fingerprints), and kept in PATH as JSON, with paths relative to the
 # project, so a cache restored in CI at another path still works.
 class Quickdraw::Mutation::Cache
 	PATH = ".quickdraw/mutants.json"

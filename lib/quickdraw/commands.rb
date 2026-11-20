@@ -74,6 +74,10 @@ module Quickdraw::Commands
 			"#{bold(description || "line #{line}")}  #{dim([class_name, "#{path}:#{line}"].compact.join(' · '))}"
 		end
 
+		private def list(items)
+			items.first(3).join(", ") + ((items.size > 3) ? " and #{items.size - 3} more" : "")
+		end
+
 		private def ago(elapsed)
 			elapsed = elapsed.clamp(0..)
 
