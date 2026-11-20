@@ -63,6 +63,8 @@ class DebuggerTest < Quickdraw::Test
 				lines = (sessions == 0 && first) ? first.dup : answers.dup
 				sessions += 1
 				from = output.rindex(debugger[:session])
+				# What was typed into the last session was echoed before this one began.
+				typed = nil
 			end
 
 			if typed
