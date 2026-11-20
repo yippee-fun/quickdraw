@@ -197,11 +197,18 @@ class Quickdraw::Commands::Doctor
 		database&.close
 	end
 
+	# Whether --watch gets file events from the OS, or has to poll for them.
 	private def watching
-		require "listen"
-		Check.new(:ok, "Watch", "listen is installed, for --watch", nil)
-	rescue LoadError
-		Check.new(:warning, "Watch", "listen isn’t installed, so --watch won’t work", "Add the listen gem.")
+		file_watcher = Quickdraw::Watch.start_file_watcher([])
+
+		case file_watcher.gets
+		in "ready\n" then Check.new(:ok, "Watch", "File events come from the OS, for --watch", nil)
+		in String => warning then Check.new(:warning, "Watch", warning.chomp, nil)
+		in nil then Check.new(:warning, "Watch", "The file watcher doesn’t start, so --watch won’t work", nil)
+		end
+	ensure
+		Process.kill("TERM", file_watcher.pid)
+		file_watcher.close
 	end
 
 	private def ignored_history

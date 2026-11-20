@@ -34,7 +34,6 @@ Gem::Specification.new do |spec|
 	# guide at: https://bundler.io/guides/creating_gem.html
 	spec.metadata["rubygems_mfa_required"] = "true"
 
-	spec.add_dependency "listen", "~> 3.10"
 	spec.add_dependency "phlex", "~> 2.4"
 	spec.add_dependency "sqlite3", ">= 1.6"
 end
