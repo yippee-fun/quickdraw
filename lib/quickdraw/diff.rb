@@ -5,7 +5,7 @@ module Quickdraw
 		MAX_MATCHES = 1_000_000
 
 		# Above a diff of expected (old) against actual (new) text.
-		LEGEND = "\e[32m- Expected\e[0m  \e[31m+ Actual\e[0m"
+		LEGEND = "\e[31m- Expected\e[0m  \e[32m+ Actual\e[0m"
 
 		class << self
 			# Computes a diff between two strings.
@@ -239,9 +239,9 @@ module Quickdraw
 					when :equal
 						lines << "  #{content}"
 					when :delete
-						lines << "\e[32m- #{content}\e[0m"
+						lines << "\e[31m- #{content}\e[0m"
 					when :insert
-						lines << "\e[31m+ #{content}\e[0m"
+						lines << "\e[32m+ #{content}\e[0m"
 					end
 				end
 

@@ -96,7 +96,7 @@ class Quickdraw::Mutation::Report
 			mutant = job.mutant
 			@io.puts "#{label('SURVIVED', 43)} #{bold(mutant.description)}  #{dim("#{mutant.subject.label} · #{relative(mutant.subject.path)}:#{mutant.line} · #{@keys.fetch(mutant.id)}")}"
 			@io.puts
-			snippet(mutant).each { |line| @io.puts "    #{line.start_with?('-') ? green(line) : red(line)}" }
+			snippet(mutant).each { |line| @io.puts "    #{line.start_with?('-') ? red(line) : green(line)}" }
 			@io.puts
 			@io.puts "  #{dim("#{pluralize(job.tests.size, 'test')} ran it and passed: #{tests(job)}")}"
 			@io.puts
