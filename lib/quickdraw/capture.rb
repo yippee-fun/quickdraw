@@ -94,10 +94,10 @@ class Quickdraw::Capture
 	# from processes that inherited it.
 	private def create_file
 		name = "quickdraw-output-#{Process.pid}-#{Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)}"
-		directories = [ENV["TMPDIR"], "/tmp", "/var/tmp", Dir.pwd].compact.reject(&:empty?)
+		directories = [Quickdraw.temporary_directory, "/tmp", "/var/tmp", Dir.pwd].uniq
 
 		directories.each_with_index do |directory, index|
-			path = File.join(File.expand_path(directory), name)
+			path = File.join(directory, name)
 			return [path, File.new(path, File::RDWR | File::CREAT | File::EXCL | File::APPEND, 0o600)]
 		rescue SystemCallError
 			raise if index == directories.size - 1

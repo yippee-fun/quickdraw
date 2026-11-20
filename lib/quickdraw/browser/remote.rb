@@ -79,7 +79,9 @@ class Quickdraw::Browser::Remote < BasicObject
 		end
 	end
 
-	def respond_to_missing?(name, _private = false) = !CONVERSIONS.include?(name)
+	def respond_to?(name, _private = false) = !CONVERSIONS.include?(name.to_sym)
+
+	def nil? = false
 
 	# The bridge's reference to this object: its handle, and the calls on it.
 	def __reference__

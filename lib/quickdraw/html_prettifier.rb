@@ -25,6 +25,7 @@ module Quickdraw::HTMLPrettifier
 		"meta",
 		"source",
 		"track",
+		"wbr",
 	].freeze
 
 	# JRuby's Nokogiri has no HTML5 parser.
@@ -47,14 +48,15 @@ module Quickdraw::HTMLPrettifier
 		indent = "  " * depth
 
 		case node
-		when Nokogiri::HTML4::DocumentFragment
+		in Nokogiri::HTML4::DocumentFragment
 			map_children(node, depth)
-		when Nokogiri::XML::Element
+		in Nokogiri::XML::Element
 			attributes = node.attribute_nodes.sort_by(&:name).map { |attr| prettify_node(attr) }.join
 			opening_tag = "#{indent}<#{node.name}#{attributes}>"
 
 			if VOID_ELEMENTS.include?(node.name)
-				opening_tag
+				# HTML4's parser puts what follows a void element it doesn't know, such as wbr, in it.
+				[opening_tag, map_children(node, depth)].compact.join("\n")
 			else
 				[
 					opening_tag,
@@ -62,17 +64,17 @@ module Quickdraw::HTMLPrettifier
 					"#{indent}</#{node.name}>",
 				].freeze.compact.join("\n")
 			end
-		when Nokogiri::XML::Text
+		in Nokogiri::XML::Text
 			text = node.text.strip
 			"#{indent}#{text}" if text.length > 0
-		when Nokogiri::XML::Attr
+		in Nokogiri::XML::Comment
+			"#{indent}<!--#{node.content}-->"
+		in Nokogiri::XML::Attr
 			if node.value == ""
 				" #{node.name}"
 			else
 				%( #{node.name}="#{node.value}")
 			end
-		else
-			raise ArgumentError.new("Unexpected node type: #{node.class}")
 		end
 	end
 

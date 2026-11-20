@@ -194,6 +194,8 @@ class BrowserTest < Quickdraw::Test
 						test("sleeps") do
 							visit "/"
 							sleep 0.01
+							tries = 0
+							assert_eventually { (tries += 1) > 2 }
 							assert_text "Goodbye", timeout: 0.1
 						end
 					end
@@ -201,6 +203,7 @@ class BrowserTest < Quickdraw::Test
 
 				refute result.success?
 				assert_includes result.output, "test/browser/page.test.rb:6: a browser test slept."
+				assert_equal result.output.scan("a browser test slept").size, 1
 				assert_match result.output, /^   Per test  .* · 1\.0 pages \(.*\) · 1\.0 sleeps \(/
 			end
 		end
@@ -253,10 +256,18 @@ class BrowserTest < Quickdraw::Test
 					visit "/"
 					assert_text "Ready to go"
 					assert_text(/^Ready$/, within: "p")
+					refute_text(/does not exist/, within: "p")
 					assert_selector "button", text: "sign up"
-					refute_selector "button", text: "sign out"
+					refute_selector "button", text: /sign out/i
 					assert_equal page.evaluate("(data) => data.user_id", { "user_id" => 1 }), 1
 					assert_equal page.evaluate("async()=>42"), 42
+					assert_equal page.locator("li").first.evaluate("(el) => el.textContent"), "Ada"
+					assert_equal page.__send__(:$eval, "li", "(el) => el.textContent"), "Ada"
+					assert_equal page.evaluate("(async () => 7)()"), 7
+					assert_equal page.evaluate("(() => { console.log('ignored'); return 7 })()"), 7
+					assert_equal page.evaluate("(async () => { new Promise((done) => setTimeout(done, 10)); return 1 })()"), 1
+					assert page.respond_to?(:goto)
+					refute page.nil?
 					page.get_by_role("button", name: "Ask").click
 					assert_text "Dismissed"
 				end

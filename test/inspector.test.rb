@@ -84,4 +84,13 @@ class InspectorTest < Quickdraw::Test
 		assert_includes message, "-     3,\n+     2,"
 		refute_includes message, "a: 1,\n-"
 	end
+
+	test "formats BasicObject subclasses via inspect without calling method" do
+		proxy = Class.new(BasicObject) do
+			def inspect = "#<Proxy>"
+			def method_missing(name, *) = ::Kernel.raise("unexpected #{name}")
+		end.new
+
+		assert_equal pretty(proxy), "#<Proxy>"
+	end
 end

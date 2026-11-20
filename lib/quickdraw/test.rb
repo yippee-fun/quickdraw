@@ -10,13 +10,13 @@ class Quickdraw::Test < Quickdraw::BasicTest
 	# Defines a test that checks the block with values from the generators, as
 	# `check` does, and that `quickdraw fuzz` fuzzes for longer, guided by the
 	# code it reaches.
-	def self.fuzz(*arguments, cases: 100, timeout: nil, &block)
+	def self.fuzz(*arguments, cases: 100, timeout: nil, mutation: true, &block)
 		description = arguments.shift unless Quickdraw::Generator === arguments.first
 		raise ::ArgumentError, "fuzz needs a generator, as in fuzz(\"parses anything\", bytes) { |input| … }." if arguments.empty?
 		raise ::ArgumentError, "fuzz needs a block." unless block
 
 		(@fuzz_targets ||= {}.compare_by_identity)[block] = [arguments, cases]
-		test(description, timeout:, &block)
+		test(description, timeout:, mutation:, &block)
 	end
 
 	# The generators and case count of the test that fuzz defined with `block`, if it did.
@@ -79,7 +79,7 @@ class Quickdraw::Test < Quickdraw::BasicTest
 	# path, since on some systems the temporary directory is behind a symlink, and
 	# a test may change directory before cleanup.
 	def tmpdir
-		path = File.join(File.expand_path(ENV.fetch("TMPDIR", "/tmp")), "quickdraw-#{Process.pid}-#{rand(2 ** 64).to_s(36)}")
+		path = File.join(Quickdraw.temporary_directory, "quickdraw-#{Process.pid}-#{Random.urandom(8).unpack1('H*')}")
 		Dir.mkdir(path)
 		path = File.realpath(path)
 		defer { Quickdraw.remove_tree(path) }

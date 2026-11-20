@@ -521,7 +521,7 @@ class Quickdraw::Coordinator
 		@outcome.workers_added = @workers_added_at.size
 		@outcome.worker_time = (@processes * @outcome.duration) + @workers_added_at.sum { |added_at| finished_at - added_at }
 		# Before the report, which says where it is.
-		@coverage&.write
+		write_coverage if @coverage
 		write_timeline if @timeline
 		@reporter.finish(@outcome)
 
@@ -537,6 +537,12 @@ class Quickdraw::Coordinator
 	end
 
 	# With a format other programs read, to stderr.
+	private def write_coverage
+		@coverage.write
+	rescue SystemCallError => error
+		warn "Quickdraw couldn’t write the coverage reports (#{error.message})."
+	end
+
 	private def write_timeline
 		@timeline.finish
 
@@ -1052,7 +1058,7 @@ class Quickdraw::Coordinator
 
 	# A partial run would mislead worker tuning, so an interrupted one isn't saved.
 	private def save_history(started_at, passed)
-		return if !@history || @interrupted
+		return if !@history || !@history.recordable? || @interrupted
 
 		run = {
 			started_at:,

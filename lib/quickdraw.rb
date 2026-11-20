@@ -147,6 +147,13 @@ module Quickdraw
 		nil
 	end
 
+	# TMPDIR, if it's a writable directory, or /tmp. Not Dir.tmpdir, whose
+	# library loaders and tests would inherit.
+	def self.temporary_directory
+		directory = ENV.fetch("TMPDIR", "")
+		(File.directory?(directory) && File.writable?(directory)) ? File.expand_path(directory) : "/tmp"
+	end
+
 	# 64-bit FNV-1a. Unlike String#hash, it's the same in every process and run.
 	def self.stable_hash(string)
 		string.each_byte.reduce(0xcbf29ce484222325) do |hash, byte|

@@ -38,11 +38,8 @@ class Quickdraw::CLI
 		# Forks keep the timeslice; processes that tests start shouldn't get it.
 		ENV.delete("RUBY_THREAD_TIMESLICE") if options[:profile]
 
-		# Before any loader starts, so every process knows where to look. Not
-		# Dir.tmpdir, whose library loaders would inherit.
-		temporary = ENV.fetch("TMPDIR", "")
-		temporary = "/tmp" unless File.directory?(temporary) && File.writable?(temporary)
-		ENV[Quickdraw::Debugger::FLAG] = File.join(temporary, "quickdraw-debugging-#{Process.pid}")
+		# Before any loader starts, so every process knows where to look.
+		ENV[Quickdraw::Debugger::FLAG] = File.join(Quickdraw.temporary_directory, "quickdraw-debugging-#{Process.pid}")
 
 		if options[:watch]
 			watch(options)
