@@ -1,38 +1,30 @@
 # frozen_string_literal: true
 
-# Watch mode's file watcher, which runs in a process of its own (see
-# Watch#start_file_watcher), so Fiddle never loads where tests run. It watches
-# the working directory, with FSEvents on macOS and inotify on Linux, or by
-# polling elsewhere, and prints "ready", then each batch of changed files on a
-# line, relative to the directory and separated by NUL. A directory stands for
-# everything in it, when the watcher can't tell which files changed. Any line
-# before "ready" is a warning for people.
+# Runs in its own process (see Watch.start_file_watcher), so Fiddle never
+# loads where tests run. Prints any warnings, then "ready", then a line per
+# batch of changed paths, relative and separated by NUL. A directory stands
+# for everything in it.
 module Quickdraw::FileWatcher
 	extend self
 
-	# Changes until none come for QUIET seconds, up to BATCH_LIMIT seconds
-	# after the first, make one batch, such as an editor's atomic save or a git
-	# checkout.
+	# A batch ends after QUIET seconds without changes, or BATCH_LIMIT seconds.
 	QUIET = 0.02
 	BATCH_LIMIT = 0.5
-
-	# How often to check that Quickdraw is still running, in seconds.
 	ORPHAN_CHECK = 1
 
-	# Directories that are big, or that tools and tests write to, and never
-	# hold what tests load.
-	SKIPPED = %r{\A(?:\.quickdraw|tmp|log|vendor|coverage)/|(?:\A|/)(?:\.git|node_modules)/}
+	SKIPPED = %r{\A(?:\.quickdraw|\.bundle|bundle|tmp|log|vendor|coverage)/|(?:\A|/)(?:\.git|\.svn|\.hg|\.rbx|node_modules)/}
 
-	# Files under `root` that changing doesn't report: those in SKIPPED, and
-	# `paths`, which are relative. Directories end with a slash.
+	# Editors' and tools' scratch files, as listen ignored them.
+	SCRATCH = /
+		\A(?:\#.+\#|\.\#.+|4913|sed(?=[a-zA-Z0-9]{0,5}[A-Z])[a-zA-Z0-9]{6})\z
+		| (?:\..*\d+\.new|\.kate-swp|\.goutputstream-.{6}|___jb_(?:bak|old)___|\.swpx|\.sw[px]|\.mutagen-temporary.*|\.DS_Store|\.tmp|~)\z
+	/x
+
+	# Directories end with a slash.
 	Ignores = Data.define(:paths) do
-		def ===(path) = SKIPPED.match?(path) || paths.include?(path)
+		def ===(path) = SKIPPED.match?(path) || SCRATCH.match?(File.basename(path)) || paths.include?(path)
 	end
 
-	# `ignored` are paths relative to the working directory, such as reports.
-	# QUICKDRAW_POLL polls even where native events are available. If native
-	# events stop being available, it polls from then on, says why on stderr,
-	# and reports the root, since it can't tell what it missed.
 	def run(ignored)
 		trap("TERM", "SYSTEM_DEFAULT")
 		$stdout.sync = true
@@ -52,14 +44,13 @@ module Quickdraw::FileWatcher
 			end
 		rescue Unavailable => error
 			watcher = poll(root, ignores, error.message, $stderr)
+			# What changed meanwhile is unknown.
 			puts "."
 		end
 	rescue Errno::EPIPE
 		nil
 	end
 
-	# Changes that arrive within ORPHAN_CHECK seconds, and those that follow
-	# them until a quiet moment.
 	private def batch(watcher)
 		changes = watcher.wait(ORPHAN_CHECK)
 		return changes if changes.empty?
@@ -76,9 +67,8 @@ module Quickdraw::FileWatcher
 		changes
 	end
 
-	# Yields the path relative to `root` and the File::Stat of everything in
-	# `directory` (relative too, or nil for `root`) and below it that isn't
-	# ignored, without following symlinks. What disappears meanwhile is skipped.
+	# Yields each relative path and File::Stat under `directory` (or `root`)
+	# that isn't ignored, without following symlinks.
 	def each_entry(root, ignores, directory = nil, &block)
 		Dir.each_child(directory ? File.join(root, directory) : root) do |name|
 			relative = directory ? "#{directory}/#{name}" : name
@@ -125,6 +115,5 @@ module Quickdraw::FileWatcher
 
 	private def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-	# Native events can't be had, so the watcher polls instead.
 	class Unavailable < StandardError; end
 end

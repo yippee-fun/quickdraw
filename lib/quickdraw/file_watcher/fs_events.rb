@@ -2,8 +2,6 @@
 
 require "fiddle/import"
 
-# Reports files under `root` as macOS changes them. FSEvents watches the whole
-# tree without reading it first, and its file events name each file changed.
 class Quickdraw::FileWatcher::FSEvents
 	module CoreServices
 		extend Fiddle::Importer
@@ -41,7 +39,7 @@ class Quickdraw::FileWatcher::FSEvents
 		@prefix = "#{root}/"
 		@ignores = ignores
 		@changes = []
-		# Kept, since FSEvents calls it for as long as the process runs.
+		# Referenced for as long as FSEvents may call it, or it's freed.
 		@callback = Fiddle::Closure::BlockCaller.new(Fiddle::TYPE_VOID, [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP]) do |_stream, _info, count, paths, flags, _ids|
 			record(count, paths, flags)
 		end
@@ -51,14 +49,13 @@ class Quickdraw::FileWatcher::FSEvents
 		stream = CoreServices.FSEventStreamCreate(nil, @callback, nil, paths, SINCE_NOW, LATENCY, NO_DEFER | FILE_EVENTS)
 		raise Quickdraw::FileWatcher::Unavailable, "FSEvents couldn’t watch #{root}" if stream.null?
 
+		# On this thread's run loop, not a dispatch queue: Fiddle closures can
+		# only be called from Ruby threads.
 		@mode = CoreServices.constant("kCFRunLoopDefaultMode").ptr
 		CoreServices.FSEventStreamScheduleWithRunLoop(stream, CoreServices.CFRunLoopGetCurrent, @mode)
 		raise Quickdraw::FileWatcher::Unavailable, "FSEvents couldn’t start" if CoreServices.FSEventStreamStart(stream) == 0
 	end
 
-	# Waits up to `timeout` seconds, or forever if nil, for changes, and
-	# returns those since the last call. FSEvents calls back on this thread,
-	# from within the run loop.
 	def wait(timeout)
 		CoreServices.CFRunLoopRunInMode(@mode, timeout || FOREVER, 1) if @changes.empty?
 		@changes.slice!(0..)
@@ -69,40 +66,28 @@ class Quickdraw::FileWatcher::FSEvents
 		flags = flags[0, count * 4].unpack("L*")
 
 		addresses.zip(flags) do |address, flag|
-			next unless reported?(flag)
-
 			path = Fiddle::Pointer.new(address).to_s.force_encoding(Encoding::UTF_8)
 			relative = (path == @prefix.chomp("/")) ? "." : path.delete_prefix(@prefix)
 
-			if flag.nobits?(DIRECTORY | MUST_SCAN_SUBDIRECTORIES)
+			if flag.anybits?(MUST_SCAN_SUBDIRECTORIES)
+				@changes.push(relative, *files_in(relative, path)) unless @ignores === "#{relative}/"
+			elsif flag.anybits?(DIRECTORY)
+				next if flag.nobits?(RENAMED) || @ignores === "#{relative}/"
+
+				# Files in a renamed directory have no events of their own.
+				files = files_in(relative, path)
+				@changes.concat(files.empty? ? [relative] : files)
+			elsif flag.anybits?(CHANGED)
 				@changes << relative unless @ignores === relative
-			elsif !(@ignores === "#{relative}/")
-				@changes.concat(changes_in(relative, path))
 			end
 		end
 	end
 
-	# For a directory renamed, or under which FSEvents dropped events: the files
-	# in it, which have no events of their own, or the directory if it's gone,
-	# empty, or the root.
-	private def changes_in(directory, path)
+	private def files_in(directory, path)
+		return [] if directory == "." || !File.directory?(path)
+
 		files = []
-
-		if File.directory?(path) && directory != "."
-			Quickdraw::FileWatcher.each_entry(@prefix, @ignores, directory) { |file, stat| files << file unless stat.directory? }
-		end
-
-		files.empty? ? [directory] : files
-	end
-
-	# Directories only when renamed, or when FSEvents dropped events under them.
-	private def reported?(flag)
-		if flag.anybits?(MUST_SCAN_SUBDIRECTORIES)
-			true
-		elsif flag.anybits?(DIRECTORY)
-			flag.anybits?(RENAMED)
-		else
-			flag.anybits?(CHANGED)
-		end
+		Quickdraw::FileWatcher.each_entry(@prefix, @ignores, directory) { |file, stat| files << file unless stat.directory? }
+		files
 	end
 end

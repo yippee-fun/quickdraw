@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-# Reports files under `root` that appear, disappear or change, by comparing
-# what File.lstat says of each every INTERVAL seconds.
 class Quickdraw::FileWatcher::Polling
 	INTERVAL = 0.5
 
@@ -12,8 +10,6 @@ class Quickdraw::FileWatcher::Polling
 		@next_scan = now + INTERVAL
 	end
 
-	# Waits up to `timeout` seconds, or forever if nil, for changes, and
-	# returns those since the last call.
 	def wait(timeout)
 		delay = @next_scan - now
 

@@ -88,6 +88,12 @@ class Quickdraw::WarmLoaders
 		end
 	end
 
+	# Whether `changed` (absolute) has one of `files`, or a directory holding
+	# one, which FileWatcher reports when the directory moves.
+	def self.touched?(files, changed)
+		changed.any? { |path| files.include?(path) || files.any? { |file| file.start_with?("#{path}/") } }
+	end
+
 	# `coverage` and `test_output_to_stderr` are as for Loader#initialize, and
 	# the same for every run.
 	def initialize(coverage:, test_output_to_stderr:)
@@ -109,7 +115,7 @@ class Quickdraw::WarmLoaders
 		everything = changed.any? { |path| REBOOT.match?(path) }
 
 		stale = @loaders.select do |_group, loader|
-			everything || !loader.waiter.alive? || (loader.gemfile && paths.intersect?(bundle_files(loader.gemfile)))
+			everything || !loader.waiter.alive? || (loader.gemfile && self.class.touched?(bundle_files(loader.gemfile), paths))
 		end
 
 		stale.each_key { |group| restart(group) }
