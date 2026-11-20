@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
-require "nokogiri"
+begin
+	require "nokogiri"
+rescue LoadError => error
+	# Not if it's installed but couldn't load, which says why itself.
+	raise unless error.path == "nokogiri"
+
+	raise LoadError, "assert_equivalent_html needs nokogiri, to compare HTML, which isn’t installed. Add it to the Gemfile’s test group."
+end
 
 module Quickdraw::HTMLPrettifier
 	extend self

@@ -29,6 +29,8 @@ class Quickdraw::Coordinator
 
 	# How long the coordinator waits for a message before checking on workers anyway.
 	POLL_INTERVAL = 0.1
+	# History::Records sent to the history process at a time, as the run goes.
+	HISTORY_BATCH = 500
 
 	# How long past a test's timeout to wait for its watchdog before killing it.
 	TIMEOUT_GRACE = 5
@@ -406,14 +408,14 @@ class Quickdraw::Coordinator
 			end
 
 			readable&.each do |io|
-				if (worker = @workers[io])
-					handle(worker, worker.channel.read)
-				elsif @leaving.key?(io)
-					# Its pipe closing means it has exited.
-					case @leaving[io].first.channel.read
-					in [:coverage, coverage] then @coverage.add(coverage)
-					in nil then left(io)
-					else nil
+				if (worker = @workers[io] || @leaving[io]&.first)
+					# Handling one can retire the worker, so it's looked up for each.
+					worker.channel.read_available.each do |message|
+						if @workers.key?(io)
+							handle(worker, message)
+						elsif @leaving.key?(io)
+							leaving(io, message)
+						end
 					end
 				elsif (loader = @loaders.each_value.find { |it| it.report.equal?(io) })
 					reported(loader, loader.read_report)
@@ -702,9 +704,13 @@ class Quickdraw::Coordinator
 	end
 
 	# Interruptible, since a loader can be slow to exit (an at_exit hook, say).
+	# Checking often at first, since loaders usually exit within a few milliseconds.
 	private def wait_for_loaders(interrupt_reader)
+		delay = 0.0005
+
 		until @interrupted || @loaders.each_value.all? { |loader| loader.pid.nil? || loader.status }
-			interrupt_reader.wait_readable(0.01)
+			interrupt_reader.wait_readable(delay)
+			delay = [delay * 2, 0.01].min
 		end
 	end
 
@@ -768,6 +774,15 @@ class Quickdraw::Coordinator
 	# Workers that died without closing their pipes, because a process they or
 	# the loader forked still holds them open. Workers that haven't reported a
 	# pid yet are only known dead if the loader has died too.
+	# Its pipe closing means it has exited.
+	private def leaving(io, message)
+		case message
+		in [:coverage, coverage] then @coverage.add(coverage)
+		in nil then left(io)
+		else nil
+		end
+	end
+
 	private def check_liveness
 		# A loader that exited may not have reported, and a process its config
 		# started can hold the report's pipe open.
@@ -954,6 +969,7 @@ class Quickdraw::Coordinator
 
 	private def handle(worker, message)
 		worker.received_message
+		message = [:result, message[1], Quickdraw::Worker.result(message[2])] if message in [:result, *]
 		@timeline&.received(worker, message)
 
 		case message
@@ -1114,9 +1130,11 @@ class Quickdraw::Coordinator
 	ALLOCATIONS = Quickdraw::STATS.index("allocations")
 
 	# Workers send nanosecond integers, which are much cheaper to send than floats.
+	# In place, since it's for every result.
 	private def to_seconds(result)
 		result["duration"] /= 1e9
-		result["stats"] = result["stats"].each_with_index.map { |value, index| (index == ALLOCATIONS) ? value : value / 1e9 }
+		stats = result["stats"]
+		stats.each_index { |index| stats[index] /= 1e9 unless index == ALLOCATIONS }
 	end
 
 	private def report(file, index, result, (process, slot, sequence))
@@ -1128,7 +1146,7 @@ class Quickdraw::Coordinator
 		@stopping = true if @fail_fast && failed?(result)
 
 		if @history
-			@records << Quickdraw::History::Record.new(
+			@records << Quickdraw::History::Record.from(
 				key: file.keys[index],
 				path: file.display_path,
 				test: file.tests[index],
@@ -1137,6 +1155,11 @@ class Quickdraw::Coordinator
 				slot:,
 				sequence:,
 			)
+
+			if @records.size >= HISTORY_BATCH
+				@history.add(@records)
+				@records = []
+			end
 		end
 	end
 

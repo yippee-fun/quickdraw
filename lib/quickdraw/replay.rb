@@ -80,7 +80,7 @@ class Quickdraw::Replay
 
 			case expect(:result)
 			in [:result, _index, result]
-				statuses << Quickdraw::Outcome.status(result)
+				statuses << Quickdraw::Outcome.status(Quickdraw::Worker.result(result))
 				expect(:ready)
 			in nil
 				break statuses << "crashed"

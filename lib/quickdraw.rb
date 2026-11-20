@@ -104,16 +104,24 @@ module Quickdraw
 		@loading = @test_files = @tests = nil
 	end
 
+	# Frames looked through first for the file being required (see .register).
+	NEAR_FRAMES = 16
+
 	def self.register(test)
 		raise "Tests can only be defined while Quickdraw loads a test file." unless @tests
 
 		# Tests defined by another selected test file that this one requires
-		# belong to that file. Quickdraw loads it separately.
-		file = caller_locations.find { |location| location.label == "<top (required)>" }&.path
-
+		# belong to that file. Quickdraw loads it separately. The file being
+		# required is usually a few frames up, so the whole backtrace, which is
+		# slow to take, is only taken if it isn't.
+		file = (top_required(caller_locations(1, NEAR_FRAMES)) || top_required(caller_locations))&.path
 		return if file && file != @loading && @test_files.key?(file)
 
 		@tests << test
+	end
+
+	private_class_method def self.top_required(locations)
+		locations&.find { |location| location.label == "<top (required)>" }
 	end
 
 	# Deletes a file, or a directory and everything in it, without following

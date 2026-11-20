@@ -6,6 +6,8 @@
 # arrays and hashes, since user objects may not survive Marshal.
 class Quickdraw::Worker
 	ANONYMOUS_MODULE = /#<Module:0x\h+>::/
+	# Keys in a result with no output or leaks (see Recorder#to_h).
+	PLAIN_RESULT_SIZE = 8
 
 	# How often to check that a fork running mutation tests is still alive.
 	FORK_CHECK_INTERVAL = 0.1
@@ -155,6 +157,7 @@ class Quickdraw::Worker
 		@coverage_totals = {}
 		@files = {}
 		@file_seeds = {}
+		@class_names = {}
 	end
 
 	def call
@@ -202,14 +205,11 @@ class Quickdraw::Worker
 			in [:run, path, indices]
 				@channel.write([:started])
 				tests = @files.fetch(path)
-				file_seed = @file_seeds.fetch(path)
 				@capture&.start
 
 				indices.each do |index|
-					# Seeded by test rather than by process, so `rand` in a test gives the
-					# same values for a given run seed whichever worker runs it.
-					Kernel.srand(file_seed + index)
-					@channel.write([:result, index, run(tests[index])])
+					seed(path, index)
+					@channel.write([:result, index, self.class.compact(run(tests[index]))])
 				end
 
 				@capture&.stop
@@ -217,10 +217,11 @@ class Quickdraw::Worker
 				@channel.write([:ready, Process.pid])
 			in [:baseline, path, subjects]
 				@channel.write([:baseline, path, *baseline(path, subjects)])
-			in [:mutant, mutant, tests, seconds]
-				@channel.write([:mutant, mutant.id, mutate(mutant, tests, seconds)])
+			in [:mutant, mutant, tests, seconds, matrix]
+				outcome, row = matrix ? mutate_every_test(mutant, tests, seconds) : [mutate(mutant, tests, seconds), nil]
+				@channel.write([:mutant, mutant.id, outcome, row])
 			in [:fuzz, path, index, settings]
-				Quickdraw::Fuzz::Session.new(@channel, @files.fetch(path).fetch(index), test_seed: @file_seeds.fetch(path) + index, **settings).call
+				Quickdraw::Fuzz::Session.new(@channel, @files.fetch(path).fetch(index), test_seed: test_seed(path, index), **settings).call
 			in [:stop]
 				# The coordinator stops listening, so it can no longer give out the terminal.
 				Quickdraw::Debugger.uninstall
@@ -276,14 +277,36 @@ class Quickdraw::Worker
 		[:load_failed, path, Quickdraw.serialize_error(error)]
 	end
 
+	# A passing test's result as just its numbers, which is several times quicker
+	# to send and to read. See .result.
+	def self.compact(result)
+		plain = result.size == PLAIN_RESULT_SIZE && result["failures"].empty? && result["errors"].empty? && !result["skipped"] && !result["profile"]
+		plain ? [result["duration"], result["stats"], result["assertions"], result["counts"]] : result
+	end
+
+	# A result as Recorder#to_h made it, from what .compact sent.
+	def self.result(sent)
+		case sent
+		in Hash then sent
+		in [duration, stats, assertions, counts]
+			{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
+		end
+	end
+
 	private def describe(definition)
 		{
-			"description" => definition.description&.then { |it| Quickdraw.utf8(Quickdraw.plain_string(it)).gsub(ANONYMOUS_MODULE, "") },
+			"description" => definition.description&.then { |it| without_anonymous_modules(Quickdraw.utf8(Quickdraw.plain_string(it))) },
 			"line" => definition.line,
-			"class_name" => definition.test_class.name&.then { |it| Quickdraw.utf8(it).gsub(ANONYMOUS_MODULE, "") },
+			# Once per named class, since test files load in an anonymous module, so
+			# each name has one to remove. Not while it's anonymous: it can be named later.
+			"class_name" => (@class_names[definition.test_class] ||= definition.test_class.name&.then { |it| without_anonymous_modules(Quickdraw.utf8(it)) }),
 			# So the coordinator can kill a worker whose watchdog can't run.
 			"timeout" => (definition.timeout || Quickdraw::Config.timeout if @timeouts),
 		}
+	end
+
+	private def without_anonymous_modules(name)
+		name.include?("#<Module:") ? name.gsub(ANONYMOUS_MODULE, "") : name
 	end
 
 	private def run(definition)
@@ -350,7 +373,7 @@ class Quickdraw::Worker
 			traced = tracer.trace(subjects)
 
 			results = @files.fetch(path).each_with_index.map do |test, index|
-				Kernel.srand(@file_seeds.fetch(path) + index)
+				seed(path, index)
 				run(test).merge("lines" => tracer.take)
 			end
 
@@ -374,6 +397,101 @@ class Quickdraw::Worker
 		in nil then ["crashed"]
 		in :timeout then ["timeout"]
 		else outcome
+		end
+	end
+
+	# For --matrix: runs every one of `tests` against `mutant` in a fork, rather
+	# than stopping at the first to fail, and returns the outcome #mutate would,
+	# with a row of which tests killed it: { "killed" => [[path, index]], "ran"
+	# => count, "complete" => whether every test ran }. Each test's outcome
+	# comes as it's known, so a later test that crashes or hangs the fork
+	# leaves the row incomplete, not lost, and a kill before it still counts.
+	private def mutate_every_test(mutant, tests, seconds)
+		Quickdraw::Property.directory = File::NULL
+		reader, writer = IO.pipe
+		deadline = seconds && (now + seconds)
+
+		pid = Process.fork do
+			reader.close
+			@watchdog = nil
+
+			begin
+				mutant.apply
+			rescue Quickdraw::Interrupted
+				raise
+			rescue Exception => error
+				writer.write(Quickdraw::Channel.encode([:unapplied, Quickdraw.plain_string("#{error.class}: #{error.message}")]))
+				next
+			end
+
+			tests.each do |path, index|
+				seed(path, index)
+				result = run(@files.fetch(path).fetch(index))
+				writer.write(Quickdraw::Channel.encode([:test, path, index, result["failures"].any? || result["errors"].any?]))
+			end
+
+			writer.write(Quickdraw::Channel.encode([:done]))
+		ensure
+			exit!(0)
+		end
+
+		writer.close
+		killed = []
+		ran = 0
+		ending = nil
+
+		until ending
+			# Watches the fork as well as the pipe, which a process a test started can hold open.
+			unless reader.wait_readable(deadline ? (deadline - now).clamp(0, FORK_CHECK_INTERVAL) : FORK_CHECK_INTERVAL)
+				ending = :timeout if deadline && now >= deadline
+				next unless !ending && pid && exited?(pid)
+
+				pid = nil
+				# What it wrote before exiting is still to be read.
+				ending = :crashed unless reader.wait_readable(0)
+				next
+			end
+
+			case read_message(reader)
+			in [:test, path, index, failed]
+				ran += 1
+				killed << [path, index] if failed
+			in [:unapplied, reason] then return [["unapplied", reason], nil]
+			in [:done] then ending = :done
+			in nil then ending = :crashed
+			end
+		end
+
+		outcome = if killed.any? then ["killed", killed.first]
+		elsif ending == :done then ["survived"]
+		elsif ending == :timeout then ["timeout"]
+		else ["crashed"]
+		end
+
+		[outcome, { "killed" => killed, "ran" => ran, "complete" => ending == :done }]
+	ensure
+		reader&.close
+		writer&.close
+		stop_fork(pid) if pid
+	end
+
+	# A length-prefixed message from a fork, or nil at the end of the pipe.
+	private def read_message(reader)
+		header = reader.read(4)
+		data = reader.read(header.unpack1("N")) if header&.bytesize == 4
+		Marshal.load(data) if data
+	end
+
+	private def stop_fork(pid)
+		Process.kill(:KILL, pid)
+	rescue Errno::ESRCH
+		nil
+	ensure
+		begin
+			Process.wait(pid)
+		rescue Errno::ECHILD
+			# Already reaped, as for exited?.
+			nil
 		end
 	end
 
@@ -452,12 +570,23 @@ class Quickdraw::Worker
 		end
 
 		tests.each do |path, index|
-			Kernel.srand(@file_seeds.fetch(path) + index)
+			seed(path, index)
 			result = run(@files.fetch(path).fetch(index))
 			return ["killed", [path, index]] if result["failures"].any? || result["errors"].any?
 		end
 
 		["survived"]
+	end
+
+	# Seeded by test rather than by process, so `rand` in a test gives the same
+	# values for a given run seed whichever worker runs it, and when a mutant
+	# runs it. In 32 bits, which Ruby seeds about 3x as fast.
+	private def seed(path, index)
+		Kernel.srand(test_seed(path, index))
+	end
+
+	private def test_seed(path, index)
+		(@file_seeds.fetch(path) + index) & 0xFFFF_FFFF
 	end
 
 	private def run_test(test, recorder)
@@ -468,11 +597,9 @@ class Quickdraw::Worker
 		end
 	end
 
-	# Runs a debugger (see Debugger) with the terminal, once the coordinator
-	# gives it, and the test's output and timeout paused. A debugger started
-	# from inside one already has it.
-	# For a debugger that returns when it's done. A debugger started inside
-	# one, by the same thread, already has the terminal.
+	# Runs a debugger that returns when it's done (see Debugger) with the
+	# terminal, once the coordinator gives it, and the test's output and
+	# timeout paused.
 	def holding_terminal
 		# Already this thread's, or the debug gem's, which stops other threads
 		# while it has the terminal, so this was run from its prompt.

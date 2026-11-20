@@ -19,31 +19,35 @@ module Quickdraw::Platform
 	end
 
 	def efficiency_cores
-		if m_series?
-			`sysctl -n hw.perflevel1.logicalcpu`.to_i
-		else
-			0
-		end
+		m_series? ? core_levels.last : 0
 	end
 
 	def performance_cores
-		if m_series?
-			`sysctl -n hw.perflevel0.logicalcpu`.to_i
-		else
-			0
-		end
+		m_series? ? core_levels.first : 0
 	end
 
 	def supports_forking?
 		Process.respond_to?(:fork)
 	end
 
+	# Every arm64 Mac is Apple silicon, so this needs no subprocess.
 	def m_series?
-		mac_platform? && `sysctl -n machdep.cpu.brand_string`.include?("Apple M")
+		mac_platform? && RUBY_PLATFORM.start_with?("arm64")
 	end
 
 	def mac_platform?
 		RUBY_PLATFORM =~ /darwin/
+	end
+
+	# [performance, efficiency] logical cores, from one sysctl, since each takes
+	# ~2ms. Every core counts as a performance core if sysctl can't say.
+	private def core_levels
+		@core_levels ||= begin
+			levels = `sysctl -n hw.perflevel0.logicalcpu hw.perflevel1.logicalcpu 2>/dev/null`.split.map { |count| Integer(count, 10, exception: false) }
+			(levels.size == 2 && levels.all?(&:positive?)) ? levels : [cpu_cores, 0]
+		rescue SystemCallError
+			[cpu_cores, 0]
+		end
 	end
 
 	def cpu_cores

@@ -14,8 +14,11 @@ class Quickdraw::Mutation::Runner
 	# What a mutant runs: `tests` (Baselines) in order, until one fails, for up to `seconds`.
 	Job = Data.define(:mutant, :tests, :seconds)
 
-	def initialize(test_files, processes:, seed:)
+	# With `matrix`, each mutant runs all its tests, and #call yields which
+	# killed it (see Worker#mutate_every_test).
+	def initialize(test_files, processes:, seed:, matrix: false)
 		@pool = Quickdraw::WorkerPool.new(test_files, processes:, seed:)
+		@matrix = matrix
 		@traced = {}
 		@lock = Thread::Mutex.new
 	end
@@ -69,8 +72,9 @@ class Quickdraw::Mutation::Runner
 		[results.flat_map(&:first), results.flat_map(&:last)]
 	end
 
-	# Runs each Job, yielding it and its outcome (see #mutate) as it finishes,
-	# or ["lost"] if the worker running it exited.
+	# Runs each Job, yielding it, its outcome (see #mutate) and, with
+	# `matrix`, its row, as it finishes. The outcome is ["lost"] if the
+	# worker running it exited.
 	def call(jobs)
 		queue = Thread::Queue.new(jobs).close
 		finished = Thread::Queue.new
@@ -78,8 +82,8 @@ class Quickdraw::Mutation::Runner
 		threads = @pool.slots.map do |slot|
 			Thread.new do
 				while (job = queue.pop)
-					outcome = mutate(slot, job)
-					finished << [job, outcome]
+					outcome, row = mutate(slot, job)
+					finished << [job, outcome, row]
 					break if outcome in ["lost"]
 				end
 			ensure
@@ -92,7 +96,7 @@ class Quickdraw::Mutation::Runner
 		while done < threads.size
 			case finished.pop
 			in :done then done += 1
-			in [job, outcome] then yield job, outcome
+			in [job, outcome, row] then yield job, outcome, row
 			end
 		end
 
@@ -113,17 +117,20 @@ class Quickdraw::Mutation::Runner
 	# The outcome, as Worker#mutate gives it, but ["unloaded", path] rather
 	# than ["survived"] if a test file that ran the mutant unmutated, in
 	# another worker, failed to load in this one, so its tests didn't run.
+	# Then the row, with `matrix`, which isn't complete if that happened.
 	private def mutate(slot, job)
 		tests, unloaded = job.tests.partition { |test| slot.load(test.path) }
-		return ["unloaded", unloaded.first.path] if tests.empty?
+		return [["unloaded", unloaded.first.path], nil] if tests.empty?
 
-		slot.write([:mutant, job.mutant, tests.map { |test| [test.path, test.index] }, job.seconds])
+		slot.write([:mutant, job.mutant, tests.map { |test| [test.path, test.index] }, job.seconds, @matrix])
+		_, _id, outcome, row = slot.expect(:mutant)
+		row = row.merge("complete" => false) if row && unloaded.any?
 
-		case slot.expect(:mutant).last
-		in ["survived"] if unloaded.any? then ["unloaded", unloaded.first.path]
-		in outcome then outcome
+		case outcome
+		in ["survived"] if unloaded.any? then [["unloaded", unloaded.first.path], row]
+		else [outcome, row]
 		end
 	rescue Quickdraw::WorkerPool::Gone
-		["lost"]
+		[["lost"], nil]
 	end
 end

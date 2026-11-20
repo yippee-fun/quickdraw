@@ -430,4 +430,61 @@ class MutateTest < Quickdraw::Test
 		match { project.run("mutate", "missing.rb") => { stderr: /missing.rb doesn’t exist/, exit_status: 2 } }
 		match { project.run("mutate", "--frobnicate") => { stderr: /Unknown option --frobnicate/, exit_status: 2 } }
 	end
+
+	MATRIX = <<~RUBY
+		require_relative "../lib/pricing"
+
+		class PricingTest < Quickdraw::Test
+			test("discounts big orders") { assert_equal Shop::Pricing.new.discount(200), 20 }
+			test("discounts other big orders") { assert_equal Shop::Pricing.new.discount(300), 30 }
+			test("doesn't discount 100") { assert_equal Shop::Pricing.new.discount(100), 0 }
+			test("discounts from just over 100") { assert_equal Shop::Pricing.new.discount(101), 10 }
+			test("runs small orders") { Shop::Pricing.new.discount(5); assert true }
+		end
+	RUBY
+
+	test "--matrix lists tests that kill no mutants and tests whose kills others make too, with the same score", timeout: 40 do
+		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => MATRIX)
+		plain = project.run("mutate", "lib/pricing.rb", "--format", "agent")
+		matrix = project.run("mutate", "lib/pricing.rb", "--format", "agent", "--matrix")
+
+		assert matrix.success?
+		assert_equal matrix.stdout[/^MUTATION SCORE: [^.]*/], plain.stdout[/^MUTATION SCORE: [^.]*/]
+		assert_includes matrix.stdout, "BLIND: test/pricing.test.rb:8 PricingTest › runs small orders ran against"
+		assert_includes matrix.stdout, "REDUNDANT: test/pricing.test.rb:4 PricingTest › discounts big orders."
+		assert_includes matrix.stdout, "REDUNDANT: test/pricing.test.rb:5 PricingTest › discounts other big orders."
+		refute_includes matrix.stdout, "REDUNDANT: test/pricing.test.rb:6"
+		refute_includes plain.stdout, "BLIND"
+
+		human = project.run("mutate", "lib/pricing.rb", "--format", "human", "--matrix")
+		assert_match human.stdout, %r{^Blind tests ran against mutants and killed none\n  test/pricing\.test\.rb:8 PricingTest › runs small orders  ran against \d+ mutants$}
+
+		require "json"
+		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json", "--matrix").stdout)
+		assert_equal report["matrix"]["blind"].map { |test| test["line"] }, [8]
+		assert_equal report["matrix"]["redundant"].map { |test| test["line"] }, [4, 5]
+		assert_equal report["matrix"]["incomplete"], 0
+		refute JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json").stdout).key?("matrix")
+	end
+
+	test "--matrix keeps a kill when a later test crashes the mutant's fork, and doesn't judge its tests", timeout: 40 do
+		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => <<~RUBY)
+			require_relative "../lib/pricing"
+
+			class PricingTest < Quickdraw::Test
+				test("discounts big orders") { assert_equal Shop::Pricing.new.discount(200), 20 }
+				test("exits when a discount changes") { exit!(1) unless Shop::Pricing.new.discount(300) == 30; assert true }
+				test("doesn't discount 100") { assert_equal Shop::Pricing.new.discount(100), 0 }
+				test("discounts from just over 100") { assert_equal Shop::Pricing.new.discount(101), 10 }
+			end
+		RUBY
+
+		plain = project.run("mutate", "lib/pricing.rb", "--format", "agent")
+		matrix = project.run("mutate", "lib/pricing.rb", "--matrix", "--format", "json")
+
+		require "json"
+		report = JSON.parse(matrix.stdout)
+		assert_equal "#{report['killed']} of #{report['killed'] + report['survived']}", plain.stdout[/MUTATION SCORE: \S+ \((\d+ of \d+)/, 1]
+		assert_operator report["matrix"]["incomplete"], :>, 0
+	end
 end

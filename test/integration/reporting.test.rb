@@ -177,4 +177,16 @@ class ReportingTest < Quickdraw::Test
 		assert_includes result.output, "Slowest files"
 		assert_match result.output, /^\s+\d+(\.\d+)?ms\s+a\.test\.rb:2 A › slow/
 	end
+	test "says what assert_equivalent_html needs when nokogiri isn't installed", timeout: 20 do
+		project = project(
+			# As require raises it when nokogiri isn't installed.
+			"fake/nokogiri.rb" => "error = LoadError.new('cannot load such file -- nokogiri'); error.instance_variable_set(:@path, 'nokogiri'); raise error\n",
+			"a.test.rb" => "class A < Quickdraw::Test; test('compares') { assert_equivalent_html '<p>a</p>', '<p>b</p>' }; end\n",
+		)
+
+		result = project.run("-p", "1", "--no-history", env: { "RUBYOPT" => "-I#{File.join(project.directory, 'fake')}" })
+
+		refute result.success?
+		assert_includes result.output, "assert_equivalent_html needs nokogiri, to compare HTML, which isn’t installed. Add it to the Gemfile’s test group."
+	end
 end

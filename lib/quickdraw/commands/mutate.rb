@@ -20,6 +20,8 @@ class Quickdraw::Commands::Mutate
 
 	# Tests listed with each survivor.
 	SHOWN_TESTS = 3
+	# Blind and redundant tests listed by human and agent reports, not JSON.
+	SHOWN_MATRIX_TESTS = 20
 
 	KILLED = ["killed", "timeout", "crashed"].freeze
 
@@ -47,6 +49,7 @@ class Quickdraw::Commands::Mutate
 		@format = options[:format] || (Quickdraw::Reporters.agent? ? "agent" : "human")
 		@threshold = options[:threshold]
 		@seed = options[:seed]
+		@matrix = options[:matrix]
 
 		# Prism, sqlite3 and etc load in a throwaway process, so they can't reach workers.
 		plan = Quickdraw.isolate { prepare(options[:targets]) }
@@ -59,6 +62,7 @@ class Quickdraw::Commands::Mutate
 		plan[:warnings].each { |message| warn message }
 		mutants = plan[:mutants].each_with_index.map { |mutant, index| mutant.with(id: index) }
 		@outcomes = []
+		@rows = []
 		@uncovered = []
 		@missing = []
 		@broken = []
@@ -91,7 +95,7 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def run(mutants, test_files, processes:)
-		runner = Quickdraw::Mutation::Runner.new(test_files.map { |path| File.expand_path(path) }, processes:, seed: @seed)
+		runner = Quickdraw::Mutation::Runner.new(test_files.map { |path| File.expand_path(path) }, processes:, seed: @seed, matrix: @matrix)
 
 		begin
 			mutate(runner, mutants, test_files)
@@ -146,8 +150,9 @@ class Quickdraw::Commands::Mutate
 			@jobs << Quickdraw::Mutation::Runner::Job.new(mutant:, tests:, seconds: (tests.sum(&:duration) * TIMEOUT_FACTOR) + TIMEOUT_MARGIN)
 		end
 
-		runner.call(@jobs) do |job, outcome|
+		runner.call(@jobs) do |job, outcome, row|
 			@outcomes << [job, outcome]
+			@rows << [job, row] if @matrix
 			progress
 		end
 	end
@@ -161,6 +166,7 @@ class Quickdraw::Commands::Mutate
 		@score = (100.0 * @killed.size / tested if tested > 0)
 		@duration = now - @started_at
 		@mutants = mutants
+		@kill_matrix = Quickdraw::Mutation::KillMatrix.new(@rows) if @matrix
 
 		case @format
 		in "human" then report_for_people
@@ -194,6 +200,7 @@ class Quickdraw::Commands::Mutate
 		end
 
 		problems.each { |problem| @io.puts "#{yellow('!')} #{problem}" }
+		print_kill_matrix if @kill_matrix
 
 		counts = if @score
 			["#{format_score(@score)} mutation score", "#{@killed.size} killed", (red("#{@survived.size} survived") if @survived.any?)]
@@ -217,6 +224,11 @@ class Quickdraw::Commands::Mutate
 		end
 
 		problems.each { |problem| @io.puts problem }
+
+		if @kill_matrix
+			matrix_entries(@kill_matrix.blind).each { |entry| @io.puts "BLIND: #{relative(entry.test.path)}:#{entry.test.line} #{entry.test.name} ran against #{pluralize(entry.count, 'mutant')} and killed none" }
+			matrix_entries(@kill_matrix.redundant).each { |entry| @io.puts "REDUNDANT: #{relative(entry.test.path)}:#{entry.test.line} #{entry.test.name}. Another test also killed each mutant it killed (#{entry.count})" }
+		end
 		@io.puts "NOT COVERED: #{pluralize(@uncovered.size, 'mutant')} on lines no test runs: #{uncovered_lines}" if @uncovered.any?
 
 		if @score
@@ -256,7 +268,44 @@ class Quickdraw::Commands::Mutate
 			end,
 			"uncovered_lines" => @uncovered.group_by { |mutant| relative(mutant.subject.path) }.transform_values { |list| list.map(&:line).uniq.sort },
 			"missing_methods" => @missing.map { |subject| { "path" => relative(subject.path), "line" => subject.line, "method" => subject.label } },
+			**({ "matrix" => matrix_json } if @kill_matrix),
 		})
+	end
+
+	# Tests that ran mutants and killed none, then tests whose kills others made too.
+	private def print_kill_matrix
+		[
+			["Blind tests", "ran against mutants and killed none", @kill_matrix.blind, "ran against"],
+			["Redundant tests", "every mutant they killed, another test killed too, so each could go, one at a time", @kill_matrix.redundant, "killed"],
+		].each do |title, explanation, entries, counted|
+			next if entries.empty?
+
+			@io.puts "#{bold(title)} #{dim(explanation)}"
+			matrix_entries(entries).each do |entry|
+				@io.puts "  #{relative(entry.test.path)}:#{entry.test.line} #{entry.test.name}  #{dim("#{counted} #{pluralize(entry.count, 'mutant')}")}"
+			end
+			@io.puts "  #{dim("and #{entries.size - SHOWN_MATRIX_TESTS} more")}" if entries.size > SHOWN_MATRIX_TESTS
+			@io.puts
+		end
+
+		if (incomplete = @kill_matrix.incomplete) > 0
+			@io.puts "#{yellow('!')} Not every test ran against #{pluralize(incomplete, 'mutant')}, since a test crashed, hung or didn’t load, so #{(incomplete == 1) ? 'its tests' : 'their tests'} can’t be blind or redundant."
+			@io.puts
+		end
+	end
+
+	private def matrix_entries(entries) = entries.first(SHOWN_MATRIX_TESTS)
+
+	private def matrix_json
+		{
+			"blind" => @kill_matrix.blind.map { |entry| matrix_test_json(entry, "ran") },
+			"redundant" => @kill_matrix.redundant.map { |entry| matrix_test_json(entry, "killed") },
+			"incomplete" => @kill_matrix.incomplete,
+		}
+	end
+
+	private def matrix_test_json(entry, count)
+		{ "path" => relative(entry.test.path), "line" => entry.test.line, "name" => entry.test.name, count => entry.count }
 	end
 
 	# Interruptions, mutants that couldn't run, and methods that couldn't be found.
@@ -407,7 +456,7 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def parse
-		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED }
+		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED, matrix: false }
 
 		until @args.empty?
 			argument = @args.shift
@@ -425,6 +474,8 @@ class Quickdraw::Commands::Mutate
 			in "--threshold"
 				options[:threshold] = Float(@args.shift.to_s, exception: false)
 				return usage("--threshold needs a percentage, as in --threshold 80.") unless options[:threshold]&.between?(0, 100)
+			in "--matrix"
+				options[:matrix] = true
 			in "--format"
 				options[:format] = @args.shift
 				return usage("--format needs one of #{FORMATS.join(', ')}.") unless FORMATS.include?(options[:format])
@@ -458,6 +509,8 @@ class Quickdraw::Commands::Mutate
 			    -s, --seed N          Seed rand in tests with N (default #{DEFAULT_SEED}), the same for every mutant
 			        --threshold PERCENT
 			                          Fail if fewer than PERCENT of mutants are killed (default 100)
+			        --matrix          Run every test against each mutant, and list tests that kill none
+			                          (blind) and tests whose kills others also make (redundant)
 			        --format FORMAT   human, agent or json
 		TEXT
 	end

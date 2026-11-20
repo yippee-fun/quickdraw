@@ -183,7 +183,30 @@ class Quickdraw::History
 		WHERE results.run_id = :run_id AND results.test_id = tests.id
 	SQL
 
-	Record = Data.define(:key, :path, :test, :result, :worker, :slot, :sequence)
+	# A test's result, with only what history keeps, so a run's records are
+	# quick to send to the process that saves them. `details` are the failures
+	# and errors of a test that didn't pass.
+	Record = Data.define(:key, :path, :line, :class_name, :description, :status, :duration, :stats, :assertions, :details, :worker, :slot, :sequence) do
+		def self.from(key:, path:, test:, result:, worker:, slot:, sequence:)
+			status = Quickdraw::History.status(result)
+
+			new(
+				key:,
+				path:,
+				line: test["line"],
+				class_name: test["class_name"],
+				description: test["description"],
+				status:,
+				duration: result["duration"],
+				stats: result["stats"],
+				assertions: result["assertions"],
+				details: ({ "failures" => result["failures"], "errors" => result["errors"] } unless status == "passed"),
+				worker:,
+				slot:,
+				sequence:,
+			)
+		end
+	end
 	KnownTest = Data.define(:id, :path, :line, :average_duration)
 
 	RunSummary = Data.define(:finished_at, :seed, :processes, :worker_choice, :git_sha, :git_branch, :duration, :tests, :failed, :errored, :passed)
@@ -573,9 +596,8 @@ class Quickdraw::History
 		# Another run may have recorded since this one read them.
 		load_known
 		sha, branch, code = @revision.value
-		statuses = records.map { |record| status(record.result) }
-		counts = statuses.tally
-		durations = records.filter_map { |record| record.result["duration"] }
+		counts = records.map(&:status).tally
+		durations = records.filter_map(&:duration)
 
 		@db.transaction do
 			@db.execute(INSERT_RUN, [
@@ -595,14 +617,14 @@ class Quickdraw::History
 				selection,
 				worker_choice,
 				durations.sum,
-				records.sum { |record| record.result["stats"]&.[](CPU) || 0 },
+				records.sum { |record| record.stats&.[](CPU) || 0 },
 				durations.max || 0,
 			])
 
 			run_id = @db.last_insert_row_id
 			ids = test_ids(records)
 
-			insert_many(INSERT_RESULTS, records.zip(statuses).map { |record, status| result_row(run_id, ids.fetch(record.key), record, status) })
+			insert_many(INSERT_RESULTS, records.map { |record| result_row(run_id, ids.fetch(record.key), record) })
 			@db.execute(UPDATE_STATS, { "smoothing" => SMOOTHING, "run_id" => run_id })
 
 			insert_many(UPSERT_FILES, [
@@ -673,7 +695,7 @@ class Quickdraw::History
 		records.each do |record|
 			known = @known[record.key]
 
-			if known && known.line == record.test["line"]
+			if known && known.line == record.line
 				ids[record.key] = known.id
 			else
 				changed << record
@@ -681,7 +703,7 @@ class Quickdraw::History
 		end
 
 		changed.each_slice(BATCH_SIZE) do |batch|
-			rows = batch.map { |record| [record.key, record.path, record.test["line"], record.test["class_name"], record.test["description"]] }
+			rows = batch.map { |record| [record.key, record.path, record.line, record.class_name, record.description] }
 
 			@db.execute(format(UPSERT_TESTS, tuples(rows)), utf8(rows.flatten(1))).each do |id, key|
 				ids[key] = id
@@ -689,31 +711,25 @@ class Quickdraw::History
 		end
 
 		changed.each do |record|
-			@known[record.key] = KnownTest.new(id: ids.fetch(record.key), path: record.path, line: record.test["line"], average_duration: @known[record.key]&.average_duration)
+			@known[record.key] = KnownTest.new(id: ids.fetch(record.key), path: record.path, line: record.line, average_duration: @known[record.key]&.average_duration)
 		end
 
 		ids
 	end
 
-	private def result_row(run_id, test_id, record, status)
-		result = record.result
-
-		details = unless status == "passed"
-			JSON.generate(utf8({ "failures" => result["failures"], "errors" => result["errors"] }))
-		end
-
+	private def result_row(run_id, test_id, record)
 		[
 			run_id,
 			test_id,
-			status,
-			result["duration"],
+			record.status,
+			record.duration,
 			# The setup to allocations columns are in Quickdraw::STATS order.
-			*(result["stats"] || Array.new(Quickdraw::STATS.size)),
-			result["assertions"],
+			*(record.stats || Array.new(Quickdraw::STATS.size)),
+			record.assertions,
 			record.worker,
 			record.slot,
 			record.sequence,
-			details,
+			(JSON.generate(utf8(record.details)) if record.details),
 		]
 	end
 
@@ -738,7 +754,8 @@ class Quickdraw::History
 		@db.execute("DELETE FROM files WHERE last_run_id <= ?", [oldest])
 	end
 
-	private def status(result)
+	# As Outcome counts it, but telling a crash from other errors.
+	def self.status(result)
 		if result["errors"].any? { |error| error["name"] == "Quickdraw::WorkerCrashed" }
 			"crashed"
 		else

@@ -62,8 +62,15 @@ class Quickdraw::WarmLoaders
 			end
 		end
 
+		# Checking often at first, since loaders usually finish within a few milliseconds.
 		def wait
-			sleep 0.01 until status
+			delay = 0.0005
+
+			until status
+				sleep delay
+				delay = [delay * 2, 0.01].min
+			end
+
 			status
 		end
 
