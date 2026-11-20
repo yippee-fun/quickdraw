@@ -68,7 +68,8 @@ class FuzzIntegrationTest < Quickdraw::Test
 
 		rerun = project.run("-p", "1", "--format", "agent")
 		assert_equal rerun.exit_status, 1
-		match { rerun => { stdout: /RuntimeError: planted\nCounterexample \(saved from an earlier run\):\n"let[^"]*x[^"]*=[^"]*42"/ } }
+		assert_includes rerun.stdout, "ERROR test/lexer.test.rb:4 LexerTest › lexes anything: RuntimeError: planted"
+		match { project.run("last", "test/lexer.test.rb:4") => { stdout: /RuntimeError: planted\nCounterexample \(saved from an earlier run\):\n"let[^"]*x[^"]*=[^"]*42"/ } }
 	end
 
 	CRASHES = <<~RUBY

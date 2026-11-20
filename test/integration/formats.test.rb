@@ -25,17 +25,31 @@ class FormatsTest < Quickdraw::Test
 
 	def shapes = project("shapes.test.rb" => SHAPES)
 
-	test "uses the agent format under an AI coding agent", timeout: 20 do
-		result = shapes.run("-p", "1", "--no-history", env: { "CLAUDECODE" => "1" })
+	test "uses the agent format under an AI coding agent, a line per problem, with details a command away", timeout: 20 do
+		project = shapes
+		result = project.run("-p", "1", env: { "CLAUDECODE" => "1" })
 
 		refute result.success?
-		assert_includes result.output, "FAILED shapes.test.rb:4 Shapes › computes area"
-		assert_includes result.output, "shapes.test.rb:5: assert_equal area(2, 3), 7"
-		assert_includes result.output, "ERROR shapes.test.rb:8 Shapes › raises in a helper"
-		assert_includes result.output, "shapes.test.rb:2: def area(width, height) = width * height"
-		assert_match result.output, /Rerun: (bundle exec )?quickdraw shapes\.test\.rb:4$/
+		assert_match result.output, /^FAILED shapes\.test\.rb:4 Shapes › computes area: Expected \d+ · Actual \d+$/
+		assert_match result.output, /^ERROR shapes\.test\.rb:8 Shapes › raises in a helper: \w+Error: /
+		refute_includes result.output, "shapes.test.rb:5: assert_equal area(2, 3), 7"
 		assert_match result.output, /^FAILED: 3 tests, 1 passed, 1 failed, 1 errored in [\d.]+s \(seed \d+\)$/
+		assert_match result.output, /^Details: \S+ last shapes\.test\.rb:\d+ \(or a whole file\)\./
 		refute_includes result.output, "\e["
+
+		details = project.run("last", "shapes.test.rb:8").stdout
+		assert_includes details, "ERROR shapes.test.rb:8 Shapes › raises in a helper"
+		assert_includes details, "shapes.test.rb:2: def area(width, height) = width * height"
+	end
+
+	test "shows the first problem in full when the run isn't kept for details", timeout: 20 do
+		result = shapes.run("-p", "1", "--no-history", "--format", "agent")
+
+		# Whichever ran first, which depends on the seed.
+		assert_equal result.output.scan(/^  Rerun: /).size, 1
+		assert_match result.output, /^FAILED shapes\.test\.rb:4 Shapes › computes area: /
+		assert_match result.output, /^ERROR shapes\.test\.rb:8 Shapes › raises in a helper: /
+		refute_includes result.output, "Details:"
 	end
 
 	test "keeps the agent format to one line when everything passes", timeout: 20 do
@@ -45,16 +59,19 @@ class FormatsTest < Quickdraw::Test
 		assert_match result.stdout, /\APASSED: 1 test, 1 passed in [\d.]+s \(seed \d+\)\n\z/
 	end
 
-	test "shows the first problems in full and the rest one line each, for agents", timeout: 20 do
-		result = project("many.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "agent")
+	test "groups problems with the same cause, and counts causes past the first 20, for agents", timeout: 20 do
+		project = project("many.test.rb" => <<~RUBY)
 			class Many < Quickdraw::Test
-				15.times { |i| test("fails \#{i}") { assert false } }
+				15.times { |i| test("fails \#{i}") { nil.name } }
+				25.times { |i| test("differs \#{i}") { raise "cause \#{i}" } }
 			end
 		RUBY
+		result = project.run("-p", "1", "--format", "agent")
 
-		assert_equal result.output.scan(/^FAILED many\.test\.rb/).size, 10
-		assert_includes result.output, "5 more problems:"
-		assert_equal result.output.scan(/^- FAILED many\.test\.rb:\d+ Many › fails \d+$/).size, 5
+		assert_match result.output, /^15 × ERROR NoMethodError: undefined method 'name' for nil, such as many\.test\.rb:\d+ Many › fails \d+$/
+		assert_equal result.output.scan(/^ERROR many\.test\.rb:\d+ Many › differs \d+: RuntimeError: cause \d+$/).size, 19
+		assert_includes result.output, "and 6 more causes, across 6 problems"
+		assert_equal project.run("last", "--list").stdout.lines.count { |line| line.match?(/^(?:FAILED|ERROR) /) }, 40
 	end
 
 	test "streams one JSON event per line", timeout: 20 do

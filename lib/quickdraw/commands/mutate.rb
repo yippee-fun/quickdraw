@@ -22,6 +22,10 @@ class Quickdraw::Commands::Mutate
 	SHOWN_TESTS = 3
 	# Blind and redundant tests listed by human and agent reports, not JSON.
 	SHOWN_MATRIX_TESTS = 20
+	# Survivors the agent format lists, a line each. The rest are a command away.
+	SHOWN_SURVIVORS = 20
+	# The last run's survivors, for --show.
+	LAST_PATH = ".quickdraw/last-mutate.json"
 
 	KILLED = ["killed", "timeout", "crashed"].freeze
 
@@ -40,6 +44,8 @@ class Quickdraw::Commands::Mutate
 		in Integer => status then return status
 		in Hash => options then options
 		end
+
+		return show(options[:show]) if options[:show]
 
 		unless Process.respond_to?(:fork)
 			warn "mutate needs fork, which this platform doesn’t support."
@@ -61,6 +67,7 @@ class Quickdraw::Commands::Mutate
 
 		plan[:warnings].each { |message| warn message }
 		mutants = plan[:mutants].each_with_index.map { |mutant, index| mutant.with(id: index) }
+		@keys = keys(mutants)
 		@outcomes = []
 		@rows = []
 		@uncovered = []
@@ -84,6 +91,9 @@ class Quickdraw::Commands::Mutate
 
 	# Without running anything. JSON is still a report, with the message on stderr.
 	private def finish(message, mutants, status)
+		@survived = []
+		save_survivors
+
 		if @format == "json"
 			warn message
 			report(mutants)
@@ -168,6 +178,8 @@ class Quickdraw::Commands::Mutate
 		@mutants = mutants
 		@kill_matrix = Quickdraw::Mutation::KillMatrix.new(@rows) if @matrix
 
+		save_survivors
+
 		case @format
 		in "human" then report_for_people
 		in "agent" then report_for_agents
@@ -191,7 +203,7 @@ class Quickdraw::Commands::Mutate
 		# change as a diff of the original (-) and the mutant (+).
 		@survived.each do |job, _outcome|
 			mutant = job.mutant
-			@io.puts "#{label('SURVIVED', 43)} #{bold(mutant.description)}  #{dim("#{mutant.subject.label} · #{relative(mutant.subject.path)}:#{mutant.line}")}"
+			@io.puts "#{label('SURVIVED', 43)} #{bold(mutant.description)}  #{dim("#{mutant.subject.label} · #{relative(mutant.subject.path)}:#{mutant.line} · #{@keys.fetch(mutant.id)}")}"
 			@io.puts
 			snippet(mutant).each { |line| @io.puts "    #{line.start_with?('-') ? green(line) : red(line)}" }
 			@io.puts
@@ -215,13 +227,15 @@ class Quickdraw::Commands::Mutate
 		@io.puts "#{beside_label(badge)}#{dim(rate)}"
 	end
 
+	# A line per survivor, with its id. Each one's change, and the tests that
+	# ran it, are a command away (see #show), since agents pay for every line.
 	private def report_for_agents
-		@survived.each do |job, _outcome|
+		@survived.first(SHOWN_SURVIVORS).each do |job, _outcome|
 			mutant = job.mutant
-			@io.puts "SURVIVED: #{relative(mutant.subject.path)}:#{mutant.line} #{mutant.subject.label} (#{mutant.description}). Tests that ran it and passed: #{tests(job, locations: true)}"
-			snippet(mutant).each { |line| @io.puts line }
-			@io.puts
+			@io.puts "SURVIVED #{@keys.fetch(mutant.id)} #{relative(mutant.subject.path)}:#{mutant.line} #{mutant.subject.label}: #{mutant.description} (#{pluralize(job.tests.size, 'test')} ran it)"
 		end
+
+		@io.puts "and #{pluralize(@survived.size - SHOWN_SURVIVORS, 'more survivor')}" if @survived.size > SHOWN_SURVIVORS
 
 		problems.each { |problem| @io.puts problem }
 
@@ -235,6 +249,11 @@ class Quickdraw::Commands::Mutate
 			@io.puts "MUTATION SCORE: #{format_score(@score)} (#{@killed.size} of #{@killed.size + @survived.size} killed#{", #{@survived.size} survived" if @survived.any?}). #{rate}"
 		else
 			@io.puts "NO MUTANTS RAN. #{rate}"
+		end
+
+		if @survived.any? && @saved
+			command = "#{Quickdraw::Reporters.command} mutate --show"
+			@io.puts "Details: #{command} #{@keys.fetch(@survived.first.first.mutant.id)} (the change, and the tests that ran it). All survivors: #{command} all"
 		end
 	end
 
@@ -257,6 +276,7 @@ class Quickdraw::Commands::Mutate
 				mutant = job.mutant
 
 				{
+					"id" => @keys.fetch(mutant.id),
 					"path" => relative(mutant.subject.path),
 					"line" => mutant.line,
 					"method" => mutant.subject.label,
@@ -306,6 +326,98 @@ class Quickdraw::Commands::Mutate
 
 	private def matrix_test_json(entry, count)
 		{ "path" => relative(entry.test.path), "line" => entry.test.line, "name" => entry.test.name, count => entry.count }
+	end
+
+	# Ids that stay the same across runs while the method's code does, since
+	# they don't include where the method is: the file, method, change, the
+	# code it makes, its line within the method, and which of the identical
+	# changes on that line it is. 48 bits, so ids rarely collide even across
+	# hundreds of thousands of mutants.
+	private def keys(mutants)
+		seen = Hash.new(0)
+
+		mutants.to_h do |mutant|
+			identity = [relative(mutant.subject.path), mutant.subject.label, mutant.description, mutant.after.strip, mutant.line - mutant.subject.line]
+			seen[identity] += 1
+			[mutant.id, Quickdraw.stable_hash([*identity, seen[identity]].join("\0")).to_s(16).rjust(16, "0")[0, 12]]
+		end
+	end
+
+	# For --show: each survivor's id, line, change, and the tests that ran it.
+	# JSON, since a checkout's files are untrusted, through a temporary file,
+	# so it's never part of one run. Returns whether it was saved.
+	private def save_survivors
+		require "json"
+
+		survivors = @survived.map do |job, _outcome|
+			mutant = job.mutant
+
+			{
+				"id" => @keys.fetch(mutant.id),
+				"heading" => "SURVIVED #{@keys.fetch(mutant.id)} #{relative(mutant.subject.path)}:#{mutant.line} #{mutant.subject.label}: #{mutant.description}",
+				"change" => snippet(mutant),
+				"tests" => job.tests.map { |test| "#{relative(test.path)}:#{test.line} #{test.name}" },
+			}
+		end
+
+		begin
+			Dir.mkdir(File.dirname(LAST_PATH))
+		rescue Errno::EEXIST
+			nil
+		end
+
+		temporary = "#{LAST_PATH}.#{Process.pid}"
+		File.write(temporary, JSON.generate(survivors.map { |survivor| survivor.transform_values { |value| utf8(value) } }))
+		File.rename(temporary, LAST_PATH)
+		@saved = true
+	rescue SystemCallError, JSON::GeneratorError => error
+		warn "Quickdraw couldn’t write #{LAST_PATH} (#{error.message})."
+		@saved = false
+	end
+
+	private def utf8(value)
+		case value
+		in String then Quickdraw.utf8(value)
+		in Array then value.map { |item| utf8(item) }
+		else value
+		end
+	end
+
+	# A survivor from the last run in full, or every survivor a line each.
+	private def show(key)
+		require "json"
+
+		survivors = begin
+			JSON.parse(File.read(LAST_PATH, encoding: Encoding::UTF_8))
+		rescue Errno::ENOENT, JSON::ParserError
+			nil
+		end
+
+		unless survivors
+			warn "No mutation run has been recorded here."
+			return 1
+		end
+
+		if key == "all"
+			survivors.each { |survivor| @io.puts survivor["heading"] }
+			return 0
+		end
+
+		matches = survivors.select { |survivor| survivor["id"] == key }
+
+		if matches.empty?
+			warn "The last mutation run had no survivor #{key}."
+			return 1
+		end
+
+		matches.each do |survivor|
+			@io.puts survivor["heading"]
+			survivor["change"].each { |line| @io.puts line }
+			@io.puts "Tests that ran it and passed:"
+			survivor["tests"].each { |test| @io.puts "- #{test}" }
+		end
+
+		0
 	end
 
 	# Interruptions, mutants that couldn't run, and methods that couldn't be found.
@@ -456,7 +568,7 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def parse
-		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED, matrix: false }
+		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED, matrix: false, show: nil }
 
 		until @args.empty?
 			argument = @args.shift
@@ -474,6 +586,9 @@ class Quickdraw::Commands::Mutate
 			in "--threshold"
 				options[:threshold] = Float(@args.shift.to_s, exception: false)
 				return usage("--threshold needs a percentage, as in --threshold 80.") unless options[:threshold]&.between?(0, 100)
+			in "--show"
+				options[:show] = @args.shift
+				return usage("--show needs a survivor's id, from the last run, or all.") unless options[:show]
 			in "--matrix"
 				options[:matrix] = true
 			in "--format"
@@ -512,6 +627,8 @@ class Quickdraw::Commands::Mutate
 			        --matrix          Run every test against each mutant, and list tests that kill none
 			                          (blind) and tests whose kills others also make (redundant)
 			        --format FORMAT   human, agent or json
+			        --show ID         Show a survivor from the last run: its change and the tests that ran it
+			                          (all lists every survivor)
 		TEXT
 	end
 

@@ -38,7 +38,7 @@ class LeaksTest < Quickdraw::Test
 			end
 		RUBY
 
-		assert_match result.stdout, /^- zombie\.test\.rb:2 Zombie › forks: Child process \d+ exited \(status 4\), but wasn't waited for\.$/
+		assert_match result.stdout, /^LEAK zombie\.test\.rb:2 Zombie › forks: Child process \d+ exited \(status 4\), but wasn't waited for\.$/
 		refute_includes result.stdout, "Zombie › waits"
 	end
 

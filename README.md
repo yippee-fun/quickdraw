@@ -160,19 +160,30 @@ FAILED  6 tests · 4 assertions · 1 failed · 1 skipped · 1 pending · 0.04s
   Pending  test/calculator.test.rb:4 CalculatorTest › divides
 ```
 
-AI coding agents, which are detected automatically, get compact, complete problem reports instead. `--format` chooses one: `human`, `agent`, `json` or `junit`. Repeat it to write more than one, with all but one going to a file:
+AI coding agents, which are detected automatically, get a short report instead, since they pay for every line they read: each problem on one line with the gist of why, and problems with the same cause grouped, so a thousand failures with one cause take one line. The details are a command away:
+
+```
+1,203 × ERROR NoMethodError: undefined method 'name' for nil, such as test/user.test.rb:40 UserTest › greets
+FAILED test/cart.test.rb:12 CartTest › totals: Expected 30 · Actual 3
+
+FAILED: 5,030 tests, 3,816 passed, 9 failed, 1,205 errored in 41.20s (seed 1234)
+Details: qt last test/user.test.rb:40 (or a whole file). All problems: qt last --list
+Rerun the failures with: qt --failed
+```
+
+Every run is kept, so after you see a failure you can tell an agent the tests failed, and it can read what happened, however the run was shown:
+
+```sh
+qt last                        # the result, a line per problem
+qt last test/cart.test.rb:12   # a problem in full: the failing line, message, backtrace and output
+qt last --list                 # every problem, a line each
+```
+
+Runs with `--no-history` aren't kept, so their agent report shows the first problem in full instead. `--format` chooses a format: `human`, `agent`, `json` or `junit`. Repeat it to write more than one, with all but one going to a file:
 
 ```sh
 qt --format human --format junit:reports/junit.xml
 ```
-
-Every run also keeps its agent report, so after you see a failure you can tell an agent the tests failed, and it can read what happened with one command, however the run was shown:
-
-```sh
-qt last
-```
-
-It starts with the command that was run and how long ago. Runs with `--no-history` aren't kept.
 
 Under GitHub Actions, failures are annotated and a summary is written for the job.
 
@@ -241,6 +252,7 @@ Mutation score 90% · 18 killed · 2 survived
 - **Which tests:** the test files that run a file, from the last `qt --coverage` run, or else its counterpart by name. Those run once unchanged, tracing which lines of the changed methods each test runs, so each change runs only the tests that reach it, fastest first, and stops at the first failure. Tests that fail without changes don't count, and changes no test reaches aren't run, but are listed by line.
 - **Safely:** your files never change. Config boots once, and each change is made by redefining its method in a process forked for it, which exits when its tests finish. A change that makes tests run three times as long as they did (plus half a second) is taken to loop forever, and counts as noticed.
 - **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs.
+- **Survivors** have ids that stay the same while their method's code does, since they don't include line numbers. For agents, each survivor is one line with its id, and `qt mutate --show ID` shows its change and the tests that ran it (`--show all` lists them all again).
 - **Which tests do the work:** `--matrix` runs every test that reaches each change, rather than stopping at the first failure, and lists **blind** tests, which ran changed code and noticed none of the changes, so they run code without checking it, and **redundant** tests, which only noticed changes another test noticed too. Since each change only runs the tests that reached its line, a blind test really did run the changed code. Redundancy is judged one test at a time, so remove redundant tests one at a time. It takes longer, since every test runs, but doesn't change the score.
 
 ## Profiling

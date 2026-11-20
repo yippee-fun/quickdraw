@@ -119,6 +119,10 @@ class Quickdraw::CLI
 			usage_error "More than one format would write to #{duplicate}."
 		end
 
+		if options[:history] && paths.include?(File.expand_path(Quickdraw::Reporters::LastRun::PATH))
+			usage_error "#{Quickdraw::Reporters::LastRun::PATH} keeps the last run, for `quickdraw last`, so a format can’t write there too."
+		end
+
 		if options[:timeline] && paths.include?(File.expand_path(Quickdraw::Timeline::PATH))
 			usage_error "--timeline writes its chart to #{Quickdraw::Timeline::PATH}, so a format can’t write there too."
 		end
@@ -586,19 +590,21 @@ class Quickdraw::CLI
 	end
 
 	private def reporter(options)
+		# First, so it's saved before the agent format, which points to it, finishes.
+		last_run = Quickdraw::Reporters::LastRun.new(command: @command_line, backtrace: options[:backtrace]) if options[:history]
+
 		reporters = options[:outputs].map do |format, path|
 			io = path ? File.open(path, "w") : $stdout
 
 			case format
 			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings])
-			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace])
+			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace], kept: (-> { last_run.saved? } if last_run))
 			in "json" then Quickdraw::Reporters::JSON.new(io:)
 			in "junit" then Quickdraw::Reporters::JUnit.new(io:)
 			end
 		end
 
-		# For `quickdraw last`, which needs the history's directory.
-		reporters << Quickdraw::Reporters::LastRun.new(command: @command_line) if options[:history]
+		reporters.unshift(last_run) if last_run
 
 		# Annotations go to the terminal.
 		reporters << Quickdraw::Reporters::GitHubActions.new if Quickdraw::Reporters::GitHubActions.active? && !machine_readable?(options)

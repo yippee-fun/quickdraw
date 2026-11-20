@@ -138,7 +138,7 @@ class BrowserTest < Quickdraw::Test
 					end
 				RUBY
 
-				result = run_browser(browser, project, "-p", "2", "--format", "agent")
+				result = run_browser(browser, project, "-p", "2", "--format", "human")
 
 				refute result.success?
 				assert_includes result.output, "Expected body to contain \"Goodbye\", but its text was \"Hello Go\" after 0.1s."
@@ -156,7 +156,7 @@ class BrowserTest < Quickdraw::Test
 			end
 
 			test "raises what the app raised in the test", timeout: 40 do
-				result = run_browser(browser, app(browser, "test/browser/page.test.rb" => <<~RUBY), "-p", "1", "--format", "agent")
+				result = run_browser(browser, app(browser, "test/browser/page.test.rb" => <<~RUBY), "-p", "1", "--format", "human")
 					class PageTest < Quickdraw::Test
 						include Quickdraw::Browser
 

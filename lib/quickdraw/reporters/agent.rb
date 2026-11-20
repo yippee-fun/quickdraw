@@ -1,23 +1,32 @@
 # frozen_string_literal: true
 
-# For AI coding agents. No colour, progress or timing breakdown. Each problem
-# shows the source line it failed on, so the agent needn't open the file, and a
-# command to rerun it. The first few problems are shown in full and the rest
-# one line each, since agents pay for every line they read. The result comes
-# last, where truncated output keeps it.
+# For AI coding agents, which pay for every line they read. No colour,
+# progress or timing breakdown, and problems one line each, grouped by cause,
+# so a thousand failures with one cause take one line. The details of any
+# problem are a command away (`quickdraw last PATH:LINE`), from the run kept
+# in .quickdraw (see LastRun); a run that isn't kept shows its first problem
+# in full instead. The result comes last, where truncated output keeps it.
 class Quickdraw::Reporters::Agent
 	include Quickdraw::Reporters::Formatting
 
-	FULL_PROBLEMS = 10
+	# Lines of problems and causes listed, after which the rest are counted.
+	PROBLEM_LINES = 20
+	# Characters of a problem's reason.
+	REASON_WIDTH = 120
 	BACKTRACE_LIMIT = 8
 	PROFILE_LIMIT = 10
 	COVERAGE_LIMIT = 20
 	OUTPUT_LINES = 20
-	LEAK_LIMIT = 20
+	LEAK_LIMIT = 5
 
-	def initialize(io: $stdout, backtrace: false)
+	# `kept` says, once the run finishes, whether it was kept for `quickdraw
+	# last`, which has the details. `replay` is for `quickdraw last`, which
+	# has only the results with problems, so not a profile or coverage.
+	def initialize(io: $stdout, backtrace: false, kept: nil, replay: false)
 		@io = io
 		@backtrace = backtrace
+		@kept = kept
+		@replay = replay
 		@problems = []
 		@leaks = []
 		@profile = Quickdraw::Profile.new
@@ -44,16 +53,11 @@ class Quickdraw::Reporters::Agent
 	def resume = nil
 
 	def finish(outcome)
-		print_profile if @profile.any?
-		print_coverage(outcome.coverage) if outcome.coverage
-		@problems.first(FULL_PROBLEMS).each { |problem| print_problem(*problem) }
-
-		if (rest = @problems.drop(FULL_PROBLEMS)).any?
-			@io.puts "#{pluralize(rest.size, 'more problem')}:"
-			rest.each { |path, test, result| @io.puts "- #{heading(path, test, result)}" }
-			@io.puts
-		end
-
+		kept = @kept&.call
+		print_profile if @profile.any? && !@replay
+		print_coverage(outcome.coverage) if outcome.coverage && !@replay
+		print_problem(*@problems.first) if @problems.any? && !kept
+		print_causes if @problems.any?
 		print_leaks if @leaks.any?
 
 		@io.puts "Workers exited with a failure status (e.g. from an at_exit hook)." if outcome.processes_failed && @problems.empty?
@@ -77,7 +81,107 @@ class Quickdraw::Reporters::Agent
 		].compact.join(", ")
 
 		@io.puts "#{outcome.passed? ? 'PASSED' : 'FAILED'}: #{counts} in #{format('%.2f', outcome.duration)}s (seed #{@seed})"
-		@io.puts "Rerun the failures with: #{Quickdraw::Reporters.command} --failed" if @problems.any? && outcome.recorded
+		print_commands(outcome, kept) if @problems.any? || @leaks.any?
+	end
+
+	# Each problem and leak in `path`, or at `path:line`, in full. Returns how many.
+	def print_details(path, line = nil)
+		problems = @problems.select { |problem_path, test, _result| at?(problem_path, test, path, line) }
+		leaks = @leaks.select { |leak_path, test, _leaks| at?(leak_path, test, path, line) }
+		problems.each { |problem| print_problem(*problem) }
+		leaks.each { |leak| print_leak(*leak) }
+		problems.size + leaks.size
+	end
+
+	private def at?(problem_path, test, path, line)
+		problem_path == path && (line.nil? || test&.[]("line") == line)
+	end
+
+	# Every problem and leak, one line each.
+	def print_list
+		@problems.each { |problem| @io.puts summary(*problem) }
+		@leaks.each { |leak| print_leak(*leak) }
+	end
+
+	# Each cause shared by more than one problem takes one line, with how many
+	# and one of them; the rest take a line each. Most shared first.
+	private def print_causes
+		causes = @problems.group_by { |_path, test, result| [kind(test, result), grouping(full_reason(result))] }.values.sort_by.with_index { |problems, index| [-problems.size, index] }
+
+		causes.first(PROBLEM_LINES).each do |problems|
+			path, test, result = problems.first
+
+			if problems.one?
+				@io.puts summary(path, test, result)
+			else
+				@io.puts "#{delimit(problems.size)} × #{kind(test, result)} #{reason(result)}, such as #{location(path, test)}"
+			end
+		end
+
+		if causes.size > PROBLEM_LINES
+			rest = causes.drop(PROBLEM_LINES)
+			@io.puts "and #{pluralize(rest.size, 'more cause')}, across #{pluralize(rest.sum(&:size), 'problem')}"
+		end
+
+		@io.puts
+	end
+
+	private def print_commands(outcome, kept)
+		command = Quickdraw::Reporters.command
+
+		if kept
+			path, test, _result = @problems.first || @leaks.first
+			@io.puts "Details: #{command} last #{shell(test ? "#{path}:#{test['line']}" : path)} (or a whole file). All problems: #{command} last --list"
+		end
+
+		@io.puts "Rerun the failures with: #{command} --failed" if outcome.recorded && @problems.any?
+	end
+
+	# Quoted if it has characters a shell would treat specially.
+	private def shell(argument)
+		argument.match?(%r{\A[\w./:@%+,=-]+\z}) ? argument : "'#{argument.gsub("'") { "'\\''" }}'"
+	end
+
+	private def summary(path, test, result)
+		"#{kind(test, result)} #{location(path, test)}: #{reason(result)}"
+	end
+
+	private def kind(test, result)
+		return "ERROR" unless test
+
+		case Quickdraw::Outcome.status(result)
+		in "flaky" then "FLAKY"
+		in "errored" then "ERROR"
+		in "failed" then "FAILED"
+		end
+	end
+
+	# On one line, whatever the test's name has in it.
+	private def location(path, test)
+		test ? "#{path}:#{test['line']} #{name_of(test).gsub(/\s*\n\s*/, ' ')}" : "#{path} could not be loaded"
+	end
+
+	private def reason(result)
+		text = full_reason(result)
+		(text.size > REASON_WIDTH) ? "#{text[0, REASON_WIDTH - 1]}…" : text
+	end
+
+	# The gist, on one line: an error's class and the first line of its
+	# message, or a failure's first two lines, such as Expected and Actual.
+	private def full_reason(result)
+		text = if (error = result["errors"].first)
+			"#{error['name']}: #{plain(error['message'].to_s).lines.first.to_s.strip}"
+		else
+			lines = result["failures"].lazy.map { |failure| plain(failure["message"].to_s).lines.map(&:strip).reject(&:empty?) }.find(&:any?)
+			lines ? lines.first(2).join(" · ") : "failed, without a message"
+		end
+
+		text.squeeze(" ")
+	end
+
+	# Objects' addresses, which differ even when the cause is the same.
+	private def grouping(reason)
+		reason.gsub(/0x\h{8,}/, "0x…")
 	end
 
 	# Uncovered lines as path:ranges, which is what an agent writing tests needs.
@@ -113,6 +217,8 @@ class Quickdraw::Reporters::Agent
 		@io.puts
 	end
 
+	# A problem in full: the source line it failed on, so the agent needn't open
+	# the file, the message, the backtrace, what it printed, and how to rerun it.
 	private def print_problem(path, test, result)
 		@io.puts heading(path, test, result)
 
@@ -152,22 +258,17 @@ class Quickdraw::Reporters::Agent
 	private def print_leaks
 		@io.puts "Tests that left state behind, which can make later tests fail:"
 
-		@leaks.first(LEAK_LIMIT).each do |path, test, leaks|
-			leaks.each { |leak| @io.puts "- #{path}:#{test['line']} #{name_of(test)}: #{leak['message']}" }
-		end
-
-		@io.puts "- and #{pluralize(@leaks.size - LEAK_LIMIT, 'more test')}" if @leaks.size > LEAK_LIMIT
+		@leaks.first(LEAK_LIMIT).each { |leak| print_leak(*leak) }
+		@io.puts "and #{pluralize(@leaks.size - LEAK_LIMIT, 'more test')}" if @leaks.size > LEAK_LIMIT
 		@io.puts
 	end
 
-	private def heading(path, test, result)
-		kind = case Quickdraw::Outcome.status(result)
-		in "flaky" then "FLAKY"
-		in "errored" then "ERROR"
-		in "failed" then "FAILED"
-		end
+	private def print_leak(path, test, leaks)
+		leaks.each { |leak| @io.puts "LEAK #{location(path, test)}: #{leak['message']}" }
+	end
 
-		test ? "#{kind} #{path}:#{test['line']} #{name_of(test)}" : "#{kind} #{path} could not be loaded"
+	private def heading(path, test, result)
+		"#{kind(test, result)} #{location(path, test)}"
 	end
 
 	# "path:line: code", or just "path:line" if the line can't be read.
@@ -178,5 +279,9 @@ class Quickdraw::Reporters::Agent
 	# Without the blank lines that make messages readable in a terminal.
 	private def compact(text)
 		text.lines(chomp: true).reject(&:empty?).join("\n")
+	end
+
+	private def delimit(number)
+		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 	end
 end

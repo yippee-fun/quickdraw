@@ -123,9 +123,11 @@ class ChangedTest < Quickdraw::Test
 		system("git", "-C", project.directory, "mv", "lib/shout.rb", "lib/yell.rb", exception: true)
 
 		result = project.run("-p", "1", "--changed", "--format", "agent")
+		assert_match result.stdout, %r{^2 × ERROR LoadError: cannot load such file -- .+, such as test/\w+\.test\.rb could not be loaded$}
 
-		assert_includes result.stdout, "ERROR test/report.test.rb could not be loaded"
-		assert_includes result.stdout, "ERROR test/shout.test.rb could not be loaded"
+		problems = project.run("last", "--list").stdout
+		assert_includes problems, "ERROR test/report.test.rb could not be loaded"
+		assert_includes problems, "ERROR test/shout.test.rb could not be loaded"
 	end
 
 	test "without history, runs the changed files' counterparts", timeout: 30 do

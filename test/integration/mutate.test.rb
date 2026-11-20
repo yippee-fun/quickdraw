@@ -60,17 +60,30 @@ class MutateTest < Quickdraw::Test
 		refute_includes result.stdout, "SURVIVED"
 	end
 
-	test "lists mutants no test notices, with the change and the tests that ran it", timeout: 30 do
+	test "lists mutants no test notices a line each, with the change and the tests that ran it a command away", timeout: 30 do
 		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => WEAK)
 		result = project.run("mutate", "lib/pricing.rb", "--format", "agent")
 
 		assert_equal result.exit_status, 1
-		# Tests are listed fastest first.
-		match { result => { stdout: %r{^SURVIVED: lib/pricing.rb:6 Shop::Pricing#discount \(> → >=\)\. Tests that ran it and passed: (.+)\n- if total > 100\n\+ if total >= 100\n} } }
-		assert_equal $1.split(", ").sort, ["test/pricing.test.rb:4 PricingTest › discounts big orders", "test/pricing.test.rb:5 PricingTest › doesn't discount small orders"]
-		assert_includes result.stdout, "SURVIVED: lib/pricing.rb:6 Shop::Pricing#discount (100 → 101)"
+		match { result => { stdout: %r{^SURVIVED (\h{12}) lib/pricing.rb:6 Shop::Pricing#discount: > → >= \(2 tests ran it\)$} } }
+		id = $1
+		assert_match result.stdout, %r{^SURVIVED \h{12} lib/pricing.rb:6 Shop::Pricing#discount: 100 → 101 \(2 tests ran it\)$}
+		refute_includes result.stdout, "if total >= 100"
 		match { result => { stdout: /^MUTATION SCORE: 63.6% \(7 of 11 killed, 4 survived\)/ } }
+		assert_match result.stdout, /^Details: \S+ mutate --show \h{12} \(the change, and the tests that ran it\)\. All survivors: \S+ mutate --show all$/
 		assert_equal File.read(File.join(project.directory, "lib/pricing.rb")), PRICING
+
+		# The same id, since nothing changed.
+		assert_includes project.run("mutate", "lib/pricing.rb", "--format", "agent").stdout, "SURVIVED #{id} lib/pricing.rb:6"
+
+		shown = project.run("mutate", "--show", id)
+		assert shown.success?
+		assert_includes shown.stdout, "SURVIVED #{id} lib/pricing.rb:6 Shop::Pricing#discount: > → >=\n- if total > 100\n+ if total >= 100\nTests that ran it and passed:\n"
+		# Fastest first.
+		assert_equal shown.stdout.lines.grep(/^- test/).map(&:chomp).sort, ["- test/pricing.test.rb:4 PricingTest › discounts big orders", "- test/pricing.test.rb:5 PricingTest › doesn't discount small orders"]
+
+		assert_equal project.run("mutate", "--show", "all").stdout.lines.grep(/^SURVIVED/).size, 4
+		match { project.run("mutate", "--show", "nope") => { exit_status: 1, stderr: /no survivor nope/ } }
 	end
 
 	test "notices code the tests can do without, such as a call to strip", timeout: 30 do
@@ -91,7 +104,8 @@ class MutateTest < Quickdraw::Test
 		project = project("lib/greeter.rb" => greeter, "test/greeter.test.rb" => weak)
 		result = project.run("mutate", "lib/greeter.rb", "--format", "agent")
 
-		assert_includes result.stdout, "SURVIVED: lib/greeter.rb:2 Greeter.greet (removed .strip). Tests that ran it and passed: test/greeter.test.rb:4 GreeterTest › greets\n- def self.greet(name) = \"Hello, \#{name.strip}!\"\n+ def self.greet(name) = \"Hello, \#{name}!\"\n"
+		match { result => { stdout: %r{^SURVIVED (\h{12}) lib/greeter.rb:2 Greeter.greet: removed .strip \(1 test ran it\)$} } }
+		assert_includes project.run("mutate", "--show", $1).stdout, "- def self.greet(name) = \"Hello, \#{name.strip}!\"\n+ def self.greet(name) = \"Hello, \#{name}!\"\nTests that ran it and passed:\n- test/greeter.test.rb:4 GreeterTest › greets\n"
 		assert_includes result.stdout, "MUTATION SCORE: 66.7% (2 of 3 killed, 1 survived)"
 
 		project.write("test/greeter.test.rb" => strong)
@@ -112,7 +126,7 @@ class MutateTest < Quickdraw::Test
 		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => WEAK)
 		human = project.run("mutate", "lib/pricing.rb", "--format", "human")
 
-		assert_includes human.stdout, "SURVIVED > → >=  Shop::Pricing#discount · lib/pricing.rb:6\n\n    - if total > 100\n    + if total >= 100\n"
+		assert_match human.stdout, %r{^SURVIVED > → >=  Shop::Pricing#discount · lib/pricing\.rb:6 · \h{12}\n\n    - if total > 100\n    \+ if total >= 100\n}
 		match { human => { stdout: /^FAILED 63.6% mutation score · 7 killed · 4 survived$/ } }
 
 		require "json"
@@ -123,7 +137,7 @@ class MutateTest < Quickdraw::Test
 				score: 63.64,
 				killed: 7,
 				survived: 4,
-				survivors: [{ path: "lib/pricing.rb", line: 6, method: "Shop::Pricing#discount", description: "condition → true", tests: [_, _] }, *],
+				survivors: [{ id: /\A\h{12}\z/, path: "lib/pricing.rb", line: 6, method: "Shop::Pricing#discount", description: "condition → true", tests: [_, _] }, *],
 			}
 		end
 	end
@@ -272,7 +286,7 @@ class MutateTest < Quickdraw::Test
 		).run("mutate", "lib/secrets.rb", "--format", "agent")
 
 		# Only a still-private method raises, so every mutant of it survives.
-		assert_equal result.stdout.scan(%r{^SURVIVED: lib/secrets.rb:2 Vault#code}).size, 3
+		assert_equal result.stdout.scan(%r{^SURVIVED \h{12} lib/secrets.rb:2 Vault#code}).size, 3
 		refute_includes result.stdout, "Helpers"
 		assert_includes result.stdout, "(4 of 7 killed, 3 survived)"
 	end
@@ -486,5 +500,14 @@ class MutateTest < Quickdraw::Test
 		report = JSON.parse(matrix.stdout)
 		assert_equal "#{report['killed']} of #{report['killed'] + report['survived']}", plain.stdout[/MUTATION SCORE: \S+ \((\d+ of \d+)/, 1]
 		assert_operator report["matrix"]["incomplete"], :>, 0
+	end
+
+	test "a run with nothing to mutate clears the last run's survivors", timeout: 30 do
+		project = project("lib/pricing.rb" => PRICING, "lib/constants.rb" => "LIMIT = 100\n", "test/pricing.test.rb" => WEAK)
+		project.run("mutate", "lib/pricing.rb", "--format", "agent")
+		assert_equal project.run("mutate", "--show", "all").stdout.lines.size, 4
+
+		project.run("mutate", "lib/constants.rb", "--format", "agent")
+		assert_equal project.run("mutate", "--show", "all").stdout, ""
 	end
 end
