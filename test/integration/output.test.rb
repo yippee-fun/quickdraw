@@ -49,7 +49,7 @@ class OutputTest < Quickdraw::Test
 	test "shows the end of a failing test's output for agents", timeout: 20 do
 		skip "Capturing what tests print needs fork" unless Process.respond_to?(:fork)
 
-		result = project("long.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "agent")
+		result = project("long.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "agent", env: { "CI" => nil })
 			class Long < Quickdraw::Test
 				test("prints a lot") { 30.times { |i| puts "line \#{i}" }; assert false }
 			end
@@ -57,6 +57,19 @@ class OutputTest < Quickdraw::Test
 
 		assert_includes result.stdout, "  Output (last 20 of 30 lines):\n    line 10\n"
 		refute_includes result.stdout, "line 9\n"
+	end
+
+	test "shows all of a failing test's output for agents in CI", timeout: 20 do
+		skip "Capturing what tests print needs fork" unless Process.respond_to?(:fork)
+
+		result = project("long.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "agent", env: { "CI" => "true" })
+			class Long < Quickdraw::Test
+				test("prints a lot") { 30.times { |i| puts "line \#{i}" }; assert false }
+			end
+		RUBY
+
+		assert_includes result.stdout, "  Output:\n    line 0\n"
+		assert_includes result.stdout, "    line 29\n"
 	end
 
 	test "keeps only the end of very long output", timeout: 20 do

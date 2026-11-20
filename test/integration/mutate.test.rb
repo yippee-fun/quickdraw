@@ -798,7 +798,7 @@ class MutateTest < Quickdraw::Test
 
 		annotations = result.stdout.lines.grep(/\A::error /)
 		assert_equal annotations.size, 4
-		assert_match annotations.join, %r{^::error file=lib/pricing\.rb,line=6,title=Mutant survived%3A > → >=::No test noticed this change \(\h{12}\):%0A- if total > 100%0A\+ if total >= 100%0A}
+		assert_match annotations.join, %r{^::error file=lib/pricing\.rb,line=6,title=Mutant survived%3A > → >=::No test noticed this change \(\h{12}\):%0A  - if total > 100%0A  \+ if total >= 100%0A}
 
 		json = project.run("mutate", "lib/pricing.rb", "--format", "json", env: { "GITHUB_ACTIONS" => "true" })
 		refute_includes json.stdout, "::error"

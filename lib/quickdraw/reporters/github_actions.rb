@@ -42,8 +42,8 @@ class Quickdraw::Reporters::GitHubActions
 		@problems.first(ANNOTATION_LIMIT).each { |problem| annotate(*problem) }
 
 		@leaks.first(LEAK_LIMIT).each do |path, test, leaks|
-			message = leaks.map { |leak| plain(leak["message"]) }.join("\n")
-			@io.puts "::warning file=#{property(path)},line=#{test['line']},title=#{property("#{plain(name_of(test))} left state behind")}::#{data(message)}"
+			body = [heading(path, test, nil), *leaks.map { |leak| plain(leak["message"]) }].join("\n")
+			@io.puts self.class.annotation("warning", file: path, line: test["line"], title: "#{plain(name_of(test))} left state behind", message: body)
 		end
 
 		@io.puts "::notice title=Browser tests left out::#{data("Left out #{left_out(outcome)}.")}" if outcome.browser_files_left_out > 0
@@ -53,14 +53,27 @@ class Quickdraw::Reporters::GitHubActions
 
 	private def annotate(path, test, result)
 		file, line = location(path, test, result)
-		title = test ? plain(name_of(test)) : "#{with_variant(path, result['variant'])} could not be loaded"
+		title = test ? plain(name_of(test)) : heading(path, test, result)
 
-		if result["quarantined"]
-			@io.puts "::warning file=#{property(file)},line=#{line},title=#{property("#{title} (quarantined)")}::#{data("#{message(result)}\n\n#{QUARANTINED}")}"
+		level, label, explanation = if result["quarantined"]
+			["warning", " (quarantined)", QUARANTINED]
 		elsif result["passed_on_retry"]
-			@io.puts "::warning file=#{property(file)},line=#{line},title=#{property("#{title} (flaky)")}::#{data("#{message(result)}\n\n#{flaky_explanation(result)}")}"
+			["warning", " (flaky)", flaky_explanation(result)]
 		else
-			@io.puts "::error file=#{property(file)},line=#{line},title=#{property(title)}::#{data(message(result))}"
+			["error"]
+		end
+
+		body = [heading(path, test, result), message(result), ("\n#{explanation}" if explanation)].compact.join("\n")
+		@io.puts self.class.annotation(level, file:, line:, title: "#{title}#{label}", message: body)
+	end
+
+	# What the problem is in, on one line, which leads the annotation's message,
+	# since raw logs show only the message, not the title.
+	private def heading(path, test, result)
+		if test
+			"#{plain(name_of(test)).gsub(/\s*\n\s*/, ' ')} · #{with_variant("#{path}:#{test['line']}", test['variant'])}"
+		else
+			"#{with_variant(path, result['variant'])} could not be loaded"
 		end
 	end
 
@@ -76,12 +89,15 @@ class Quickdraw::Reporters::GitHubActions
 		end
 	end
 
+	# With what the test's `context` blocks showed, if any.
 	private def message(result)
-		if (failure = result["failures"].first)
-			plain(failure["message"]).strip
+		problem = result["failures"].first || result["errors"].first
+		text = result["failures"].any? ? plain(problem["message"]).strip : "#{problem['name']}: #{plain(problem['message'])}"
+
+		if (context = problem["context"])
+			"#{text}\nContext:\n#{indent(plain(context).strip, 2)}"
 		else
-			error = result["errors"].first
-			"#{error['name']}: #{plain(error['message'])}"
+			text
 		end
 	end
 
@@ -107,9 +123,11 @@ class Quickdraw::Reporters::GitHubActions
 		File.write(@summary_path, "#{lines.join("\n")}\n", mode: "a")
 	end
 
-	# An annotation (`level` "error" or "warning") on a line, as a workflow command.
+	# An annotation (`level` "error" or "warning") on a line, as a workflow
+	# command. Lines after the message's first are indented, so in a raw log,
+	# which shows only the message, they read as part of it.
 	def self.annotation(level, file:, line:, title:, message:)
-		"::#{level} file=#{property(file)},line=#{line},title=#{property(title)}::#{data(message)}"
+		"::#{level} file=#{property(file)},line=#{line},title=#{property(title)}::#{data(message.gsub(/(?<=\n)(?=.)/, '  '))}"
 	end
 
 	# Workflow command escaping, from GitHub's toolkit.

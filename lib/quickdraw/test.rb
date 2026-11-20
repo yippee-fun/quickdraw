@@ -47,11 +47,17 @@ class Quickdraw::Test < Quickdraw::BasicTest
 			outer = Fiber[:quickdraw_case]
 			# With the test, so another test run inside the case records its own.
 			Fiber[:quickdraw_case] = [self, recorder]
+			# Context a case adds is only its own.
+			contexts = @contexts
+			@contexts = contexts&.dup
 			block.call(*values)
 			recorder.failure
 		rescue StandardError, ScriptError, SystemStackError => error
-			recorder.failure(error)
+			# Through the test, which adds its context, to the case's recorder.
+			error!(error)
+			recorder.failure
 		ensure
+			@contexts = contexts
 			Fiber[:quickdraw_case] = outer
 			recorder.close(test_runner)
 		end
