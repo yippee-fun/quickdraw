@@ -3,7 +3,8 @@
 # One JSON object per line, for tools: a "start" event, a "test" event per
 # test, a "load_error" event per file that couldn't load, and a "finish" event.
 # A test's "output" is what it printed, for failures and errors, and "leaks"
-# lists state it left behind. "variant" is the browser a test ran in, or a
+# lists state it left behind. A failure's or error's "context" is what the
+# test's `context` blocks showed with it. "variant" is the browser a test ran in, or a
 # file couldn't load in, when config.browser has several, or null. The
 # "finish" event's "browser_files_left_out" counts those a plain run left out.
 class Quickdraw::Reporters::JSON
@@ -32,7 +33,9 @@ class Quickdraw::Reporters::JSON
 			"duration" => result["duration"],
 			"assertions" => result["assertions"],
 			"counts" => result["counts"]&.transform_values { |count, seconds| { "count" => count, "seconds" => seconds } },
-			"failures" => result["failures"].map { |failure| failure.merge("message" => plain(failure["message"]), "path" => relative(failure["path"])) },
+			"failures" => result["failures"].map do |failure|
+				failure.merge("message" => plain(failure["message"]), "path" => relative(failure["path"]), "context" => failure["context"]&.then { |context| plain(context) }).compact
+			end,
 			"errors" => result["errors"].map { |error| serialize_error(error) },
 			"output" => result["output"]&.then { |output| plain(output) },
 			"leaks" => result["leaks"]&.map { |leak| leak.merge("message" => plain(leak["message"])) },
@@ -84,6 +87,7 @@ class Quickdraw::Reporters::JSON
 			"message" => plain(error["message"]),
 			"backtrace" => user_backtrace(error["backtrace"]).map { |frame| relative(Quickdraw.utf8(frame)) },
 			"details" => error["details"]&.then { |details| relative_paths(plain(details)) },
+			"context" => error["context"]&.then { |context| plain(context) },
 		}.compact
 	end
 

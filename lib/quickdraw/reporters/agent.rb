@@ -232,11 +232,14 @@ class Quickdraw::Reporters::Agent
 
 		result["failures"].each do |failure|
 			@io.puts "  #{source(relative(failure['path']), failure['line'])}"
-			@io.puts indent(compact(plain(failure["message"])), 2)
+			@io.puts indent(fit(compact(plain(failure["message"]))), 2)
+			print_context(failure)
 		end
 
 		result["errors"].each do |error|
-			@io.puts "  #{error['name']}: #{compact(plain(error['message']))}"
+			first_line, rest = fit(compact(plain(error["message"]))).split("\n", 2)
+			@io.puts "  #{error['name']}: #{first_line}"
+			@io.puts indent(rest, 4) if rest
 			frames = @backtrace ? error["backtrace"] : user_backtrace(error["backtrace"])
 			frames = frames.map { |frame| relative(frame) }
 
@@ -244,13 +247,18 @@ class Quickdraw::Reporters::Agent
 				@io.puts "  #{source(*location)}"
 			end
 
-			frames.first(BACKTRACE_LIMIT).each { |frame| @io.puts "    #{frame}" }
-			@io.puts indent(compact(relative_paths(plain(error["details"]))), 2) if error["details"]
+			@io.puts "  Raised inside Quickdraw, whose frames are usually hidden (--backtrace shows them all):" if !@backtrace && raised_in_quickdraw?(error["backtrace"])
+			frames = frames.first(BACKTRACE_LIMIT) unless @backtrace
+			frames.each { |frame| @io.puts "    #{frame}" }
+			@io.puts indent(fit(compact(relative_paths(plain(error["details"])))), 2) if error["details"]
+			print_context(error)
 		end
 
 		if (output = result["output"])
-			lines = compact(plain(output)).lines(chomp: true)
-			shown = lines.last(OUTPUT_LINES)
+			lines = fit(compact(plain(output))).lines(chomp: true)
+			# Its end, nearest the failure, but all of it in CI, where there's no
+			# running it again to see more.
+			shown = Quickdraw::Reporters.ci? ? lines : lines.last(OUTPUT_LINES)
 			@io.puts (lines.size > shown.size) ? "  Output (last #{shown.size} of #{lines.size} lines):" : "  Output:"
 			shown.each { |line| @io.puts "    #{line}" }
 		end
@@ -263,6 +271,13 @@ class Quickdraw::Reporters::Agent
 
 		@io.puts "  Rerun: #{rerun_command(path, test, problem_variant(test, result))}"
 		@io.puts
+	end
+
+	private def print_context(problem)
+		return unless (context = problem["context"])
+
+		@io.puts "  Context:"
+		@io.puts indent(fit(compact(plain(context))), 4)
 	end
 
 	private def print_leaks
@@ -288,10 +303,6 @@ class Quickdraw::Reporters::Agent
 
 	# Without the blank lines that make messages readable in a terminal.
 	private def compact(text)
-		text.lines(chomp: true).reject(&:empty?).join("\n")
-	end
-
-	private def delimit(number)
-		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
+		text.split(/\r\n?|\n/).reject(&:empty?).join("\n")
 	end
 end
