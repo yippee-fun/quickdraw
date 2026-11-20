@@ -2,7 +2,8 @@
 
 # The comments in a file that mark mutants equivalent to the original, such as
 # `# quickdraw:equivalent > → >= -- the cap below makes it the same`, which
-# mutate leaves out. Without a description, it's every mutant on the line.
+# mutate leaves out. Without a description, it's every mutant ending on the
+# line.
 # Uses Prism, so it only runs in a throwaway process.
 class Quickdraw::Mutation::Marks
 	PATTERN = /\A#\s*quickdraw:equivalent\b(?<text>.*)\z/
@@ -62,7 +63,7 @@ class Quickdraw::Mutation::Marks
 		mutant.line.upto(mutant.last_line) do |line|
 			@marks.fetch(line, []).each do |text|
 				description, reason = read(text, mutant.description)
-				return [line, text, reason] if description.nil? || description == mutant.description
+				return [line, text, reason] if description == mutant.description || (description.nil? && line == mutant.last_line)
 			end
 		end
 

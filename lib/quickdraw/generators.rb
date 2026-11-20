@@ -226,9 +226,9 @@ module Quickdraw::Generators
 		in Range if (nil === range.begin || Numeric === range.begin) && (nil === range.end || Numeric === range.end)
 			min = range.begin&.to_f
 			max = range.end&.to_f
-			max = max.prev_float if max && range.exclude_end?
 			min = nil if min == -Float::INFINITY
 			max = nil if max == Float::INFINITY
+			max = max.prev_float if max && range.exclude_end?
 
 			if (min && max && min > max) || min&.nan? || max&.nan? || min == Float::INFINITY || max == -Float::INFINITY
 				raise ::ArgumentError, "#{range.inspect} has no finite floats."

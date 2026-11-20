@@ -74,8 +74,7 @@ class Quickdraw::Commands::Fuzz
 		def found(finding)
 			signature = finding.failure.signature
 			existing = @findings[signature]
-			# A shrunk finding follows the one found, and is never longer.
-			@findings[signature] = finding if existing.nil? || finding.choices.size <= existing.choices.size
+			@findings[signature] = finding if existing.nil? || Quickdraw::Property::Shrinker.simpler?(finding.choices, existing.choices)
 		end
 
 		def finish(now)
