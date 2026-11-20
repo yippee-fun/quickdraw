@@ -23,7 +23,6 @@ Gem::Specification.new do |spec|
 	spec.bindir = "exe"
 	spec.executables = ["quickdraw", "qt", "qc"]
 
-	spec.add_dependency "listen", "~> 3.10"
 	spec.add_dependency "phlex", "~> 2.4"
 	spec.add_dependency "sqlite3", ">= 1.6"
 end

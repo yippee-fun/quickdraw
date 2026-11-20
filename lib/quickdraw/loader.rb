@@ -257,10 +257,18 @@ class Quickdraw::Loader
 	end
 
 	# Whether booting loaded `path`, or the autoloader's idea of it is out of
-	# date, since it's been added or deleted.
+	# date, since it's been added or deleted. A path that isn't a file may be a
+	# directory moved away or deleted, which stands for everything in it (see
+	# FileWatcher).
 	private def loaded?(path)
 		path = File.realpath(path) if File.exist?(path)
 		return true if $LOADED_FEATURES.include?(path)
+
+		unless File.file?(path)
+			directory = "#{path}/"
+			return true if $LOADED_FEATURES.any? { |feature| feature.start_with?(directory) }
+			return true if @autoloadable.each_key.any? { |file| file.start_with?(directory) }
+		end
 
 		autoloadable = path.end_with?(".rb") && autoload_dirs.any? { |dir| path.start_with?("#{dir}/") }
 		autoloadable && File.exist?(path) != @autoloadable.key?(path)

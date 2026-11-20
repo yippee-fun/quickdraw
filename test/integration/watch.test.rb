@@ -100,6 +100,21 @@ class WatchTest < Quickdraw::Test
 		assert_equal boots(project), 3
 	end
 
+	test "boots again when a directory holding files config loaded moves", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => "#{BOOT_COUNTER}Dir[File.join(__dir__, '../lib/**/*.rb')].each { |path| require path }\n",
+			"lib/support/helper.rb" => "HELPER = 1\n",
+			"test/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert_equal HELPER, 1 }; end\n",
+		)
+
+		lib = File.join(project.directory, "lib")
+		result = watch(project, -> (_keyboard) { File.rename(File.join(lib, "support"), File.join(lib, "extra")) })
+
+		assert result.success?
+		assert_equal summaries(result).size, 2
+		assert_equal boots(project), 2
+	end
+
 	test "boots again once broken config is fixed", timeout: 40 do
 		project = project(
 			"config/quickdraw.rb" => "raise 'broken'\n",

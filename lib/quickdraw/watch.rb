@@ -7,34 +7,28 @@
 # runs (see WarmLoaders).
 #
 # Tests run in forks of this process, so it uses only core Ruby. File events
-# come from a separate process running listen, and keys are read with the
+# come from a separate process (see FileWatcher), and keys are read with the
 # terminal set by `stty`.
 class Quickdraw::Watch
 	# What running tests writes, such as logs and SQLite databases with their
 	# journals, which would otherwise start another run, and so on forever.
 	WRITTEN_BY_TESTS = %r{\A(?:log|storage)/|\.log\z|\.sqlite3}
 
-	# Prints "ready", then each batch of changed paths on a line, separated by
-	# NUL. Events are queued until then, so "ready" always comes first. The
-	# default FSEvents latency adds ~100ms to every change. Quickdraw's own
-	# history, and the files it writes reports to, mustn't trigger another run.
-	LISTENER = <<~RUBY
-		require "listen"
-		$stdout.sync = true
-		ignored = [%r{\\A\\.quickdraw/}, *ARGV.map { |path| /\\A\#{Regexp.escape(path)}\\z/ }]
-		root = "\#{Dir.pwd}/"
-		changes = Queue.new
+	FILE_WATCHER = "module Quickdraw; end; require ARGV.shift; Quickdraw::FileWatcher.run(ARGV)"
 
-		Listen.to(".", latency: 0.01, wait_for_delay: 0.01, ignore: ignored) do |modified, added, removed|
-			changes << (modified + added + removed)
-		end.start
+	# Starts FileWatcher on `directory`, which reports changes on the IO
+	# returned, ignoring `ignored` (paths relative to `directory`). It runs
+	# outside the bundle, since Fiddle is a bundled gem from Ruby 4, which
+	# Bundler only lets a process load if the Gemfile has it. In its own process
+	# group, so Ctrl-C in a debugger doesn't stop it.
+	def self.start_file_watcher(ignored, directory: Dir.pwd, poll: false)
+		environment = ENV.select { |name, _| name.start_with?("BUNDLER_ORIG_") }.to_h do |name, value|
+			[name.delete_prefix("BUNDLER_ORIG_"), (value unless value == "BUNDLER_ENVIRONMENT_PRESERVER_INTENTIONALLY_NIL")]
+		end
 
-		# Starting returns before macOS delivers events.
-		sleep 0.1
-		puts "ready"
-
-		loop { puts changes.pop.map { |path| path.delete_prefix(root) }.join("\\0") }
-	RUBY
+		environment["QUICKDRAW_POLL"] = "1" if poll
+		IO.popen([environment, RbConfig.ruby, "-e", FILE_WATCHER, File.join(__dir__, "file_watcher.rb"), *ignored], chdir: directory, pgroup: true)
+	end
 
 	KEYS = "Enter rerun · a all · f failed · p path · n name · q quit"
 
@@ -52,8 +46,7 @@ class Quickdraw::Watch
 
 	# Returns the exit status: 0 when quit, otherwise the watcher's failure.
 	def call
-		# In its own process group, so Ctrl-C in a debugger doesn't stop it.
-		@listener = IO.popen([RbConfig.ruby, "-e", LISTENER, *ignored_paths], pgroup: true)
+		@file_watcher = self.class.start_file_watcher(ignored_paths)
 		@wake_reader, wake_writer = IO.pipe
 		previous_handler = trap("INT") { wake_writer.write_nonblock("q", exception: false) unless Quickdraw::Debugger.active? }
 		@terminal = take_keyboard if @interactive
@@ -64,22 +57,21 @@ class Quickdraw::Watch
 	ensure
 		trap("INT", previous_handler || "DEFAULT") if @wake_reader
 		release_keyboard
-		# Its group, which has the file watching process listen starts.
-		Process.kill("TERM", -@listener.pid) if @listener && !@listener.closed?
+		Process.kill("TERM", @file_watcher.pid) if @file_watcher && !@file_watcher.closed?
 		@loaders&.stop
 	end
 
 	private def watch
 		loop do
-			readable, = IO.select([@listener, @wake_reader, (@interactive ? $stdin : nil)].compact)
+			readable, = IO.select([@file_watcher, @wake_reader, (@interactive ? $stdin : nil)].compact)
 
 			return 0 if readable.include?(@wake_reader)
 
-			if readable.include?(@listener)
-				line = @listener.gets
+			if readable.include?(@file_watcher)
+				line = @file_watcher.gets
 
 				unless line
-					@listener.close
+					@file_watcher.close
 					warn "The file watcher stopped (#{$?})."
 					return 1
 				end
@@ -91,10 +83,11 @@ class Quickdraw::Watch
 		end
 	end
 
-	# Changes arriving together, from a save that writes several files, say, make one run.
+	# The file watcher batches changes that arrive together, and batches that
+	# came during the last run make one run too.
 	private def changed(line)
 		paths = line.chomp.split("\0")
-		paths.concat(@listener.gets.chomp.split("\0")) while @listener.wait_readable(0.05)
+		paths.concat(@file_watcher.gets.chomp.split("\0")) while @file_watcher.wait_readable(0)
 		# What the default selection leaves out, such as installed gems, never runs.
 		paths = paths.uniq.grep_v(Quickdraw::CLI::IGNORED_DIRECTORIES).grep_v(WRITTEN_BY_TESTS)
 		return if paths.empty?
@@ -181,14 +174,15 @@ class Quickdraw::Watch
 		status_line
 	end
 
-	# Not until the listener is ready, which it gets while the first run happens,
-	# so "Watching" is true.
+	# Not until the file watcher is ready, which it gets while the first run
+	# happens, so "Watching" is true. Its warnings come first.
 	private def status_line
-		unless @listening
-			line = @listener.gets
-			raise "The file watcher didn’t start (#{line.inspect})." unless line == "ready\n"
+		until @file_watcher_ready
+			line = @file_watcher.gets
+			raise "The file watcher didn’t start." unless line
 
-			@listening = true
+			@file_watcher_ready = line == "ready\n"
+			@out.puts line unless @file_watcher_ready
 		end
 
 		filters = [

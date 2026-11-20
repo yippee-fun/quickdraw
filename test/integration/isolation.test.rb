@@ -15,7 +15,7 @@ class IsolationTest < Quickdraw::Test
 					"OptionParser" => -> { defined?(::OptionParser) },
 					"Etc" => -> { defined?(::Etc) },
 					"UNIXSocket" => -> { defined?(::UNIXSocket) },
-					"Listen" => -> { defined?(::Listen) },
+					"Fiddle" => -> { defined?(::Fiddle) },
 					"FileUtils" => -> { defined?(::FileUtils) },
 				}.each do |name, loaded|
 					test(name) { refute(loaded.call) { "\#{name} was loaded" } }
