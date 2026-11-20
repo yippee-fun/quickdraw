@@ -55,6 +55,8 @@ module Quickdraw
 	autoload :Elastic, "quickdraw/elastic"
 	autoload :IdleCPU, "quickdraw/idle_cpu"
 	autoload :Assertions, "quickdraw/assertions"
+	autoload :Stubs, "quickdraw/stubs"
+	autoload :Spy, "quickdraw/spy"
 	autoload :Choices, "quickdraw/choices"
 	autoload :Generator, "quickdraw/generator"
 	autoload :Generators, "quickdraw/generators"

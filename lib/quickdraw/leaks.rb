@@ -73,9 +73,9 @@ class Quickdraw::Leaks
 		@threads = []
 
 		# Not in other Ractors, which can't reach this list, and whose threads
-		# Thread.list doesn't have.
+		# Thread.list doesn't have. Nor what a stub of Thread.new returns.
 		def self.started(thread)
-			@threads << thread if !defined?(Ractor) || Ractor.current.equal?(Ractor.main)
+			@threads << thread if Thread === thread && (!defined?(Ractor) || Ractor.current.equal?(Ractor.main))
 		end
 
 		def self.take

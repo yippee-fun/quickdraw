@@ -2,6 +2,7 @@
 
 class Quickdraw::Test < Quickdraw::BasicTest
 	include Quickdraw::Assertions
+	include Quickdraw::Stubs
 	include Quickdraw::Generators
 	# For fuzz, in the class body.
 	extend Quickdraw::Generators
