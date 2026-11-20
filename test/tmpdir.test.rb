@@ -10,7 +10,12 @@ class TmpdirTest < Quickdraw::Test
 	end
 
 	test "gives a new directory each time" do
-		refute_equal tmpdir, tmpdir
+		srand(123)
+		first = tmpdir
+		srand(123)
+		second = tmpdir
+
+		refute_equal first, second
 	end
 
 	test "removes the directory and its contents after the test" do

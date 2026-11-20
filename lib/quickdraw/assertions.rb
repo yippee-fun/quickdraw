@@ -16,8 +16,8 @@ module Quickdraw::Assertions
 			end
 
 			<<~MESSAGE
-				\e[2mExpected\e[0m  \e[32m#{expected.inspect}\e[0m
-				\e[2mActual\e[0m    \e[31m#{actual.inspect}\e[0m
+				\e[2mExpected\e[0m  \e[31m#{expected.inspect}\e[0m
+				\e[2mActual\e[0m    \e[32m#{actual.inspect}\e[0m
 			MESSAGE
 		end
 	end
@@ -204,6 +204,11 @@ module Quickdraw::Assertions
 	def assert_raises(expected)
 		yield
 		failure! { "expected block to raise #{expected.inspect} but nothing was raised" }
+	rescue Quickdraw::Interrupted, Quickdraw::BasicTest::Skip => error
+		raise unless expected == error.class
+
+		success!
+		error
 	rescue Exception => error
 		assert(expected === error) do
 			"expected block to raise #{expected.inspect} but #{error.class.inspect} was raised instead"
@@ -215,6 +220,8 @@ module Quickdraw::Assertions
 	def refute_raises
 		yield
 		success!
+	rescue Quickdraw::Interrupted, Quickdraw::BasicTest::Skip
+		raise
 	rescue Exception => error
 		failure! { "expected block not to raise, but #{error.class.inspect} was raised" }
 	end
@@ -358,7 +365,8 @@ module Quickdraw::Assertions
 			return assert(true) if yield
 			break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
-			sleep interval
+			# Not Browser#sleep, which warns.
+			::Kernel.sleep(interval)
 		end
 
 		assert(false) { "expected the block to return something truthy within #{within}s, but it didn't in #{tries} tries" }

@@ -87,6 +87,8 @@ module Quickdraw::Inspector
 	# Kernel#inspect includes the object's address, which would differ even
 	# between equal objects; a custom inspect is shown as written.
 	private def default_inspect?(value)
+		return false unless Object === value
+
 		value.method(:inspect).owner == Kernel
 	rescue NameError
 		false

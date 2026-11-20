@@ -40,4 +40,16 @@ class RaisesTest < Quickdraw::Test
 			end
 		end
 	end
+
+	test "#assert_raises and #refute_raises let Skip and Interrupted through" do
+		runner = assert_test do
+			assert_raises(StandardError) { skip "later" }
+		end
+		assert_equal runner.skipped, { "pending" => false, "reason" => "later" }
+
+		runner = assert_test do
+			refute_raises { skip "later" }
+		end
+		assert_equal runner.skipped, { "pending" => false, "reason" => "later" }
+	end
 end

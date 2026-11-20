@@ -164,7 +164,8 @@ module Quickdraw::Browser
 	# Waits, in Node, for `kind` (see bridge.mjs's assertions) of `page`. Returns
 	# nil if it passes, or why it failed.
 	def self.expect(page, kind, within: nil, selector: nil, text: nil, count: nil, timeout: @timeout)
-		@bridge.call("assert", kind:, page: page.__handle__, within: locator(within), selector: locator(selector), text: Remote.argument(text), count:, timeout: timeout * 1000)
+		# Playwright waits forever for a timeout of 0.
+		@bridge.call("assert", kind:, page: page.__handle__, within: locator(within), selector: locator(selector), text: Remote.argument(text), count:, timeout: [timeout * 1000, 1].max)
 	end
 
 	# Saves a screenshot, the HTML and the console log of the page, named

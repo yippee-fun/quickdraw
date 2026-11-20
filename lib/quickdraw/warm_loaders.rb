@@ -99,7 +99,7 @@ class Quickdraw::WarmLoaders
 	def initialize(coverage:, test_output_to_stderr:)
 		@coverage = coverage
 		@test_output_to_stderr = test_output_to_stderr
-		@directory = File.join(ENV.fetch("TMPDIR", "/tmp"), "quickdraw-#{Random.urandom(8).unpack1('H*')}")
+		@directory = File.join(Quickdraw.temporary_directory, "quickdraw-#{Random.urandom(8).unpack1('H*')}")
 		Dir.mkdir(@directory, 0o700)
 		@loaders = {}
 		@wanted = Quickdraw::Channel.new(*IO.pipe)

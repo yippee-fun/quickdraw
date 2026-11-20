@@ -102,7 +102,7 @@ class Quickdraw::Leaks
 			def value
 				super
 			ensure
-				@quickdraw_joined = true
+				@quickdraw_joined = true unless alive?
 			end
 
 			def quickdraw_joined? = @quickdraw_joined

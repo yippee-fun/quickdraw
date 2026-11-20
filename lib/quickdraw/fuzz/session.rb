@@ -224,7 +224,7 @@ class Quickdraw::Fuzz::Session
 	# Where each case's choices are written before it runs (see
 	# Fuzzer#record). Unlinked, so it goes when the worker does.
 	private def open_last_case
-		path = File.join(File.expand_path(ENV.fetch("TMPDIR", "/tmp")), "quickdraw-fuzz-#{Process.pid}-#{rand(1 << 64).to_s(36)}")
+		path = File.join(Quickdraw.temporary_directory, "quickdraw-fuzz-#{Process.pid}-#{rand(1 << 64).to_s(36)}")
 		file = File.open(path, File::RDWR | File::CREAT | File::EXCL, binmode: true)
 		File.delete(path)
 		file

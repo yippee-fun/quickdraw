@@ -193,7 +193,7 @@ class Quickdraw::Worker
 		end
 
 		# After the watchdog and sampler start, so their threads aren't leaks.
-		@leaks = Quickdraw::Leaks.new(Dir.pwd) if @leak_mode
+		@leaks = Quickdraw::Leaks.new(Quickdraw::ROOT) if @leak_mode
 		@terminal_turn = Thread::Queue.new([true])
 		Quickdraw::Debugger.install(self)
 
@@ -281,7 +281,7 @@ class Quickdraw::Worker
 		end
 
 		@files[path] = tests
-		@file_seeds[path] = Quickdraw.stable_hash("#{@seed}:#{path.delete_prefix("#{Dir.pwd}/")}")
+		@file_seeds[path] = Quickdraw.stable_hash("#{@seed}:#{path.delete_prefix("#{Quickdraw::ROOT}/")}")
 
 		[:loaded, path, tests.map { |test| describe(test) }, now - started_at]
 	rescue Quickdraw::Interrupted
@@ -383,7 +383,7 @@ class Quickdraw::Worker
 		# A thread the test left running may fail an assertion yet, which is a leak.
 		if @leaks
 			name = "#{Quickdraw::Filter.name_of(describe(definition))} (line #{definition.line})"
-			recorder.close { |failure| @late << { "kind" => "late failure", "message" => Quickdraw.utf8("After #{name} finished, a thread it started failed an assertion at #{failure['path'].delete_prefix("#{Dir.pwd}/")}:#{failure['line']}: #{failure['message']}") } }
+			recorder.close { |failure| @late << { "kind" => "late failure", "message" => Quickdraw.utf8("After #{name} finished, a thread it started failed an assertion at #{failure['path'].delete_prefix("#{Quickdraw::ROOT}/")}:#{failure['line']}: #{failure['message']}") } }
 		end
 
 		result
@@ -515,8 +515,11 @@ class Quickdraw::Worker
 	# A length-prefixed message from a fork, or nil at the end of the pipe.
 	private def read_message(reader)
 		header = reader.read(4)
-		data = reader.read(header.unpack1("N")) if header&.bytesize == 4
-		Marshal.load(data) if data
+		return unless header&.bytesize == 4
+
+		size = header.unpack1("N")
+		data = reader.read(size)
+		Marshal.load(data) if data&.bytesize == size
 	end
 
 	private def stop_fork(pid)
@@ -566,9 +569,7 @@ class Quickdraw::Worker
 		end
 
 		# Length-prefixed rather than read to the end, for the same reason.
-		header = reader.read(4)
-		data = reader.read(header.unpack1("N")) if header&.bytesize == 4
-		Marshal.load(data) if data
+		read_message(reader)
 	ensure
 		reader&.close
 		writer&.close
