@@ -8,17 +8,23 @@
 #
 # Writes to `channel`, for the Session: [:fuzzing, key, methods traced] once
 # it starts, [:progress, cases, new features, corpus size] every INTERVAL (so the
-# session knows it isn't hanging), [:finding, Finding], and [:done].
-# Writes each case's choices to `last_case` before running it, where the
-# session finds the case that crashed or hung the process.
+# session knows it isn't hanging), [:finding, Finding], [:shrunk, signature]
+# once it's done shrinking a finding, and [:done]. Writes each case's stage
+# and choices to `last_case` as they change, where the session finds the case
+# that crashed or hung the process.
 class Quickdraw::Fuzz::Fuzzer
 	INTERVAL = 0.2
 
 	# One case in this many is fresh rather than made from the corpus.
 	FRESH = 10
 
-	# `skip` has cases that crashed or hung earlier processes, not to run again.
-	def initialize(channel, last_case, deadline:, seed:, skip: [])
+	# What the case in `last_case` is doing: drawing its choices, with a Random
+	# or only replaying its prefix, or running with them.
+	STAGES = [:drawing, :replaying, :running].freeze
+
+	# `skip` has cases that crashed or hung earlier processes, not to run again,
+	# and `signatures` the failures already found, not to shrink again.
+	def initialize(channel, last_case, deadline:, seed:, skip: [], signatures: {})
 		@channel = channel
 		@last_case = last_case
 		@deadline = deadline
@@ -28,7 +34,7 @@ class Quickdraw::Fuzz::Fuzzer
 		@skip = skip.to_h { |choices| [choices, true] }
 		@entries = []
 		@seen = {}
-		@signatures = {}
+		@signatures = signatures.dup
 		@cases = 0
 		@ran = 0
 		@discarded = 0
@@ -85,15 +91,22 @@ class Quickdraw::Fuzz::Fuzzer
 	end
 
 	# Discards cases that crashed or hung earlier processes once they're drawn,
-	# so they aren't run again however they're made.
+	# so they aren't run again however they're made. Forgets the threads the
+	# case started, which only a test run's leak checks need.
 	private def execute(prefix, random = nil)
+		# Replaying choices that crashed or hung an earlier process while drawing.
+		return if !random && @skip.key?(prefix)
+
 		@cases += 1
+		random ? record(:drawing, Quickdraw::Choices::EMPTY) : record(:replaying, prefix)
 
 		run = @property.execute(prefix, random) do |choices|
 			choices.discard! if @skip.key?(choices.values)
-			record(choices.values)
+			heartbeat
+			record(:running, choices.values)
 		end
 
+		Quickdraw::Leaks::ThreadStarts.take
 		run ? (@ran += 1) : (@discarded += 1)
 		run
 	end
@@ -110,6 +123,7 @@ class Quickdraw::Fuzz::Fuzzer
 		shrinker = Quickdraw::Property::Shrinker.new(run) { |choices| shrink_attempt(choices) }
 		minimal = shrinker.call
 		report(minimal, original: run, cases:, shrinks: shrinker.shrinks) if shrinker.shrinks > 0
+		@channel.write([:shrunk, signature])
 	end
 
 	private def shrink_attempt(choices)
@@ -123,14 +137,20 @@ class Quickdraw::Fuzz::Fuzzer
 			kind: Quickdraw::Fuzz::Finding.kind(run.failure),
 			key: @property.key,
 			choices: run.choices,
-			input: @property.inspect_values(run.choices),
-			original: original && @property.inspect_values(original.choices),
+			input: inspect_values(run.choices),
+			original: original && inspect_values(original.choices),
 			failure: run.failure,
 			cases:,
 			shrinks:,
 		)
 
 		@channel.write([:finding, finding])
+	end
+
+	# Recorded as replaying, since it runs the generators again.
+	private def inspect_values(choices)
+		record(:replaying, choices)
+		@property.inspect_values(choices)
 	end
 
 	# Until the deadline, which a large corpus could take past.
@@ -187,12 +207,11 @@ class Quickdraw::Fuzz::Fuzzer
 		@new_features = []
 	end
 
-	# With how many cases have run, and the choices' length, in place, so it
-	# costs one write.
-	private def record(choices)
-		heartbeat
+	# With how many cases have run, the stage and the choices' length, in
+	# place, so it costs one write.
+	private def record(stage, choices)
 		data = choices.pack("w*")
-		@last_case.pwrite([@cases, data.bytesize].pack("Q>N") << data, 0)
+		@last_case.pwrite([@cases, STAGES.index(stage), data.bytesize].pack("Q>CN") << data, 0)
 	end
 
 	private def now

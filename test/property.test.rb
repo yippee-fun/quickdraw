@@ -99,6 +99,39 @@ class PropertyTest < Quickdraw::Test
 		assert_includes error["message"], "\n\n#{simplest}\n\n"
 	end
 
+	test "shrinks a case whose choices a nondeterministic generator shortens while it lowers one" do
+		failure = Quickdraw::Property::Failure.new(failures: [{ "path" => "x", "line" => 1 }], errors: [])
+
+		execute = lambda do |prefix|
+			choices = Quickdraw::Choices.new(prefix)
+			first = choices.draw(integer(0..1000))
+			# Only the first value, when the third is lowered but not to zero.
+			shortened = prefix[1] == 0 && prefix[2]&.between?(1, 799)
+			third = Array.new(2) { choices.draw(integer(0..1000)) }.last unless shortened
+			Quickdraw::Property::Run.new(choices: choices.values, limits: choices.limits, spans: choices.spans, failure: (failure if first >= 500 && (shortened || third > 0)))
+		end
+
+		assert_equal Quickdraw::Property::Shrinker.new(execute.([600, 0, 800]), &execute).call.choices, [500]
+	end
+
+	test "forgets threads its cases started once they end, unless they ended with an exception nothing saw" do
+		skip "Leak checks are off" unless Thread.singleton_class.include?(Quickdraw::Leaks::ThreadStarts::Starting)
+
+		raised = nil
+
+		assert_test(passes: 1) do
+			check(integer, cases: 20) do
+				Thread.new { nil }.join
+				next if raised
+
+				raised = Thread.new { Thread.current.report_on_exception = false; raise "unseen" }
+				Thread.pass while raised.alive?
+			end
+		end
+
+		assert_equal Quickdraw::Leaks::ThreadStarts.take, [raised]
+	end
+
 	test "the test carries on after a property fails" do
 		assert_test(passes: 1, failures: 1) do
 			check(boolean) { |value| assert value }

@@ -92,6 +92,56 @@ class FuzzIntegrationTest < Quickdraw::Test
 		match { result => { stdout: %r{^HUNG: test/crash.test.rb:6 CrashTest › hangs\. Input \(found after [\d,]+ cases\):\n7\nA case ran for longer than 0.2s\.$} } }
 	end
 
+	HANGS = <<~RUBY
+		class HangTest < Quickdraw::Test
+			def self.wait_for_seven = sleep
+			def self.wait_for_fifteen = sleep
+
+			fuzz "hangs in two places", integer(0..100) do |n|
+				HangTest.wait_for_seven if n == 7
+				HangTest.wait_for_fifteen if n == 15
+			end
+
+			fuzz "hangs while generating", integer(0..100).map { |n| (n == 7) ? sleep : n } do |n|
+				nil
+			end
+
+			fuzz "crashes while generating its simplest case", integer(0..100).map { |n| n.zero? ? Process.kill(:KILL, Process.pid) : n } do |n|
+				assert n < 50
+			end
+		end
+	RUBY
+
+	test "reports where each hang is, and a hang or crash while generating a case's input", timeout: 60 do
+		result = project("test/hang.test.rb" => HANGS).run("fuzz", "--seconds", "2", "--timeout", "0.2", "-p", "1", "--seed", "1", "--format", "agent", timeout: 50)
+
+		assert_equal result.exit_status, 1
+		match { result => { stdout: %r{^HUNG: test/hang.test.rb:5 HangTest › hangs in two places\. Input \(found after [\d,]+ cases\):\n7\nA case ran for longer than 0.2s\.\ntest/hang.test.rb:2:in } } }
+		match { result => { stdout: %r{^HUNG: test/hang.test.rb:5 HangTest › hangs in two places\. Input \(found after [\d,]+ cases\):\n15\nA case ran for longer than 0.2s\.\ntest/hang.test.rb:3:in } } }
+		match { result => { stdout: %r{^HUNG: test/hang.test.rb:10 HangTest › hangs while generating\. Found after [\d,]+ cases\.\nA case ran for longer than 0.2s\. It happened while generating the case’s input, so there’s no counterexample\.\ntest/hang.test.rb:10:in } } }
+		assert_equal result.stdout.scan(/^HUNG: /).size, 3
+		match { result => { stdout: %r{^CRASHED: test/hang.test.rb:14 HangTest › crashes while generating its simplest case\. Found after 1 case\.\nThe process was killed by SIGKILL\. It happened while generating} } }
+		# Later processes skip the simplest case, rather than crashing on it until time runs out.
+		match { result => { stdout: %r{^FAILED: test/hang.test.rb:14 HangTest › crashes while generating its simplest case\. Input \([^)]*\):\n50\n} } }
+		assert_includes result.stdout, "5 findings, 3 saved to replay first in test runs."
+	end
+
+	test "forgets the threads each case starts", timeout: 30 do
+		project = project("test/threads.test.rb" => <<~RUBY)
+			class ThreadsTest < Quickdraw::Test
+				fuzz "starts a thread that raises", integer do |n|
+					thread = Thread.new { Thread.current.report_on_exception = false; raise "unseen" }
+					Thread.pass while thread.alive?
+					kept = [:@threads, :@raised].sum { |name| Quickdraw::Leaks::ThreadStarts.instance_variable_get(name).size }
+					assert kept < 3
+				end
+			end
+		RUBY
+
+		result = project.run("fuzz", "--seconds", "0.5", "-p", "1", "--format", "agent")
+		assert_equal [result.exit_status, result.stdout[/^\w+: /]], [0, "FUZZED: "]
+	end
+
 	test "fuzzes any test that checks a property, given by line, and says when one checks none", timeout: 30 do
 		project = project("test/numbers.test.rb" => <<~RUBY)
 			class NumbersTest < Quickdraw::Test

@@ -161,7 +161,8 @@ class Quickdraw::Property
 					low = 0
 					high = choice
 
-					while high - low > 1
+					# A nondeterministic generator can shorten the best case's choices.
+					while high - low > 1 && index < @best.choices.size
 						middle = (low + high) / 2
 
 						if improve?(replace(index, middle))
@@ -394,6 +395,8 @@ class Quickdraw::Property
 		Run.new(choices: choices.values, limits: choices.limits, spans: choices.spans, failure: @body.call(values))
 	rescue Quickdraw::Choices::Discard
 		nil
+	ensure
+		Quickdraw::Leaks::ThreadStarts.prune
 	end
 
 	# The cases saved from earlier runs, oldest first.

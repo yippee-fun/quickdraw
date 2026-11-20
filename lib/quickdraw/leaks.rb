@@ -71,6 +71,8 @@ class Quickdraw::Leaks
 	# nothing joined it to see can be reported, and whether each was joined.
 	module ThreadStarts
 		@threads = []
+		# Those prune found had ended with an exception, so it doesn't check them again.
+		@raised = []
 
 		# Not in other Ractors, which can't reach this list, and whose threads
 		# Thread.list doesn't have. Nor what a stub of Thread.new returns.
@@ -79,9 +81,19 @@ class Quickdraw::Leaks
 		end
 
 		def self.take
-			threads = @threads
+			threads = @raised + @threads
+			@raised = []
 			@threads = []
 			threads
+		end
+
+		# Forgets threads that ended with nothing to report, so a property
+		# whose cases each start one doesn't keep them all until its test ends.
+		def self.prune
+			return if @threads.empty?
+
+			ended, @threads = @threads.partition { |thread| !thread.alive? }
+			@raised.concat(ended.select { |thread| thread.status.nil? && !thread.quickdraw_joined? })
 		end
 
 		module Starting

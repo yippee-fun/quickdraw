@@ -123,6 +123,26 @@ class GeneratorsTest < Quickdraw::Test
 			assert_raises(ArgumentError) { string(dictionary: [""]) }
 			assert_raises(ArgumentError) { string(dictionary: [:true]) }
 		end
+
+		test "rejects characters it can't make strings of when it's defined" do
+			assert_equal string("\xFF".b, length: 1).call(Quickdraw::Choices.new), "\xFF".b
+
+			{
+				("a"..) => "no end",
+				(.."z") => "no beginning",
+				"a\xFF" => %("\\xFF" isn't valid UTF-8),
+				["é", "\xFF".b] => %("\\xFF" is ASCII-8BIT, which can't be joined with UTF-8 characters),
+				[1, 2] => "Expected characters as Strings, got 1",
+				"" => "Expected at least one character",
+			}.each do |characters, message|
+				assert_includes assert_raises(ArgumentError) { string(characters) }.message, message
+			end
+
+			assert_includes assert_raises(ArgumentError) { string("é", dictionary: ["\xFF".b]) }.message, "can't be joined"
+			assert_includes assert_raises(ArgumentError) { string(dictionary: ["a\xFF"]) }.message, "isn't valid UTF-8"
+			assert_includes assert_raises(ArgumentError) { string(dictionary: ["\xFF".b]) }.message, "can't be joined"
+			assert_includes assert_raises(ArgumentError) { string(:ascii, dictionary: ["a".encode("UTF-16LE")]) }.message, "can't be joined"
+		end
 	end
 
 	describe "bytes" do

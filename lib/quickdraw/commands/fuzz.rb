@@ -71,14 +71,23 @@ class Quickdraw::Commands::Fuzz
 			@corpus = [@corpus, corpus].max
 		end
 
+		# One with choices over one without, which happened while generating.
 		def found(finding)
 			signature = finding.failure.signature
 			existing = @findings[signature]
-			@findings[signature] = finding if existing.nil? || Quickdraw::Property::Shrinker.simpler?(finding.choices, existing.choices)
+			@findings[signature] = finding if existing.nil? || simpler?(finding.choices, existing.choices)
 		end
 
 		def finish(now)
 			@duration = now - @started_at
+		end
+
+		private def simpler?(choices, than)
+			case [choices, than]
+			in [nil, _] then false
+			in [Array, nil] then true
+			in [Array, Array] then Quickdraw::Property::Shrinker.simpler?(choices, than)
+			end
 		end
 	end
 
@@ -207,10 +216,11 @@ class Quickdraw::Commands::Fuzz
 		exit_status
 	end
 
-	# With the property's failing cases, which test runs replay first.
+	# With the property's failing cases, which test runs replay first. Not
+	# those found while generating, which have no choices to replay.
 	private def save_findings
 		@targets.each do |target|
-			target.findings.each { |finding| Quickdraw::Property.remember(finding.key, finding.choices) }
+			target.findings.each { |finding| Quickdraw::Property.remember(finding.key, finding.choices) if finding.choices }
 		end
 	end
 
@@ -234,8 +244,11 @@ class Quickdraw::Commands::Fuzz
 			@io.puts
 			@io.puts "  #{bold(found(finding))}"
 			@io.puts
-			@io.puts indent(finding.input, 4)
-			@io.puts
+
+			if finding.input
+				@io.puts indent(finding.input, 4)
+				@io.puts
+			end
 		end
 
 		@problems.each { |problem| @io.puts "#{yellow('!')} #{problem}" }
@@ -256,8 +269,8 @@ class Quickdraw::Commands::Fuzz
 
 	private def report_for_agents
 		findings.each do |target, finding|
-			@io.puts "#{finding.kind.upcase}: #{target.path}:#{target.test['line']} #{name_of(target.test)}. #{found(finding)}:"
-			@io.puts finding.input
+			@io.puts "#{finding.kind.upcase}: #{target.path}:#{target.test['line']} #{name_of(target.test)}. #{found(finding)}#{finding.input ? ':' : '.'}"
+			@io.puts finding.input if finding.input
 			details(finding).each { |line| @io.puts line }
 			@io.puts
 		end
@@ -269,7 +282,10 @@ class Quickdraw::Commands::Fuzz
 			@io.puts "FUZZED: #{target.path}:#{target.test['line']} #{name_of(target.test)}: #{summary(target)}. #{edges_over_time(target)}"
 		end
 
-		@io.puts "#{pluralize(findings.size, 'finding')}, saved to replay first in test runs. #{rate}" if findings.any?
+		return unless findings.any?
+
+		saved = findings.count { |_target, finding| finding.choices }
+		@io.puts "#{pluralize(findings.size, 'finding')}, #{(saved == findings.size) ? 'saved' : "#{saved} saved"} to replay first in test runs. #{rate}"
 	end
 
 	private def report_json
@@ -327,7 +343,8 @@ class Quickdraw::Commands::Fuzz
 
 	private def found(finding)
 		shrunk = ", shrunk #{pluralize(finding.shrinks, 'time')}" if finding.shrinks > 0
-		"Input (found after #{count(finding.cases)} #{(finding.cases == 1) ? 'case' : 'cases'}#{shrunk})"
+		after = "after #{count(finding.cases)} #{(finding.cases == 1) ? 'case' : 'cases'}"
+		finding.input ? "Input (found #{after}#{shrunk})" : "Found #{after}"
 	end
 
 	private def summary(target)
