@@ -117,6 +117,36 @@ class FuzzTest < Quickdraw::Test
 
 		target.found(finding.([9]))
 		assert_equal target.findings.map(&:choices), [[9]]
+
+		# Over one found while generating, which has none.
+		target.found(finding.(nil))
+		assert_equal target.findings.map(&:choices), [[9]]
+	end
+
+	test "a fuzzer the session restarts after a crash doesn't report failures again" do
+		skip "fuzz needs fork" unless Process.respond_to?(:fork)
+
+		root = tmpdir
+		stub(Quickdraw::Fuzz::Corpus, :root) { File.join(root, "fuzz") }
+		directory = Quickdraw::Property.directory
+		Quickdraw::Property.directory = File.join(root, "properties")
+		defer { Quickdraw::Property.directory = directory }
+
+		test_class = Class.new(Quickdraw::Test)
+		definition = Quickdraw.collect_tests("restarts", {}) do
+			test_class.fuzz("crashes and fails", integer(0..100)) do |n|
+				Process.kill(:KILL, Process.pid) if n.between?(1, 3)
+				assert n < 50
+			end
+		end.first
+
+		messages = []
+		channel = Object.new
+		channel.define_singleton_method(:write) { |message| messages << message }
+		Quickdraw::Fuzz::Session.new(channel, definition, seconds: 1, timeout: 1, seed: 1, test_seed: 1, explicit: true).call
+
+		kinds = messages.filter_map { |message| message in [:fuzz_finding, finding] and finding.kind }
+		assert_equal kinds.tally, { "crashed" => 1, "failed" => 2 }
 	end
 
 	test "fuzz defines a test that checks its block with the generators" do

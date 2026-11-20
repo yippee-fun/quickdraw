@@ -59,7 +59,11 @@ class Quickdraw::Sampler
 		end
 	end
 
+	# Checks it's recording before walking the stack, which is most of a
+	# sample's cost, and again after, under the lock.
 	private def sample
+		return unless @samples
+
 		sampled_at = now
 		locations = @thread.backtrace_locations or return
 

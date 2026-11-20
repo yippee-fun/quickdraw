@@ -14,6 +14,9 @@ module Quickdraw::Generators
 	# Every codepoint but surrogates, after the printable ones above.
 	UNICODE_SIZE = 0x110000 - 0x800
 
+	# One of them beyond ASCII, which a dictionary must be joinable with.
+	UNICODE_SAMPLE = "\u0080"
+
 	FRACTIONS = 1 << 52
 
 	def integer(range = nil)
@@ -56,7 +59,7 @@ module Quickdraw::Generators
 	# `dictionary` has strings, such as a format's keywords, to mix in with the
 	# characters, each counting as one towards the length.
 	def string(characters = :unicode, length: 0.., dictionary: [])
-		piece = Quickdraw::Generators.with_dictionary(Quickdraw::Generators.characters(characters), dictionary)
+		piece = Quickdraw::Generators.with_dictionary(Quickdraw::Generators.characters(characters, dictionary), dictionary)
 		lengths = Quickdraw::Generators.lengths(length)
 
 		Quickdraw::Generator.new do |choices|
@@ -248,15 +251,39 @@ module Quickdraw::Generators
 		[min, max]
 	end
 
-	def self.characters(characters)
+	# Those given, joinable with the `dictionary` they're mixed with.
+	def self.characters(characters, dictionary = [])
 		case characters
 		in Quickdraw::Generator then characters
-		in :unicode then unicode
-		in :ascii then one_of(*PRINTABLE)
-		in String then one_of(*characters.chars.uniq)
-		in Range | Array then one_of(*characters.to_a.uniq)
+		in :unicode
+			joinable([UNICODE_SAMPLE], dictionary)
+			unicode
+		in :ascii then one_of(*joinable(PRINTABLE, dictionary))
+		in String then one_of(*joinable(characters.chars.uniq, dictionary))
+		in Range if characters.begin.nil? || characters.end.nil?
+			raise ::ArgumentError, "#{characters.inspect} has no #{characters.begin ? 'end' : 'beginning'}, which a Range of characters needs."
+		in Range | Array then one_of(*joinable(characters.to_a.uniq, dictionary))
 		else raise ::ArgumentError, "Expected characters as a String, Range, Array, generator, :ascii or :unicode, got #{characters.inspect}."
 		end
+	end
+
+	# The characters, if they and `others` are Strings that are valid in their
+	# encodings and can be joined in any order.
+	def self.joinable(characters, others = [])
+		raise ::ArgumentError, "Expected at least one character." if characters.empty?
+
+		[*characters, *others].each_with_object(+"") do |character, joined|
+			raise ::ArgumentError, "Expected characters as Strings, got #{character.inspect}." unless String === character
+			raise ::ArgumentError, "#{character.inspect} isn't valid #{character.encoding}." unless character.valid_encoding?
+
+			unless Encoding.compatible?(joined, character)
+				raise ::ArgumentError, "#{character.inspect} is #{character.encoding}, which can't be joined with #{joined.encoding} characters."
+			end
+
+			joined << character
+		end
+
+		characters
 	end
 
 	# The generator's values, or a quarter of the time a string from the
@@ -268,7 +295,7 @@ module Quickdraw::Generators
 			raise ::ArgumentError, "A dictionary has non-empty strings, got #{dictionary.inspect}."
 		end
 
-		tokens = dictionary.uniq.map { |token| token.dup.freeze }
+		tokens = joinable(dictionary.uniq).map { |token| token.dup.freeze }
 
 		Quickdraw::Generator.new do |choices|
 			if choices.choose(1) { |random| (random.rand(4) == 0) ? 1 : 0 } == 1

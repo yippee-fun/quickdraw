@@ -18,6 +18,9 @@ class Quickdraw::Fuzz::Session
 	# it, since a process it started can hold its pipe open.
 	LIVENESS_INTERVAL = 0.1
 
+	# How long a hung process has to say where it is.
+	HANG_GRACE = 0.5
+
 	# What a test that finished after fuzzing, but not as usual, reports.
 	NOTHING = Quickdraw.deep_freeze({ "failures" => [], "errors" => [] })
 
@@ -33,6 +36,7 @@ class Quickdraw::Fuzz::Session
 		@test_seed = test_seed
 		@explicit = explicit
 		@signatures = {}
+		@drawing_signatures = {}
 		@inputs = {}
 		@exits = {}
 		@cases = 0
@@ -52,7 +56,7 @@ class Quickdraw::Fuzz::Session
 			forks += 1
 			@last_case.truncate(0)
 			seed = Quickdraw.stable_hash("#{@seed}:#{forks}")
-			pid, channel = fork_test { |writer| Quickdraw::Fuzz::Fuzzer.new(writer, @last_case, deadline:, seed:, skip:) }
+			pid, channel = fork_test { |writer| Quickdraw::Fuzz::Fuzzer.new(writer, @last_case, deadline:, seed:, skip:, signatures: @signatures) }
 
 			case watch(pid, channel)
 			in [:finished, result]
@@ -64,14 +68,24 @@ class Quickdraw::Fuzz::Session
 			in [:broke, error]
 				break ["errored", error]
 			in [:died, failure]
-				cases, choices = read_last_case
-				break ["errored", failure.errors.first] unless choices
+				cases, stage, choices = read_last_case
+				break ["errored", failure.errors.first] unless cases
 
 				# Those since its last progress.
 				@channel.write([:fuzz_progress, cases - @fork_cases, [], 0])
 				@cases += cases - @fork_cases
-				skip << choices
-				report(choices, failure) unless @signatures.key?(failure.signature)
+
+				case stage
+				in :running
+					skip << choices
+					report(choices, failure) unless @signatures.key?(failure.signature)
+				in :replaying
+					skip << choices
+					report_drawing(failure)
+				in :drawing
+					report_drawing(failure)
+				end
+
 				break ["fuzzed"] if now > deadline
 			end
 		end
@@ -101,7 +115,7 @@ class Quickdraw::Fuzz::Session
 			case receive(channel, pid, limit)
 			in :timeout
 				return [:finished, NOTHING] if done
-				return [:died, Quickdraw::Fuzz.failure("Quickdraw::Fuzz::Hang", "A case ran for longer than #{@timeout}s.")] if fuzzing
+				return [:died, hang(pid, channel)] if fuzzing
 
 				return [:broke, timed_out]
 			in [:fuzzing, key, traced]
@@ -114,8 +128,10 @@ class Quickdraw::Fuzz::Session
 				@fork_cases += cases
 				@channel.write([:fuzz_progress, cases, features, corpus])
 			in [:finding, finding]
-				@signatures[finding.failure.signature] = true
 				@channel.write([:fuzz_finding, finding])
+			# Not on finding it, so a fuzzer restarted while shrinking shrinks it again.
+			in [:shrunk, signature]
+				@signatures[signature] = true
 			in [:done]
 				done = true
 				fuzzing = false
@@ -124,7 +140,8 @@ class Quickdraw::Fuzz::Session
 				return [:died, Quickdraw::Property::Failure.new(failures: result["failures"], errors: result["errors"])]
 			in [:finished, result]
 				return [:finished, result]
-			in nil
+			# The process was sent HANG_SIGNAL by something else, and exits.
+			in [:hung, _] | nil
 				return [:finished, NOTHING] if done
 
 				crash = Quickdraw::Fuzz.failure("Quickdraw::Fuzz::Crash", "The process #{exit_reason(pid)}.")
@@ -154,6 +171,19 @@ class Quickdraw::Fuzz::Session
 		finding(minimal.choices, minimal.failure, input: @inputs[minimal.choices], original: @inputs[run.choices], shrinks: shrinker.shrinks)
 	end
 
+	# Reports a case that crashed or hung the process, or raised past the
+	# property, before its generators finished, as it has no choices to replay.
+	# Apart from failures with choices, since a crash's signature is always
+	# the same, and one in the property's block can still be replayed.
+	private def report_drawing(failure)
+		return if @drawing_signatures.key?(failure.signature)
+
+		@drawing_signatures[failure.signature] = true
+		error, *errors = failure.errors
+		drawing = error.merge("message" => "#{Quickdraw.utf8(error['message'])} It happened while generating the case’s input, so there’s no counterexample.")
+		finding(nil, failure.with(errors: [drawing, *errors]), input: nil, original: nil, shrinks: 0)
+	end
+
 	private def finding(choices, failure, input:, original:, shrinks:)
 		finding = Quickdraw::Fuzz::Finding.new(
 			kind: Quickdraw::Fuzz::Finding.kind(failure),
@@ -180,7 +210,7 @@ class Quickdraw::Fuzz::Session
 		loop do
 			case receive(channel, pid, limit)
 			in :timeout
-				return drawn && Quickdraw::Property::Run.new(**drawn, failure: Quickdraw::Fuzz.failure("Quickdraw::Fuzz::Hang", "A case ran for longer than #{@timeout}s."))
+				return drawn && Quickdraw::Property::Run.new(**drawn, failure: hang(pid, channel))
 			in [:drawn, choices, limits, spans, input]
 				@inputs[choices] = input
 				drawn = { choices:, limits:, spans: }
@@ -191,13 +221,31 @@ class Quickdraw::Fuzz::Session
 				return nil
 			in [:finished, result]
 				return drawn && Quickdraw::Property::Run.new(**drawn, failure: (Quickdraw::Property::Failure.new(failures: result["failures"], errors: result["errors"]) if result["errors"].any?))
-			in nil
+			in [:hung, _] | nil
 				return drawn && Quickdraw::Property::Run.new(**drawn, failure: Quickdraw::Fuzz.failure("Quickdraw::Fuzz::Crash", "The process #{exit_reason(pid)}."))
 			end
 		end
 	ensure
 		channel.close
 		stop(pid)
+	end
+
+	# A Hang where the process's case is, which it writes when sent
+	# HANG_SIGNAL (see Fuzz.report_hangs), or nowhere if it can't in time, as
+	# when C code holds the GVL. Skips what it wrote before the signal.
+	private def hang(pid, channel)
+		Process.kill(Quickdraw::Fuzz::HANG_SIGNAL, pid)
+		deadline = now + HANG_GRACE
+
+		backtrace = loop do
+			case receive(channel, pid, (deadline - now).clamp(0, nil))
+			in [:hung, backtrace] then break backtrace
+			in nil | :timeout then break []
+			in _ then nil
+			end
+		end
+
+		Quickdraw::Fuzz.failure("Quickdraw::Fuzz::Hang", "A case ran for longer than #{@timeout}s.", backtrace)
 	end
 
 	# Forks a process that runs the test, with the block's fuzzer waiting for
@@ -207,6 +255,7 @@ class Quickdraw::Fuzz::Session
 
 		pid = Process.fork do
 			channel.reader.close
+			Quickdraw::Fuzz.report_hangs(channel)
 			Quickdraw::Fuzz.fuzzer = yield(channel)
 			Kernel.srand(@test_seed)
 			recorder = Quickdraw::Worker::Recorder.new
@@ -230,11 +279,12 @@ class Quickdraw::Fuzz::Session
 		file
 	end
 
-	# How many cases the process ran, and the choices of the one it was
-	# running, if it got as far as running one.
+	# How many cases the process ran, the last one's stage (see
+	# Fuzzer::STAGES), and its choices, or its prefix while replaying them,
+	# if it got as far as one.
 	private def read_last_case
-		cases, size = @last_case.pread(12, 0).unpack("Q>N")
-		[cases, @last_case.pread(size, 12).unpack("w*")]
+		cases, stage, size = @last_case.pread(13, 0).unpack("Q>CN")
+		[cases, Quickdraw::Fuzz::Fuzzer::STAGES.fetch(stage), @last_case.pread(size, 13).unpack("w*")]
 	rescue EOFError
 		nil
 	end

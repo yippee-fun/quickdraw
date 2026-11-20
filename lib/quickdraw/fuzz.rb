@@ -18,10 +18,15 @@ module Quickdraw::Fuzz
 	autoload :Session, "quickdraw/fuzz/session"
 	autoload :Runner, "quickdraw/fuzz/runner"
 
+	# What a Session sends a process whose case has run too long.
+	HANG_SIGNAL = "USR2"
+
 	# Something a fuzzer found: a case that fails, minimised. `kind` is
 	# "failed", "errored", "crashed" or "hung". `key` names its property (see
 	# Property), `cases` is how many the fuzzer had run when it found it,
 	# and `input` and `original` are the minimal and found cases' values.
+	# `choices` and `input` are nil for a case that crashed or hung the process
+	# before its generators finished, which can't be replayed.
 	Finding = Data.define(:kind, :key, :choices, :input, :original, :failure, :cases, :shrinks) do
 		def self.kind(failure)
 			case failure.errors.first&.fetch("name")
@@ -34,8 +39,36 @@ module Quickdraw::Fuzz
 	end
 
 	# Stands in for an error when a case crashed or hung the process.
-	def failure(name, message)
-		Quickdraw::Property::Failure.new(failures: [], errors: [{ "name" => name, "message" => message, "backtrace" => [] }])
+	def failure(name, message, backtrace = [])
+		Quickdraw::Property::Failure.new(failures: [], errors: [{ "name" => name, "message" => message, "backtrace" => backtrace }])
+	end
+
+	# In a process a Session forked: on HANG_SIGNAL, writes where the thread
+	# running the property is to `channel` as [:hung, backtrace], and exits.
+	# Without the channel's lock, which a trap can't take. A process a case
+	# forks gets the signal's default.
+	def report_hangs(channel)
+		pid = Process.pid
+
+		Signal.trap(HANG_SIGNAL) do
+			unless Process.pid == pid
+				Signal.trap(HANG_SIGNAL, "DEFAULT")
+				Process.kill(HANG_SIGNAL, Process.pid)
+				next
+			end
+
+			channel.writer.write(Quickdraw::Channel.encode([:hung, project_backtrace((@property_thread || Thread.current).backtrace || [])]))
+			exit!(0)
+		end
+	end
+
+	# Quickdraw's aside, the frames from the innermost in the project (outside
+	# vendor/), so a hang's signature (see Property::Failure) is where in the
+	# project it hung. All of them if none is.
+	def project_backtrace(frames)
+		frames = frames.reject { |frame| frame.start_with?("#{Quickdraw::LIB}/") }
+		project = frames.drop_while { |frame| !frame.start_with?("#{Quickdraw::ROOT}/") || frame.start_with?("#{Quickdraw::ROOT}/vendor/") }
+		project.empty? ? frames : project
 	end
 
 	# In a process a Session forked, what takes the test's first property:
@@ -46,6 +79,7 @@ module Quickdraw::Fuzz
 	def claim
 		fuzzer = @fuzzer
 		@fuzzer = nil
+		@property_thread = Thread.current if fuzzer
 		fuzzer
 	end
 end
