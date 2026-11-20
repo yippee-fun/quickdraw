@@ -27,8 +27,17 @@ module Quickdraw::Debugger
 	module DebugSessionMethods
 		private def enter_subsession
 			@quickdraw_depth = (@quickdraw_depth || 0) + 1
-			Quickdraw::Debugger.take_terminal if @quickdraw_depth == 1
+
+			if @quickdraw_depth == 1
+				Quickdraw::Debugger.take_terminal
+				took_terminal = true
+			end
+
 			super
+		rescue Exception
+			@quickdraw_depth -= 1
+			Quickdraw::Debugger.give_back_terminal if took_terminal
+			raise
 		end
 
 		private def leave_subsession(...)
