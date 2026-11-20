@@ -302,8 +302,13 @@ class Quickdraw::Loader
 		channel = open_channel(channel_index)
 
 		pid = Process.fork do
-			# A handler rather than "IGNORE", which processes that tests exec would inherit.
-			trap("INT") { raise Quickdraw::Interrupted }
+			# A handler rather than "IGNORE", which processes that tests exec would
+			# inherit. While a debugger has the terminal, Ctrl-C is its, as usual.
+			trap("INT") do
+				if Quickdraw::Debugger.holding? then raise Interrupt
+				elsif !Quickdraw::Debugger.active? then raise Quickdraw::Interrupted
+				end
+			end
 			@control.close
 			@channels.each { |other| other.close unless other.equal?(channel) }
 			# Only the loader holds these, so closing them says it's done.

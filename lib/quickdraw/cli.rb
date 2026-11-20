@@ -18,6 +18,8 @@ class Quickdraw::CLI
 	def call
 		# A file or directory with a command's name is still run as tests.
 		if (name = @args.first) && !File.exist?(name) && (command = Quickdraw::Commands.find(name))
+			# Commands don't give out the terminal, though a run that started this one might.
+			ENV.delete(Quickdraw::Debugger::FLAG)
 			exit(command.new(@args.drop(1)).call)
 		end
 
@@ -32,6 +34,12 @@ class Quickdraw::CLI
 
 		# Forks keep the timeslice; processes that tests start shouldn't get it.
 		ENV.delete("RUBY_THREAD_TIMESLICE") if options[:profile]
+
+		# Before any loader starts, so every process knows where to look. Not
+		# Dir.tmpdir, whose library loaders would inherit.
+		temporary = ENV.fetch("TMPDIR", "")
+		temporary = "/tmp" unless File.directory?(temporary) && File.writable?(temporary)
+		ENV[Quickdraw::Debugger::FLAG] = File.join(temporary, "quickdraw-debugging-#{Process.pid}")
 
 		if options[:watch]
 			watch(options)

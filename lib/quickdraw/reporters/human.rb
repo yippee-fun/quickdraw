@@ -40,6 +40,7 @@ class Quickdraw::Reporters::Human
 		@statuses = Hash.new(0)
 		@live_widths = []
 		@drawn_at = 0.0
+		@held = []
 	end
 
 	def start(processes:, worker_choice:, seed:, estimate: nil)
@@ -85,10 +86,24 @@ class Quickdraw::Reporters::Human
 
 	# What loading a test file printed, above the live block rather than over it.
 	def printed(output)
+		above_live do
+			@io.print output
+			@io.puts unless output.end_with?("\n")
+		end
+	end
+
+	# While a test is in a debugger, which has the terminal, until #resume.
+	def pause
 		clear_live
-		@io.print output
-		@io.puts unless output.end_with?("\n")
-		draw_live(force: true)
+		@paused = true
+	end
+
+	# The live block comes back with the next tick, so stepping through a
+	# debugger, which gives the terminal back between steps, doesn't flicker.
+	def resume
+		@paused = false
+		held, @held = @held, []
+		held.each { |print| above_live(&print) }
 	end
 
 	def finish(outcome)
@@ -533,8 +548,15 @@ class Quickdraw::Reporters::Human
 	# to look at while the rest of the run finishes.
 	private def problem(path, test, result)
 		@problems << [path, test, result]
+		above_live { print_problem(path, test, result) }
+	end
+
+	# Prints above the live block, or once a debugger is done with the terminal.
+	private def above_live(&print)
+		return @held << print if @paused
+
 		clear_live
-		print_problem(path, test, result)
+		print.call
 		@io.flush
 		draw_live(force: true)
 	end
@@ -559,7 +581,7 @@ class Quickdraw::Reporters::Human
 	# place by moving the cursor up over it, so lines are cut to the terminal's
 	# width, as a wrapped line would throw the count off.
 	private def draw_live(force: false)
-		return unless @live && @progress
+		return unless @live && @progress && !@paused
 
 		time = now
 		return unless force || time - @drawn_at >= LIVE_INTERVAL

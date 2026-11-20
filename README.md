@@ -150,7 +150,9 @@ Under GitHub Actions, failures are annotated and a summary is written for the jo
 
 What a test prints, to stdout or stderr, from Ruby, a subprocess or a C extension writing to the file descriptor, is shown with its failure rather than as it's printed, so output from parallel tests can't interleave. Passing tests' output isn't shown. A test that crashes or hangs its worker still has its output shown. What config and test files print while loading shows as usual, above the live block. `--no-capture` turns off both capturing and the live block.
 
-`--no-capture` shows output as it's printed instead. For a debugger such as `binding.irb`, which needs the terminal, run the one test with it: `qt --no-capture -p 1 test/user.test.rb:12`.
+`--no-capture` shows output as it's printed instead.
+
+Debuggers work in any run. When a test reaches `binding.irb`, `debugger`, `binding.break` or `binding.pry`, Quickdraw pauses its display and gives that worker the terminal, one debugger at a time, while other workers keep going. The test's timeout is paused, and Ctrl-C goes to the debugger.
 
 ## Leaks
 

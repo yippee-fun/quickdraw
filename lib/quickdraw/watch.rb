@@ -52,9 +52,10 @@ class Quickdraw::Watch
 
 	# Returns the exit status: 0 when quit, otherwise the watcher's failure.
 	def call
-		@listener = IO.popen([RbConfig.ruby, "-e", LISTENER, *ignored_paths])
+		# In its own process group, so Ctrl-C in a debugger doesn't stop it.
+		@listener = IO.popen([RbConfig.ruby, "-e", LISTENER, *ignored_paths], pgroup: true)
 		@wake_reader, wake_writer = IO.pipe
-		previous_handler = trap("INT") { wake_writer.write_nonblock("q", exception: false) }
+		previous_handler = trap("INT") { wake_writer.write_nonblock("q", exception: false) unless Quickdraw::Debugger.active? }
 		@terminal = take_keyboard if @interactive
 		@loaders = Quickdraw::WarmLoaders.new(coverage: @options[:coverage], test_output_to_stderr: !@for_people)
 

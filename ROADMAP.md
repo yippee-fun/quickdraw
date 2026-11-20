@@ -159,7 +159,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
     - A timed-out test's `defer` blocks (and so its `tmpdir`) don't run, because the worker exits mid-test.
     - A message half-written by a dead worker, whose pipe a child process holds open, blocks the coordinator. Reading needs non-blocking framing.
 - **Per-test output capture** (done): each worker points file descriptors 1 and 2 at one file while it runs tests, so stdout and stderr stay in order and include subprocesses and C extensions. After each test the worker takes what's there (an `fstat` when nothing was printed) and sends it with failures and errors only; the last 64KB is kept. Shown in the human, agent (last 20 lines), JSON and JUnit (`system-out`) outputs. The file has a path the worker sends the coordinator, which reads it when a test crashes or hangs its worker. Loading files and the time between batches aren't captured, so what config and test files print shows as usual, and Ctrl-C shows what the interrupted test printed. `--no-capture` streams output live.
-  - Still to do: a debugger or `binding.irb` needs `--no-capture -p 1` (see CLI); output a leaked thread or process prints after its test ends goes to the next test; C code writing through buffered libc stdio isn't flushed at test boundaries (core Ruby can't call `fflush`), so it can land with a later test.
+  - Still to do: output a leaked thread or process prints after its test ends goes to the next test; C code writing through buffered libc stdio isn't flushed at test boundaries (core Ruby can't call `fflush`), so it can land with a later test.
 - **Flaky detection:**
   - `quickdraw flaky [--runs N]` (done) runs the selection N times with new seeds and lists tests that passed in some runs and failed in others, with the failing seeds.
   - `quickdraw history` (done) lists tests that passed and failed on the same code across recent runs.
@@ -225,7 +225,8 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
   - `history` lists recent runs, the slowest tests, and flaky tests: those that passed and failed on the same code. Each run records its code as the commit plus a hash of uncommitted changes (tracked files' differences and untracked Ruby files), so a test that fails while you edit and then passes isn't flaky.
   - `counterpart PATH` prints a source file's test or a test's source file; `exe/qc` opens it in `$EDITOR`.
   - `flaky` and `bisect`: see Reliability.
-- Debugging: a debugger or `binding.irb` in a test switches that test to serial with the TTY attached. For now, `--no-capture -p 1` gives it the terminal, though its timeout still applies.
+- Debugging (done): `binding.irb`, `binding.pry`, and the debug gem's `debugger` and `binding.break` work in parallel runs, watch mode included. The worker asks the coordinator for the terminal, which goes to one worker at a time; the live display pauses and holds problems until the debugger is done. The worker stops capturing output and pauses the test's timeout, including while it waits its turn, and a flag file makes every other process leave Ctrl-C to the debugger. irb and pry hold the terminal for the call; the debug gem's session, hooked once a file has loaded it, holds it while stopped.
+  - Still to do: the debug gem's first stop isn't coordinated when it's loaded inside a test, or stops while the file that loads it is still loading.
 - The seed and worker sequences are always printed or recorded, so every run is reproducible.
 
 ## Not planned

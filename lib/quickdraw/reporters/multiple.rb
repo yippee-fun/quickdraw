@@ -11,6 +11,8 @@ class Quickdraw::Reporters::Multiple
 	def load_failed(...) = @reporters.each { |reporter| reporter.load_failed(...) }
 	def tick(progress) = @reporters.each { |reporter| reporter.tick(progress) }
 	def live? = @reporters.any?(&:live?)
+	def pause = @reporters.each(&:pause)
+	def resume = @reporters.each(&:resume)
 	def printed(output) = @reporters.select(&:live?).each { |reporter| reporter.printed(output) }
 	def finish(...) = @reporters.each { |reporter| reporter.finish(...) }
 end

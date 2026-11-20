@@ -35,6 +35,7 @@ module Quickdraw
 	autoload :Loader, "quickdraw/loader"
 	autoload :Worker, "quickdraw/worker"
 	autoload :Watchdog, "quickdraw/watchdog"
+	autoload :Debugger, "quickdraw/debugger"
 	autoload :Capture, "quickdraw/capture"
 	autoload :Leaks, "quickdraw/leaks"
 	autoload :Channel, "quickdraw/channel"

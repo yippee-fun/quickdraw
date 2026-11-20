@@ -33,6 +33,8 @@ class Quickdraw::Reporters::GitHubActions
 
 	def tick(_progress) = nil
 	def live? = false
+	def pause = nil
+	def resume = nil
 
 	def finish(outcome)
 		@problems.first(ANNOTATION_LIMIT).each { |problem| annotate(*problem) }

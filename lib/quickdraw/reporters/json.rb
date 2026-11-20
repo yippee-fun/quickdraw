@@ -43,6 +43,8 @@ class Quickdraw::Reporters::JSON
 
 	def tick(_progress) = nil
 	def live? = false
+	def pause = nil
+	def resume = nil
 
 	def finish(outcome)
 		emit(

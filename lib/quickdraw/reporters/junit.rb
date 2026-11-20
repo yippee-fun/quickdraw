@@ -26,6 +26,8 @@ class Quickdraw::Reporters::JUnit
 
 	def tick(_progress) = nil
 	def live? = false
+	def pause = nil
+	def resume = nil
 
 	def finish(outcome)
 		@allow_flaky = outcome.allow_flaky

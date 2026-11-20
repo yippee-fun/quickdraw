@@ -32,13 +32,33 @@ class Quickdraw::Watchdog
 		end
 
 		yield
-		@mutex.synchronize { now > @deadline }
+		# Not when a debugger has paused the clock.
+		@mutex.synchronize { @deadline ? now > @deadline : false }
 	ensure
 		if seconds
 			@mutex.synchronize do
 				@deadline = nil
+				@remaining = nil
 				@changed.signal
 			end
+		end
+	end
+
+	# Stops the clock, e.g. while a debugger has the terminal, until #resume
+	# gives the test what it had left.
+	def pause
+		@mutex.synchronize do
+			@remaining = @deadline && (@deadline - now)
+			@deadline = nil
+			@changed.signal
+		end
+	end
+
+	def resume
+		@mutex.synchronize do
+			@deadline = now + @remaining if @remaining
+			@remaining = nil
+			@changed.signal
 		end
 	end
 

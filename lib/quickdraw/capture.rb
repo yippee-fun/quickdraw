@@ -54,6 +54,7 @@ class Quickdraw::Capture
 		flush
 		@stdout.reopen(@file)
 		@stderr.reopen(@file)
+		@capturing = true
 	end
 
 	# Back to the terminal, e.g. while loading a file, so what that prints shows.
@@ -61,7 +62,10 @@ class Quickdraw::Capture
 		flush
 		@stdout.reopen(@terminal_stdout)
 		@stderr.reopen(@terminal_stderr)
+		@capturing = false
 	end
+
+	def capturing? = @capturing
 
 	# What was printed since the last call, or nil: its end, or all of it if
 	# `whole`, for output that would otherwise have been shown as printed. The

@@ -178,10 +178,12 @@ class Quickdraw::Worker
 
 		# After the watchdog and sampler start, so their threads aren't leaks.
 		@leaks = Quickdraw::Leaks.new(Dir.pwd) if @leak_mode
+		@terminal_turn = Thread::Queue.new([true])
+		Quickdraw::Debugger.install(self)
 
 		@channel.write([:ready, Process.pid])
 
-		while (message = @channel.read)
+		while (message = read_command)
 			case message
 			in [:load, path]
 				@capture.start if @capture && @capture_output == :loading
@@ -194,6 +196,7 @@ class Quickdraw::Worker
 				end
 
 				@leaks&.reset
+				Quickdraw::Debugger.hook_debug_gem
 				covered(path) if @coverage
 				@channel.write(loaded)
 			in [:run, path, indices]
@@ -219,6 +222,8 @@ class Quickdraw::Worker
 			in [:fuzz, path, index, settings]
 				Quickdraw::Fuzz::Session.new(@channel, @files.fetch(path).fetch(index), test_seed: @file_seeds.fetch(path) + index, **settings).call
 			in [:stop]
+				# The coordinator stops listening, so it can no longer give out the terminal.
+				Quickdraw::Debugger.uninstall
 				@channel.write([:coverage, Quickdraw::CoverageCollector.merge(@coverage_totals, Quickdraw::CoverageCollector.take)]) if @coverage
 				break
 			end
@@ -460,6 +465,64 @@ class Quickdraw::Worker
 			_, recorder.profile = @sampler.record { test.run }
 		else
 			test.run
+		end
+	end
+
+	# Runs a debugger (see Debugger) with the terminal, once the coordinator
+	# gives it, and the test's output and timeout paused. A debugger started
+	# from inside one already has it.
+	# For a debugger that returns when it's done. A debugger started inside
+	# one, by the same thread, already has the terminal.
+	def holding_terminal
+		# Already this thread's, or the debug gem's, which stops other threads
+		# while it has the terminal, so this was run from its prompt.
+		return yield if @terminal_holder.equal?(Thread.current) || @terminal_holder == :debug_gem
+
+		# Interrupts, such as a Timeout around the debugger, wait until the
+		# coordinator has the terminal back.
+		Thread.handle_interrupt(Object => :never) do
+			take_terminal(Thread.current)
+			Thread.handle_interrupt(Object => :immediate) { yield }
+		ensure
+			give_back_terminal if @terminal_holder.equal?(Thread.current)
+		end
+	end
+
+	# The test's timeout is paused while it waits for the terminal, too.
+	# Another thread's debugger waits its turn. Not a Mutex, as the debug gem
+	# gives the terminal back from another thread.
+	def take_terminal(holder)
+		@terminal_turn.pop
+		@watchdog&.pause
+		@channel.write([:debugging])
+		message = @channel.read
+		raise "Expected the coordinator to give this worker the terminal, but got #{message.inspect}." unless message == [:debug]
+
+		# Capture is off while a file loads, and stays off.
+		@capture_after_debugger = @capture&.capturing?
+		@capture&.stop
+		@terminal_holder = holder
+	end
+
+	def give_back_terminal
+		@terminal_holder = nil
+		@capture.start if @capture_after_debugger
+		@channel.write([:debugged])
+		@watchdog&.resume
+		@terminal_turn << true
+	end
+
+	def has_terminal? = !@terminal_holder.nil?
+
+	# A debugger in another thread reads the coordinator's answer from the same
+	# channel, so they take turns.
+	private def read_command
+		@terminal_turn.pop
+
+		begin
+			@channel.read
+		ensure
+			@terminal_turn << true
 		end
 	end
 

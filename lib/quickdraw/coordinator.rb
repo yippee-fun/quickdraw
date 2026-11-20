@@ -297,6 +297,9 @@ class Quickdraw::Coordinator
 		@retries = retries
 		@pending_retries = []
 		@retries_started = 0
+		# Workers waiting for the terminal, and the one in a debugger.
+		@debug_queue = []
+		@debugger = nil
 		@outcome = Quickdraw::Outcome.new(allow_flaky:)
 		@capture = capture
 		@leaks = leaks
@@ -357,6 +360,9 @@ class Quickdraw::Coordinator
 		# The first Ctrl-C stops the run and reports what finished; a second gives up.
 		interrupt_reader, interrupt_writer = IO.pipe
 		previous_handler = trap("INT") do
+			# Ctrl-C in a debugger is the debugger's.
+			next if @debugger
+
 			exit(130) if @interrupted
 
 			@interrupted = true
@@ -463,6 +469,7 @@ class Quickdraw::Coordinator
 		@outcome
 	ensure
 		@elastic&.stop
+		File.delete(Quickdraw::Debugger.flag_path) if @debugger
 		trap("INT", previous_handler || "DEFAULT") if interrupt_reader
 		interrupt_reader&.close
 		interrupt_writer&.close
@@ -806,6 +813,8 @@ class Quickdraw::Coordinator
 	# say) stopped it running. Or it reported a timeout and hasn't exited.
 	private def overdue?(worker)
 		return false unless worker.pid && worker.started
+		# Its timeout is paused while it waits for, or is in, a debugger.
+		return false if @debug_queue.include?(worker) || @debugger.equal?(worker)
 		return worker.silent_for > TIMEOUT_GRACE if worker.timeout
 
 		file, (index, *) = worker.batch
@@ -961,6 +970,11 @@ class Quickdraw::Coordinator
 			worker.output_path = path
 		in [:printed, output]
 			@reporter.printed(output)
+		in [:debugging]
+			@debug_queue << worker
+			give_terminal unless @debugger
+		in [:debugged]
+			take_terminal(worker)
 		in [:ready, pid]
 			worker.pid = pid
 			worker.ready = true
@@ -1135,6 +1149,12 @@ class Quickdraw::Coordinator
 	end
 
 	private def crashed(worker)
+		@debug_queue.delete(worker)
+		if @debugger.equal?(worker)
+			system("stty", @terminal_settings, in: $stdin) if @terminal_settings
+			take_terminal(worker)
+		end
+
 		# After Ctrl-C, a worker exiting is expected, and its test didn't finish.
 		return abandon(worker) if @interrupted
 
@@ -1348,6 +1368,29 @@ class Quickdraw::Coordinator
 
 	private def orphaned?(file)
 		@workers.each_value.none? { |worker| worker.loaded[file.path] }
+	end
+
+	# Not after Ctrl-C, when workers are being stopped.
+	private def give_terminal
+		return if @interrupted
+
+		worker = @debug_queue.shift or return
+		# To restore if the worker dies while its debugger has the terminal raw.
+		@terminal_settings = IO.popen(["stty", "-g"], in: $stdin, err: File::NULL, &:read).chomp if $stdin.tty?
+		# Before this process ignores Ctrl-C, so workers ignore it too.
+		File.write(Quickdraw::Debugger.flag_path, "")
+		@debugger = worker
+		@reporter.pause
+		worker.channel.write([:debug])
+	end
+
+	private def take_terminal(worker)
+		raise "Expected #{worker.pid} to have the terminal, but #{@debugger&.pid.inspect} has it." unless @debugger.equal?(worker)
+
+		@debugger = nil
+		File.delete(Quickdraw::Debugger.flag_path)
+		@reporter.resume
+		give_terminal
 	end
 
 	private def run_batch(worker, file)

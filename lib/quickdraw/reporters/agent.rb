@@ -40,6 +40,8 @@ class Quickdraw::Reporters::Agent
 
 	def tick(_progress) = nil
 	def live? = false
+	def pause = nil
+	def resume = nil
 
 	def finish(outcome)
 		print_profile if @profile.any?
