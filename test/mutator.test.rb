@@ -2,6 +2,8 @@
 
 class MutatorTest < Quickdraw::Test
 	def mutants(source, lines: nil)
+		skip "The mutator reads CRuby's compiled lines, and mutate needs fork anyway" unless defined?(RubyVM::InstructionSequence)
+
 		Quickdraw::Mutation::Mutator.new("/project/lib/example.rb", source, relative_path: "lib/example.rb").call(lines:)
 	end
 
