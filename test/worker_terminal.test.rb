@@ -43,7 +43,29 @@ class WorkerTerminalTest < Quickdraw::Test
 		assert_equal turns(worker), 0
 	end
 
+	# Whether an interrupt waits for a blocking read that defers interrupts.
+	def defers_interrupts_while_reading?
+		reader, writer = IO.pipe
+		line = nil
+		reading = Thread.new do
+			Thread.handle_interrupt(Object => :never) { line = reader.gets }
+		rescue Stopped
+			nil
+		end
+
+		Thread.pass until reading.status == "sleep"
+		reading.raise(Stopped)
+		writer.puts("read")
+		reading.join
+		line == "read\n"
+	ensure
+		reader.close
+		writer.close
+	end
+
 	test "gives the debug gem's terminal back when an interrupt arrives while it asks for it" do
+		skip "This Ruby interrupts a blocking read while interrupts are deferred" unless defers_interrupts_while_reading?
+
 		coordinator, channel = Quickdraw::Channel.pair
 		worker = worker(channel, turns: 1)
 		taking = Thread.new do
