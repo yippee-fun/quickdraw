@@ -3,7 +3,8 @@
 # One JSON object per line, for tools: a "start" event, a "test" event per
 # test, a "load_error" event per file that couldn't load, and a "finish" event.
 # A test's "output" is what it printed, for failures and errors, and "leaks"
-# lists state it left behind.
+# lists state it left behind. "variant" is the browser a test ran in, or a
+# file couldn't load in, when config.browser has several, or null.
 class Quickdraw::Reporters::JSON
 	include Quickdraw::Reporters::Formatting
 
@@ -24,6 +25,7 @@ class Quickdraw::Reporters::JSON
 			"path" => path,
 			"line" => test["line"],
 			"name" => name_of(test),
+			"variant" => test["variant"],
 			"status" => Quickdraw::Outcome.status(result),
 			"skip_reason" => result.dig("skipped", "reason"),
 			"duration" => result["duration"],
@@ -40,14 +42,14 @@ class Quickdraw::Reporters::JSON
 		)
 	end
 
-	def load_failed(path, error)
-		emit("event" => "load_error", "path" => path, "error" => serialize_error(error))
+	def load_failed(path, error, variant)
+		emit("event" => "load_error", "path" => path, "variant" => variant, "error" => serialize_error(error))
 	end
 
-	def finished_file(_path) = nil
+	def finished_file(_path, _variant) = nil
 	def shows_loading_output? = false
 	def booting = nil
-	def nothing_to_run(_path) = nil
+	def nothing_to_run(_path, _variant) = nil
 	def pause = nil
 	def resume = nil
 

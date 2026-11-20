@@ -69,9 +69,9 @@ module Quickdraw::Commands
 			" " * ((color? ? text.size + 2 : text.size) + 1)
 		end
 
-		# A test as runs show it: its name, then its class and location, dimmed.
-		private def test_heading(path, line, class_name, description)
-			"#{bold(description || "line #{line}")}  #{dim([class_name, "#{path}:#{line}"].compact.join(' · '))}"
+		# A test as runs show it: its name, then its class, location and variant, dimmed.
+		private def test_heading(path, line, class_name, description, variant)
+			"#{bold(description || "line #{line}")}  #{dim([class_name, "#{path}:#{line}", variant].compact.join(' · '))}"
 		end
 
 		private def list(items)

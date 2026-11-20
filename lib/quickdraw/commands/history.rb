@@ -109,7 +109,7 @@ class Quickdraw::Commands::History
 	end
 
 	private def heading(test)
-		test_heading(test.path, test.line, test.class_name, test.description)
+		test_heading(test.path, test.line, test.class_name, test.description, test.variant)
 	end
 
 	# The short commit and branch, or nil outside a git repository.

@@ -34,6 +34,10 @@ class Quickdraw::Coordinator
 	INTERRUPT_GRACE = 3
 
 	class TestFile
+		# A file runs once in each group it's in (see Configuration::Group), as a
+		# TestFile for each. `group` is the group's name, or nil for none, and
+		# `variant` its variant, or nil.
+		#
 		# `keys` are the tests' history keys, or nil without history. `indices` are
 		# the tests to run. `prior_average` is the average test duration from
 		# history, used until this run has its own measurements, and `expected`
@@ -44,9 +48,11 @@ class Quickdraw::Coordinator
 		# workers waiting for it at the end. They're sorted by how many times the
 		# batch budget they take, rounded down to a power of two, so the order a
 		# seed gives only changes when a test gets about twice as fast or slow.
-		def initialize(path:, display_path:, tests:, keys:, indices:, load_duration:, prior_average:, random:, expected: nil)
+		def initialize(path:, display_path:, group:, variant:, tests:, keys:, indices:, load_duration:, prior_average:, random:, expected: nil)
 			@path = path
 			@display_path = display_path
+			@group = group
+			@variant = variant
 			@tests = tests
 			@keys = keys
 			@whole = indices.size == tests.size
@@ -70,7 +76,7 @@ class Quickdraw::Coordinator
 			@reported = 0
 		end
 
-		attr_reader :path, :display_path, :tests, :keys, :pending, :load_duration
+		attr_reader :path, :display_path, :group, :variant, :tests, :keys, :pending, :load_duration
 
 		# How many of its tests are selected, how many have finished at least
 		# once, for scheduling, and how many have a final result, after retries.
@@ -231,7 +237,11 @@ class Quickdraw::Coordinator
 			@last_message_at = now
 		end
 
-		attr_reader :channel, :slot, :process, :loader, :loaded, :last_message_at
+		attr_reader :channel, :slot, :process, :loader, :last_message_at
+
+		# The files it has loaded, by path: each one's TestFile, in its group, or
+		# false if loading it raised.
+		attr_reader :loaded
 
 		def group = @loader.group
 		attr_accessor :loading, :batch, :started, :idle, :pid
@@ -296,6 +306,8 @@ class Quickdraw::Coordinator
 	# wasn't given grows while tests leave CPU idle (see Elastic). Flaky tests
 	# go to config's on_flaky callbacks, and to `flakes_path` as JSON. With
 	# `quarantine`, tests flaky in recent runs can fail without failing the run.
+	# With `variants`, files run in just the groups with those variants, of
+	# those with one (see Configuration::Group).
 	#
 	# Run settings config can set too (`capture`, `leaks`, `retries`,
 	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic` and `processes`)
@@ -304,8 +316,9 @@ class Quickdraw::Coordinator
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil
+		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil
 	)
+		@variant_filter = variants
 		@timeline = Quickdraw::Timeline.new if timeline
 		@elastic_allowed = elastic
 		@warm_loaders = warm_loaders
@@ -345,12 +358,22 @@ class Quickdraw::Coordinator
 		@coverage = Quickdraw::CoverageReport.new if coverage
 		# Each test file's source files that ran, with --coverage.
 		@coverage_map = {}
-		@unloaded = files.shuffle(random: Random.new(seed)).map do |path|
+		@display_paths = files.shuffle(random: Random.new(seed)).to_h do |path|
 			absolute = File.expand_path(path)
 			[absolute, absolute.delete_prefix("#{Dir.pwd}/")]
 		end
-		@display_paths = @unloaded.to_h
+		# Files to load, as [path, display path, group], once for each group a
+		# file is in (see #groups_reported).
+		@unloaded = @display_paths.map { |path, display_path| [path, display_path, nil] }
+		# TestFiles by [path, group].
 		@files = {}
+		# Each group's variant, by name (see Configuration::Group).
+		@variants = {}
+		@lines_checked = {}
+		# Display paths of files that didn't load, or run, in every group they're in.
+		@partly_run = {}
+		# Whether --browser asked for a browser config doesn't have.
+		@refused = false
 		# Files with slow tests waiting (see TestFile#slow?), so dispatching doesn't scan the rest.
 		@slow_files = {}
 		@averages = {}
@@ -362,11 +385,10 @@ class Quickdraw::Coordinator
 		started_at = Time.now
 		@reporter.booting
 		@forking = Process.respond_to?(:fork)
-		@test_files = @unloaded.map(&:first)
+		@test_files = @display_paths.keys
 		@workers = {}
 		@process_count = 0
 		@leaving = {}
-		@group_of = {}
 		@gemfiles = {}
 
 		# First, so it opens while config boots.
@@ -414,17 +436,19 @@ class Quickdraw::Coordinator
 
 		@free_slots = Array.new(@processes) { |slot| slot }
 		@scheduler = Scheduler.new(
-			groups:, group_of: @group_of, plan: @plan, core_budget: @processes,
+			groups:, plan: @plan, core_budget: @processes,
 			unloaded: @unloaded, files: @files, workers: @workers, leaving: @leaving, loaders: @loaders, retries: @retries,
 		)
 		# Including slots added while running, which started at @workers_added_at.
 		@slot_count = @processes
 		@workers_added_at = []
 
-		@reporter.start(processes: @processes, worker_choice: @worker_choice, seed: @seed, paths: @display_paths.values, estimate:, capture: !!@capture)
+		@file_count = @unloaded.size
+		paths = @unloaded.map { |_path, display_path, group| (variant = @variants[group]) ? "#{display_path} [#{variant}]" : display_path }
+		@reporter.start(processes: @processes, worker_choice: @worker_choice, seed: @seed, paths:, estimate:, capture: !!@capture)
 		reporting_started_at = now
 
-		unless @interrupted
+		unless @interrupted || @refused
 			reported(@loaders[nil], report)
 			start_workers
 			start_elastic if @elastic_allowed && @forking && @worker_choice != "manual"
@@ -487,7 +511,7 @@ class Quickdraw::Coordinator
 		@outcome.recorded = !@history.nil? && !@interrupted
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
-		@outcome.files = @display_paths.size
+		@outcome.files = @file_count
 		@outcome.unfinished_files = @files.each_value.count { |file| file.pending.any? }
 		@outcome.processes_failed = processes_failed
 		@outcome.stopped_early = @stopping
@@ -550,7 +574,7 @@ class Quickdraw::Coordinator
 		if (attempt = worker.retrying)
 			@retries.requeue(attempt)
 		elsif (path = worker.loading)
-			@unloaded.unshift([path, display_path(path)]) unless @files.key?(path)
+			@unloaded.unshift([path, display_path(path), worker.group]) unless @files.key?([path, worker.group])
 		elsif (batch = worker.batch)
 			file, indices = batch
 			file.pending.unshift(*indices)
@@ -628,9 +652,9 @@ class Quickdraw::Coordinator
 		message = loader.group ? "The #{loader.group} group’s setup failed: #{error['message']}" : error["message"]
 		failure = error.merge("message" => message)
 
-		@unloaded.select { |_path, display_path| @group_of[display_path] == loader.group }.each do |entry|
+		@unloaded.select { |_path, _display_path, group| group == loader.group }.each do |entry|
 			@unloaded.delete(entry)
-			load_failed(entry.first, failure)
+			load_failed(entry.first, loader.group, failure)
 		end
 
 		# Its workers will never start, so their slots can go to other groups.
@@ -701,12 +725,37 @@ class Quickdraw::Coordinator
 
 	private def groups_reported(groups)
 		@gemfiles = groups.to_h { |name, _patterns, gemfile| [name, gemfile] }
-		@group_of = @display_paths.to_h do |_path, display_path|
-			name, = groups.find { |_name, patterns| patterns.any? { |pattern| File.fnmatch?(pattern, display_path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } }
-			[display_path, name]
+		@variants = groups.to_h { |name, *, variant| [name, variant] }
+		@unloaded = @unloaded.flat_map do |path, display_path|
+			groups_of(display_path, groups).map { |group| [path, display_path, group] }
 		end
 
-		(@group_of.values.uniq - [nil]).each { |group| @loaders[group] = start_loader(group) }
+		# Nothing runs, rather than pass without the browser asked for.
+		if @variant_filter && (unknown = @variant_filter - @variants.values.compact).any?
+			configured = @variants.values.compact
+			warn "Quickdraw didn’t run any tests: --browser #{unknown.join(', ')} #{configured.any? ? "isn’t one of config.browser’s browsers: (#{configured.join(', ')})" : 'needs config.browser’s browsers:'}."
+			@refused = true
+			return
+		end
+
+		@unloaded.map(&:last).uniq.compact.each { |group| @loaders[group] = start_loader(group) }
+	end
+
+	# The groups a file runs in: the first it's in, or if that has a variant,
+	# each with a variant it's in, of those --browser picks. Nil for none.
+	private def groups_of(display_path, groups)
+		matching = groups.select { |_name, patterns| patterns.any? { |pattern| File.fnmatch?(pattern, display_path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } }
+
+		case matching
+		in [] then [nil]
+		in [[name, *, nil], *] then [name]
+		else
+			variants = matching.select { |*, variant| variant }
+			picked = @variant_filter ? variants.select { |*, variant| @variant_filter.include?(variant) } : variants
+			# So its coverage isn't taken for the whole file's.
+			@partly_run[display_path] = true if picked.size < variants.size
+			picked.map(&:first)
+		end
 	end
 
 	private def start_workers
@@ -833,7 +882,7 @@ class Quickdraw::Coordinator
 		choice = Quickdraw::WorkerTuner.new(cores: @cores, max: capacity).choose(
 			# --failed runs a different subset each time, so its timings aren't comparable.
 			runs: (@only_keys || !@runs) ? [] : @runs.recent_runs,
-			expected: @plan&.expected(@unloaded.map(&:last)) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil),
+			expected: @plan&.expected(@unloaded.map { |_path, display_path| display_path }.uniq) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil),
 			waiting_share: @runs&.waiting_share,
 		)
 
@@ -990,8 +1039,11 @@ class Quickdraw::Coordinator
 	# { test path => [source paths, whether every test in the file ran] }. A
 	# file that only ran some tests may not have run all its sources.
 	private def coverage_map
-		whole = @files.each_value.to_h { |file| [file.display_path, file.whole? && file.pending.empty?] }
-		whole[Quickdraw::History::BOOT] = true
+		whole = { Quickdraw::History::BOOT => true }
+
+		@files.each_value do |file|
+			whole[file.display_path] = whole.fetch(file.display_path, true) && !@partly_run.key?(file.display_path) && file.whole? && file.pending.empty?
+		end
 		@coverage_map.to_h { |path, sources| [path, [sources.keys, whole.fetch(path, false)]] }
 	end
 
@@ -1008,7 +1060,7 @@ class Quickdraw::Coordinator
 			selection: @selection,
 			passed:,
 			records: @records,
-			loaded_paths: @files.each_value.map(&:display_path),
+			loaded_paths: @files.each_value.map(&:display_path).uniq,
 			load_errors: @load_errors,
 		}
 
@@ -1068,8 +1120,8 @@ class Quickdraw::Coordinator
 				# Whatever the file did before it raised is still there.
 				worker.fresh = false
 				retried(attempt, { "failures" => [], "errors" => [error], "duration" => nil })
-			elsif !@files.key?(path)
-				load_failed(path, error)
+			elsif !@files.key?([path, worker.group])
+				load_failed(path, worker.group, error)
 			end
 		in [:result, index, result]
 			record(worker, index, result)
@@ -1080,10 +1132,10 @@ class Quickdraw::Coordinator
 
 	private def loaded(worker, path, tests, load_duration)
 		worker.loading = nil
-		worker.loaded[path] = true
 		worker.idle = true
+		key = [path, worker.group]
 
-		if (file = @files[path])
+		if (file = @files[key])
 			unless file.tests == tests
 				raise "#{file.display_path} defined different tests when loaded in a second worker."
 			end
@@ -1092,24 +1144,32 @@ class Quickdraw::Coordinator
 			keys = (Quickdraw::History.keys(display_path, tests) if @history)
 			indices = @filter.selected_indices(path, tests)
 
-			@filter.unmatched_lines(path, tests).each do |line|
-				warn "No test starts at or above #{display_path}:#{line}."
+			# Once, though it loads in each group it's in.
+			unless @lines_checked.key?(path)
+				@lines_checked[path] = true
+
+				@filter.unmatched_lines(path, tests).each do |line|
+					warn "No test starts at or above #{display_path}:#{line}."
+				end
 			end
 
 			if @only_keys && !@whole_files.key?(display_path)
 				indices.select! { |index| @only_keys.key?(keys[index]) }
 			end
 
+			variant = @variants[worker.group]
 			@selected += indices.size
 			# It won't finish, since nothing in it runs.
-			@reporter.nothing_to_run(display_path) if indices.empty?
+			@reporter.nothing_to_run(display_path, variant) if indices.empty?
 
 			expected = keys&.map { |key| @averages[key] }
 			known = expected&.compact || []
 
-			@files[path] = TestFile.new(
+			file = @files[key] = TestFile.new(
 				path:,
 				display_path:,
+				group: worker.group,
+				variant:,
 				tests:,
 				keys:,
 				indices:,
@@ -1119,8 +1179,10 @@ class Quickdraw::Coordinator
 				random: Random.new(Quickdraw.stable_hash("#{@seed}:#{display_path}")),
 			)
 
-			@slow_files[@files[path]] = true if @files[path].slow_pending > 0
+			@slow_files[file] = true if file.slow_pending > 0
 		end
+
+		worker.loaded[path] = file
 	end
 
 	private def record(worker, index, result)
@@ -1145,7 +1207,7 @@ class Quickdraw::Coordinator
 		placement = placement(worker)
 
 		# Failures are retried, first in the same worker, then in fresh ones.
-		return if @retries.enabled? && failed?(result) && @retries.hold(worker, file:, index:, result:, placement:, group: @group_of[file.display_path])
+		return if @retries.enabled? && failed?(result) && @retries.hold(worker, file:, index:, result:, placement:, group: file.group)
 
 		report(file, index, result, placement)
 	end
@@ -1191,7 +1253,7 @@ class Quickdraw::Coordinator
 		@flakes.add(file, index, result) if result["passed_on_retry"] && !@warm_loaders
 		@reporter.result(file.display_path, file.tests[index], result)
 		# Its last final result, after any retries.
-		@reporter.finished_file(file.display_path) if file.reported == file.size
+		@reporter.finished_file(file.display_path, file.variant) if file.reported == file.size
 		@stopping = true if @fail_fast && failed?(result) && !result["quarantined"]
 
 		if @history
@@ -1212,10 +1274,11 @@ class Quickdraw::Coordinator
 		end
 	end
 
-	private def load_failed(path, error)
+	private def load_failed(path, group, error)
 		display_path = display_path(path)
+		@partly_run[display_path] = true
 		@outcome.load_failed
-		@reporter.load_failed(display_path, error)
+		@reporter.load_failed(display_path, error, @variants[group])
 		@load_errors << [display_path, error]
 		@stopping = true if @fail_fast
 	end
@@ -1253,11 +1316,11 @@ class Quickdraw::Coordinator
 			# What it printed before crashing, which may say why.
 			@reporter.printed(output) if output && @capture == :loading
 
-			if (file = @files[path])
+			if (file = @files[[path, worker.group]])
 				# It loaded elsewhere but crashed this worker, so don't let it take more.
 				file.unstealable = true
 			else
-				load_failed(path, crash)
+				load_failed(path, worker.group, crash)
 			end
 		elsif (batch = worker.batch)
 			file, indices = batch
@@ -1328,7 +1391,7 @@ class Quickdraw::Coordinator
 
 	# The slowest unloaded file in `group` (see #order_slowest_files_first).
 	private def next_unloaded(group)
-		index = @unloaded.index { |_path, display_path| @group_of[display_path] == group } or return
+		index = @unloaded.index { |_path, _display_path, file_group| file_group == group } or return
 		@unloaded.delete_at(index).first
 	end
 
@@ -1356,16 +1419,13 @@ class Quickdraw::Coordinator
 	end
 
 	private def own_file(worker)
-		worker.loaded
-			.filter_map { |path, loaded| @files.fetch(path) if loaded }
-			.select { |file| file.pending.any? }
-			.max_by { |file| file.pending.size }
+		worker.loaded.each_value.grep(TestFile).select { |file| file.pending.any? }.max_by { |file| file.pending.size }
 	end
 
 	# When every worker is idle, nothing else will pick up the work, so steal regardless of cost.
 	private def file_to_steal(worker, all_idle)
 		candidates = @files.each_value.reject do |file|
-			file.unstealable || worker.loaded.key?(file.path) || file.pending.empty? || @group_of[file.display_path] != worker.group
+			file.unstealable || worker.loaded.key?(file.path) || file.pending.empty? || file.group != worker.group
 		end
 
 		unless all_idle
@@ -1388,11 +1448,11 @@ class Quickdraw::Coordinator
 		@slow_files.delete_if { |file, _| file.slow_pending == 0 }
 
 		candidates = @slow_files.each_key.filter_map do |file|
-			next if file.unstealable || @group_of[file.display_path] != worker.group
+			next if file.unstealable || file.group != worker.group
 			next if worker.loaded[file.path] == false
 
 			# Workers already loading it will take as many of its slow tests.
-			next if !worker.loaded[file.path] && @workers.each_value.count { |other| other.loading == file.path } >= file.slow_pending
+			next if !worker.loaded[file.path] && @workers.each_value.count { |other| other.loading == file.path && other.group == file.group } >= file.slow_pending
 
 			worth = file.next_expected - (worker.loaded[file.path] ? 0 : file.load_duration)
 			[file, worth] if worth >= BATCH_BUDGET
@@ -1402,7 +1462,7 @@ class Quickdraw::Coordinator
 	end
 
 	private def orphaned?(file)
-		@workers.each_value.none? { |worker| worker.loaded[file.path] }
+		@workers.each_value.none? { |worker| worker.loaded[file.path].equal?(file) }
 	end
 
 	# Not after Ctrl-C, when workers are being stopped.

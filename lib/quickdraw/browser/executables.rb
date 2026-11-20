@@ -60,7 +60,7 @@ module Quickdraw::Browser::Executables
 	# rather than a Chromium that can show its window.
 	def headless_shell?(settings)
 		launch = settings.fetch(:launch, {})
-		settings.fetch(:browser, "chromium").to_s == "chromium" && settings.fetch(:headless, true) && launch[:headless] != false && !launch.key?(:channel)
+		settings.fetch(:browsers, ["chromium"]).include?("chromium") && settings.fetch(:headless, true) && launch[:headless] != false && !launch.key?(:channel)
 	end
 
 	# The directories Playwright's `install` would put `browser` in that don't

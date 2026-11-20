@@ -28,14 +28,14 @@ class Quickdraw::Reporters::LastRun
 		@results << [path, test, result] if result["errors"].any? || result["failures"].any? || result["leaks"]
 	end
 
-	def load_failed(path, error)
-		@load_errors << [path, error]
+	def load_failed(path, error, variant)
+		@load_errors << [path, error, variant]
 	end
 
-	def finished_file(_path) = nil
+	def finished_file(_path, _variant) = nil
 	def shows_loading_output? = false
 	def booting = nil
-	def nothing_to_run(_path) = nil
+	def nothing_to_run(_path, _variant) = nil
 	def pause = nil
 	def resume = nil
 
@@ -80,7 +80,8 @@ class Quickdraw::Reporters::LastRun
 		start = run["start"]
 		agent.start(processes: start["processes"], worker_choice: start["worker_choice"], seed: start["seed"], paths: [])
 		run["results"].each { |path, test, result| agent.result(path, test, result) }
-		run["load_errors"].each { |path, error| agent.load_failed(path, error) }
+		# A run kept by an older Quickdraw has no variants.
+		run["load_errors"].each { |path, error, variant| agent.load_failed(path, error, variant) }
 		agent
 	end
 

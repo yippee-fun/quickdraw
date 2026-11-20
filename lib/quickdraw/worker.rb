@@ -149,8 +149,9 @@ class Quickdraw::Worker
 	# `capture` attributes what tests print to them (see Capture), and with
 	# :loading also sends what loading a file prints, for the reporter to print
 	# whole, rather than mixed into its lines. `leaks` is :warn or :fail
-	# to check for state tests leave behind (see Leaks), or nil.
-	def initialize(channel, test_files, seed, timeouts: true, profile: false, coverage: false, capture: false, leaks: nil)
+	# to check for state tests leave behind (see Leaks), or nil. `variant` is
+	# the variant of the worker's group (see Configuration::Group), or nil.
+	def initialize(channel, test_files, seed, timeouts: true, profile: false, coverage: false, capture: false, leaks: nil, variant: nil)
 		raise ArgumentError, "leaks must be :warn, :fail or nil, not #{leaks.inspect}" unless leaks in :warn | :fail | nil
 		raise ArgumentError, "capture must be true, false or :loading, not #{capture.inspect}" unless capture in true | false | :loading
 
@@ -162,6 +163,7 @@ class Quickdraw::Worker
 		@coverage = coverage
 		@capture_output = capture
 		@leak_mode = leaks
+		@variant = variant
 		@coverage_totals = {}
 		@files = {}
 		@file_seeds = {}
@@ -314,6 +316,7 @@ class Quickdraw::Worker
 			# So the coordinator can kill a worker whose watchdog can't run.
 			"timeout" => (definition.timeout || Quickdraw::Config.timeout if @timeouts),
 			**(definition.mutation ? {} : { "mutation" => false }),
+			**(@variant ? { "variant" => @variant } : {}),
 		}
 	end
 

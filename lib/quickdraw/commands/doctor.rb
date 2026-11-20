@@ -25,8 +25,8 @@ class Quickdraw::Commands::Doctor
 			return 2
 		end
 
-		# config finds config.browser's options for browser.
-		checks = [ruby, forking, cores, file_descriptors, test_files, config, browser, history, watching, ignored_history].compact
+		# config finds config.browser's options for browsers.
+		checks = [ruby, forking, cores, file_descriptors, test_files, config, *browsers, history, watching, ignored_history].compact
 		width = checks.map { |check| check.topic.size }.max
 
 		checks.each do |check|
@@ -130,37 +130,40 @@ class Quickdraw::Commands::Doctor
 	end
 
 	# Whether config.browser's tests can run: Puma, Node, Playwright's package
-	# and the browser.
-	private def browser
-		return unless @browser
-
-		install = "Run `#{Quickdraw::Reporters.command} browser install`."
+	# and each browser.
+	private def browsers
+		return [] unless @browser
 
 		# A group with a Gemfile of its own has gems this bundle doesn't.
 		if @browser[:app] && !@browser[:gemfile] && Gem.find_files("puma.rb").empty?
-			return Check.new(:problem, "Browser", *Quickdraw::Browser::MISSING_PUMA)
+			return [Check.new(:problem, "Browser", *Quickdraw::Browser::MISSING_PUMA)]
 		end
 
 		playwright = Quickdraw::Browser::Executables.playwright
-		return Check.new(:problem, "Browser", "Playwright isn’t installed, for browser tests", install) unless playwright
+		return [Check.new(:problem, "Browser", "Playwright isn’t installed, for browser tests", "Run `#{Quickdraw::Reporters.command} browser install`.")] unless playwright
 
 		version = Quickdraw::Browser::Executables.playwright_version(playwright)
 		required = Quickdraw::Browser::Executables.required_node(playwright)
 		node = Quickdraw::Browser::Executables.node_version
 
 		unless node && node.to_i >= required
-			return Check.new(:problem, "Browser", "Playwright #{version} runs on Node #{required} or later, #{node ? "but this is Node #{node}" : 'which isn’t installed'}", "Install it, or set QUICKDRAW_NODE to it.")
+			return [Check.new(:problem, "Browser", "Playwright #{version} runs on Node #{required} or later, #{node ? "but this is Node #{node}" : 'which isn’t installed'}", "Install it, or set QUICKDRAW_NODE to it.")]
 		end
 
-		name = @browser.fetch(:browser, "chromium").to_s
+		@browser.fetch(:browsers).map { |name| browser_installed(name.to_s, playwright:, version:, node:) }
+	end
+
+	# Whether Playwright has installed the browser `name`, one of config.browser's.
+	private def browser_installed(name, playwright:, version:, node:)
 		return Check.new(:problem, "Browser", "config.browser’s browser is #{name}", "It must be chromium, firefox or webkit.") unless BROWSER_NAMES.key?(name)
 
+		install = "Run `#{Quickdraw::Reporters.command} browser install`."
 		executable = Quickdraw::Browser::Remote.argument(@browser.fetch(:launch, {}))["executablePath"]
 
 		missing = if executable
 			File.executable?(executable) ? [] : [executable]
 		else
-			Quickdraw::Browser::Executables.missing_browsers(playwright, name, headless_shell: Quickdraw::Browser::Executables.headless_shell?(@browser))
+			Quickdraw::Browser::Executables.missing_browsers(playwright, name, headless_shell: name == "chromium" && Quickdraw::Browser::Executables.headless_shell?(@browser))
 		end
 
 		if missing.nil?

@@ -11,7 +11,11 @@ class Quickdraw::Configuration
 	# runs beside it, such as a browser, so the group gets fewer workers.
 	# `file_seconds` is how long one of its files is expected to take before
 	# history says, so a group of slow tests gets workers early on.
-	Group = Data.define(:name, :patterns, :gemfile, :setup, :cores, :file_seconds) do
+	#
+	# A group with a `variant` (such as a browser's name) is one of several
+	# that each run every file matching them, rather than only the first
+	# group's. Its tests' names, results and history say which.
+	Group = Data.define(:name, :patterns, :gemfile, :setup, :cores, :file_seconds, :variant) do
 		def match?(path) = patterns.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }
 	end
 
@@ -114,8 +118,10 @@ class Quickdraw::Configuration
 	end
 
 	# Runs the browser tests, the files matching `patterns`, in a group of their
-	# own. The block returns the Rack app they test, such as Rails.application,
-	# which each worker serves. See Quickdraw::Browser.prepare for the options.
+	# own, or with `browsers: [:chromium, :firefox]`, in a group for each
+	# browser, each running all of them. The block returns the Rack app they
+	# test, such as Rails.application, which each worker serves. See
+	# Quickdraw::Browser.prepare for the options.
 	def browser(*patterns, gemfile: nil, **, &app)
 		Quickdraw::Browser.configure(self, patterns, gemfile:, app:, **)
 	end
@@ -145,9 +151,15 @@ class Quickdraw::Configuration
 	end
 
 	# Defines a group (see Group). A file in more than one group goes in the
-	# first. The block runs after the before_forking callbacks.
-	def group(name, *patterns, gemfile: nil, cores: 1, file_seconds: nil, &setup)
+	# first, or if that has a variant, in every group with a variant it's in.
+	# The block runs after the before_forking callbacks.
+	def group(name, *patterns, gemfile: nil, cores: 1, file_seconds: nil, variant: nil, &setup)
 		name = name.to_s
+		variant = variant&.to_s
+		raise ArgumentError, "The #{name} group’s variant must be a word, such as firefox, not #{variant.inspect}." if variant && !variant.match?(/\A[\w.-]+\z/)
+		raise ArgumentError, "There’s already a group with the #{variant} variant." if variant && @groups.any? { |group| group.variant == variant }
+		# Without fork, every group's setup runs in one process, so variants can't run apart.
+		raise ArgumentError, "The #{name} group can’t have a variant, since #{RUBY_ENGINE} can’t fork." if variant && !Process.respond_to?(:fork)
 		raise ArgumentError, "The #{name} group needs a pattern for its files, such as \"test/#{name}/**/*.test.rb\"." if patterns.empty?
 		raise ArgumentError, "The #{name} group’s cores must be a whole number of 1 or more, not #{cores.inspect}." unless (Integer === cores) && cores >= 1
 		if file_seconds && !((Numeric === file_seconds) && file_seconds.positive?)
@@ -159,6 +171,6 @@ class Quickdraw::Configuration
 			raise ArgumentError, "The #{name} group can’t have its own Gemfile, since #{RUBY_ENGINE} can’t fork." unless Process.respond_to?(:fork)
 		end
 
-		@groups << Group.new(name:, patterns: patterns.map(&:to_s).freeze, gemfile: gemfile && File.expand_path(gemfile), setup:, cores:, file_seconds:)
+		@groups << Group.new(name:, patterns: patterns.map(&:to_s).freeze, gemfile: gemfile && File.expand_path(gemfile), setup:, cores:, file_seconds:, variant:)
 	end
 end

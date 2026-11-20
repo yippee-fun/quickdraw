@@ -5,7 +5,7 @@
 class Quickdraw::Commands::Completions
 	PROGRAMS = ["quickdraw", "qt"].freeze
 	# Options that can be given more than once.
-	REPEATABLE = ["--name", "--exclude", "--format"].freeze
+	REPEATABLE = ["--name", "--exclude", "--browser", "--format"].freeze
 
 	Option = Data.define(:long, :short, :argument, :description)
 

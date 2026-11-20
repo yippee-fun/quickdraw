@@ -30,7 +30,7 @@ class Quickdraw::Commands::Browser
 		end
 
 		settings = configured || {}
-		browsers = [settings.fetch(:browser, "chromium").to_s] if browsers.empty?
+		browsers = settings.fetch(:browsers, ["chromium"]) if browsers.empty?
 		playwright = Quickdraw::Browser::Executables.playwright || install_playwright
 		check_node(playwright)
 		install_browsers(playwright, browsers, headless_shell: browsers == ["chromium"] && Quickdraw::Browser::Executables.headless_shell?(settings))

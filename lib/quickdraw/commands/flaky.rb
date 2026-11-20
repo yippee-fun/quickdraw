@@ -89,7 +89,7 @@ class Quickdraw::Commands::Flaky
 		flaky = outcomes.group_by { |outcome| outcome[:test_id] }.filter_map do |_test_id, results|
 			statuses = results.map { |result| result[:status] }.select { |status| COUNTED.include?(status) }
 			failed = results.select { |result| FAILED.include?(result[:status]) }
-			test = results.first.values_at(:path, :line, :class_name, :description)
+			test = results.first.values_at(:path, :line, :class_name, :description, :variant)
 			[test, failed.size, statuses.size, failed.map { |result| result[:seed] }] if failed.any? && failed.size < statuses.size
 		end
 
@@ -99,10 +99,10 @@ class Quickdraw::Commands::Flaky
 			return 0
 		end
 
-		flaky.sort_by { |_test, failures, *| -failures }.each do |(path, line, class_name, description), failures, total, seeds|
+		flaky.sort_by { |_test, failures, *| -failures }.each do |(path, line, class_name, description, variant), failures, total, seeds|
 			indent = beside_label("FLAKY")
 			@io.puts
-			@io.puts "#{label('FLAKY', 43)} #{test_heading(path, line, class_name, description)}"
+			@io.puts "#{label('FLAKY', 43)} #{test_heading(path, line, class_name, description, variant)}"
 			@io.puts "#{indent}#{yellow("failed #{failures} of #{total} runs")} #{dim("· #{seeds.uniq.one? ? 'seed' : 'seeds'} #{seeds.uniq.join(', ')}")}"
 			@io.puts "#{indent}#{dim("⌕ #{Quickdraw::Reporters.command} bisect #{path}:#{line}")}"
 		end

@@ -45,7 +45,7 @@ class Quickdraw::Commands::Bisect
 		@io.puts "#{beside_label('BISECT')}#{dim("failed after #{pluralize(before.size, 'test')} in its worker · seed #{seed}")}"
 		@io.puts
 
-		replay = Quickdraw::Replay.new([test, *before].map(&:path).uniq, seed:, slot:, attempts: (2 * before.size.bit_length) + 2)
+		replay = Quickdraw::Replay.new([test, *before].map(&:path).uniq, seed:, slot:, attempts: (2 * before.size.bit_length) + 2, variant: @tests.fetch(test)[:variant])
 
 		if failed?(replay, [], test)
 			@io.puts "#{label('FAILS ALONE', 41)} It fails on its own too, so it doesn’t depend on the tests before it."
@@ -115,7 +115,7 @@ class Quickdraw::Commands::Bisect
 		step = Quickdraw::Replay::Step.new(
 			path: File.expand_path(test[:path]),
 			line: test[:line],
-			name: Quickdraw::Filter.name_of({ "class_name" => test[:class_name], "description" => test[:description] }),
+			name: Quickdraw::Filter.name_of({ "class_name" => test[:class_name], "description" => test[:description], "variant" => test[:variant] }),
 		)
 		@tests[step] = test
 		step
@@ -128,7 +128,7 @@ class Quickdraw::Commands::Bisect
 	# As test runs show a test.
 	private def heading(step)
 		test = @tests.fetch(step)
-		test_heading(test[:path], test[:line], test[:class_name], test[:description])
+		test_heading(test[:path], test[:line], test[:class_name], test[:description], test[:variant])
 	end
 
 	private def pluralize(count, noun)

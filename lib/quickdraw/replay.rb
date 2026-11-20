@@ -26,8 +26,9 @@ class Quickdraw::Replay
 	LIVENESS_INTERVAL = 0.5
 
 	# The tests' group comes from the first loader's report. If they're in
-	# one, that loader stops and one for the group starts.
-	def initialize(paths, seed:, slot:, attempts:)
+	# one, that loader stops and one for the group starts: the one with
+	# `variant`, for tests that ran in a group with one (see Configuration::Group).
+	def initialize(paths, seed:, slot:, attempts:, variant: nil)
 		@paths = paths
 		@seed = seed
 		@slot = slot
@@ -36,8 +37,9 @@ class Quickdraw::Replay
 
 		groups = boot(nil)
 		display_paths = paths.map { |path| path.delete_prefix("#{Dir.pwd}/") }
-		group, _patterns, gemfile = groups.find do |_name, patterns|
-			display_paths.any? { |path| patterns.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } }
+		group, _patterns, gemfile = groups.find do |_name, patterns, *, group_variant|
+			(variant.nil? || group_variant == variant) &&
+				display_paths.any? { |path| patterns.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } }
 		end
 
 		return unless group
