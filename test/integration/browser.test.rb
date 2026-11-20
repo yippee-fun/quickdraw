@@ -299,6 +299,95 @@ class BrowserTest < Quickdraw::Test
 		match { result => { summary: /\A6 tests · 18 assertions/ } }
 	end
 
+	def chromium_and_webkit(files)
+		project(
+			"config/quickdraw.rb" => <<~RUBY,
+				Quickdraw.configure do |config|
+					config.browser("test/browser/**/*.test.rb", browsers: [:chromium, :webkit], timeout: 2) do
+						require_relative "../app"
+						App
+					end
+				end
+			RUBY
+			"app.rb" => APP,
+			"a.test.rb" => "class ATest < Quickdraw::Test; test('passes') { assert true }; end\n",
+			**files,
+		)
+	end
+
+	test "runs every browser test in each of config.browser's browsers, at once", timeout: 60 do
+		require_browser("chromium")
+		require_browser("webkit")
+
+		# Each waits for the other's browser to start its test, so they must run together.
+		project = chromium_and_webkit("test/browser/page.test.rb" => <<~RUBY)
+			class PageTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				test("meets the other browser") do
+					visit "/"
+					name = Quickdraw::Browser.browser_name
+					other = File.join("tmp", (name == "chromium") ? "webkit" : "chromium")
+					File.write(File.join("tmp", name), "")
+					deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+					Kernel.sleep(0.05) until File.exist?(other) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+					assert File.exist?(other)
+				end
+			end
+		RUBY
+		Dir.mkdir(File.join(project.directory, "tmp"))
+
+		result = run_quickdraw(project, "-p", "5", "--format", "json")
+
+		assert(result.success?) { result.output }
+		tests = result.events.select { |event| event["event"] == "test" }
+		browser_tests = tests.select { |event| event["path"] == "test/browser/page.test.rb" }
+
+		assert_equal browser_tests.map { |event| [event["name"], event["variant"], event["status"]] }.sort, [
+			["PageTest › meets the other browser [chromium]", "chromium", "passed"],
+			["PageTest › meets the other browser [webkit]", "webkit", "passed"],
+		]
+		assert_equal tests.reject { |event| event["path"].start_with?("test/browser/") }.map { |event| [event["name"], event["variant"]] }, [["ATest › passes", nil]]
+	end
+
+	test "a test failing in one browser fails in that one, which --failed and --browser rerun alone", timeout: 90 do
+		require_browser("chromium")
+		require_browser("webkit")
+
+		project = chromium_and_webkit("test/browser/page.test.rb" => <<~RUBY)
+			class PageTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				test("isn't webkit") do
+					visit "/"
+					refute_equal Quickdraw::Browser.browser_name, "webkit"
+				end
+			end
+		RUBY
+
+		failed = project.run("--retry", "0", "-p", "4", timeout: 30)
+
+		refute failed.success?
+		match { failed => { summary: /\A3 tests · \d+ assertions · 1 failed/ } }
+		assert_includes failed.output, "✓ test/browser/page.test.rb [chromium]"
+		assert_includes failed.output, "✗ test/browser/page.test.rb [webkit]"
+		assert_includes failed.output, "quickdraw --browser webkit test/browser/page.test.rb:4"
+
+		rerun = project.run("--failed", "--format", "json", timeout: 30)
+		assert_equal rerun.events.select { |event| event["event"] == "test" }.map { |event| [event["variant"], event["status"]] }, [["webkit", "failed"]]
+
+		last = project.run("last", timeout: 30)
+		assert_includes last.stdout, "PageTest › isn't webkit [webkit]"
+
+		chromium = project.run("--browser", "chromium", "--format", "json", "test/browser", timeout: 30)
+		assert(chromium.success?) { chromium.output }
+		assert_equal chromium.events.select { |event| event["event"] == "test" }.map { |event| [event["variant"], event["status"]] }, [["chromium", "passed"]]
+
+		firefox = project.run("--browser", "firefox", timeout: 30)
+		refute firefox.success?
+		assert_includes firefox.output, "Quickdraw didn’t run any tests: --browser firefox isn’t one of config.browser’s browsers: (chromium, webkit)."
+	end
+
 	test "says when Puma isn't installed", timeout: 20 do
 		project = app("chromium", "fake/puma.rb" => "raise LoadError, 'cannot load such file -- puma'\n", "test/browser/page.test.rb" => <<~RUBY)
 			class PageTest < Quickdraw::Test

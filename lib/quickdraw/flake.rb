@@ -13,7 +13,8 @@
 # `attempts` are hashes with `in` (`"first run"`, `"same worker"` or `"fresh
 # worker"`), `status`, `duration`, and the `failures` and `errors` of each
 # run. `key` is the same for the test from run to run, for grouping reports.
-Quickdraw::Flake = Data.define(:key, :path, :line, :name, :kind, :attempts, :seed, :rerun, :commit, :branch, :ci_url) do
+# `variant` is the browser it ran in, when config.browser has several, or nil.
+Quickdraw::Flake = Data.define(:key, :path, :line, :name, :variant, :kind, :attempts, :seed, :rerun, :commit, :branch, :ci_url) do
 	# Context for a run's flakes: its seed, commit, branch and CI build.
 	def self.context(seed)
 		{
@@ -32,6 +33,7 @@ Quickdraw::Flake = Data.define(:key, :path, :line, :name, :kind, :attempts, :see
 			"path" => path,
 			"line" => test["line"],
 			"name" => Quickdraw.utf8(Quickdraw::Filter.name_of(test)),
+			"variant" => test["variant"],
 			"kind" => result.fetch("flake"),
 			"attempts" => result.fetch("attempts"),
 		}
@@ -70,6 +72,7 @@ Quickdraw::Flake = Data.define(:key, :path, :line, :name, :kind, :attempts, :see
 			path: entry.fetch("path"),
 			line: entry.fetch("line"),
 			name: entry.fetch("name"),
+			variant: entry.fetch("variant"),
 			kind: entry.fetch("kind").to_sym,
 			attempts:,
 			seed: context.fetch("seed"),
@@ -84,7 +87,8 @@ Quickdraw::Flake = Data.define(:key, :path, :line, :name, :kind, :attempts, :see
 		location = "#{entry.fetch('path')}:#{entry.fetch('line')}"
 		# So a path starting with "-" isn't taken for an option.
 		separator = "-- " if location.start_with?("-")
-		"#{Quickdraw::Reporters.command} --seed #{context.fetch('seed')} #{separator}#{Quickdraw::Reporters.shell_quote(location)}"
+		browser = "--browser #{Quickdraw::Reporters.shell_quote(entry['variant'])} " if entry["variant"]
+		"#{Quickdraw::Reporters.command} --seed #{context.fetch('seed')} #{browser}#{separator}#{Quickdraw::Reporters.shell_quote(location)}"
 	end
 
 	def self.ci_url

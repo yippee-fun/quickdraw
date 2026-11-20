@@ -46,21 +46,45 @@ module Quickdraw::Browser
 	DEFAULT_CORES = 2
 	FILE_SECONDS = 5.0
 
-	def self.configure(config, patterns, gemfile:, app:, cores: DEFAULT_CORES, **settings)
-		@settings = { **settings, gemfile:, app: !app.nil? }
-		config.group(:browser, *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS) { prepare(app:, **settings) }
+	# With `browsers`, a group for each, named browser:NAME, with the browser's
+	# name as its variant (see Configuration::Group), so each runs every file.
+	def self.configure(config, patterns, gemfile:, app:, browsers: nil, cores: DEFAULT_CORES, **settings)
+		if config.groups.any? { |group| group.name == "browser" || group.name.start_with?("browser:") }
+			raise ArgumentError, "config.browser can only be called once. Give it every pattern, and browsers: for several browsers."
+		end
+
+		if browsers
+			raise ArgumentError, "config.browser takes browser: or browsers:, not both." if settings.key?(:browser)
+
+			browsers = Array(browsers).map(&:to_s)
+			raise ArgumentError, "config.browser’s browsers: needs at least one browser." if browsers.empty?
+			if (twice = browsers.find { |name| browsers.count(name) > 1 })
+				raise ArgumentError, "config.browser’s browsers: has #{twice} twice."
+			end
+
+			browsers.each do |browser|
+				raise ArgumentError, "config.browser’s browsers must be chromium, firefox or webkit, not #{browser}." unless browser in "chromium" | "firefox" | "webkit"
+
+				config.group("browser:#{browser}", *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS, variant: browser) { prepare(app:, browser:, artifacts: File.join(ARTIFACTS, browser), **settings) }
+			end
+		else
+			config.group(:browser, *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS) { prepare(app:, **settings) }
+		end
+
+		@settings = { **settings, browsers: browsers || [settings.fetch(:browser, "chromium").to_s], gemfile:, app: !app.nil? }
 		config.after_forking { start if @prepared }
 	end
 
-	# The options config gave config.browser, and whether it gave an app, for
-	# commands. Nil if config doesn't call config.browser.
+	# The options config gave config.browser, with `browsers` the names of
+	# those it runs tests in, and whether it gave an app, for commands. Nil if
+	# config doesn't call config.browser.
 	def self.settings = @settings
 
 	# Why browser tests can't serve the app, and how to fix it, as two sentences.
 	MISSING_PUMA = ["config.browser needs puma, to serve the app, which isn’t installed.", "Add it to the Gemfile’s test group."].freeze
 
 	# In the browser group's loader, once config has booted, so the app has too.
-	def self.prepare(app:, browser: "chromium", headless: true, timeout: 5, port: 0, launch: {}, context: {})
+	def self.prepare(app:, browser: "chromium", headless: true, timeout: 5, port: 0, launch: {}, context: {}, artifacts: ARTIFACTS)
 		browser = browser.to_s
 		raise ArgumentError, "config.browser’s browser must be chromium, firefox or webkit, not #{browser}." unless browser in "chromium" | "firefox" | "webkit"
 
@@ -81,13 +105,17 @@ module Quickdraw::Browser
 		@port = port
 		@options = { browser:, headless:, timeout: timeout * 1000, launch: Remote.argument(launch), context: Remote.argument(context) }
 		@prepared = true
+		@artifacts = artifacts
 
 		# Only this run's failures.
-		Quickdraw.remove_tree(ARTIFACTS)
+		Quickdraw.remove_tree(artifacts)
 	end
 
 	# Seconds that actions and waiting assertions wait for the page.
 	def self.timeout = @timeout
+
+	# The worker's browser: chromium, firefox or webkit.
+	def self.browser_name = @browser_name
 
 	# The worker's app server, or nil without an app.
 	def self.server = @server
@@ -140,9 +168,9 @@ module Quickdraw::Browser
 	end
 
 	# Saves a screenshot, the HTML and the console log of the page, named
-	# after `name` in ARTIFACTS, and returns their paths as lines to show.
+	# after `name` in the artifacts directory (see .prepare), and returns their paths as lines to show.
 	def self.save(page, name)
-		base = File.join(ARTIFACTS, "#{name.gsub(/[^\w.-]+/, '-')[0, 100].delete_suffix('-')}-#{Quickdraw.stable_hash(name).to_s(36)[0, 6]}")
+		base = File.join(@artifacts, "#{name.gsub(/[^\w.-]+/, '-')[0, 100].delete_suffix('-')}-#{Quickdraw.stable_hash(name).to_s(36)[0, 6]}")
 
 		@bridge.call("save", page: page.__handle__, base:, timeout: @timeout * 1000).map do |kind, detail|
 			(kind == "Error") ? "Quickdraw couldn’t save the page: #{detail}" : "#{kind}: #{detail.delete_prefix("#{Quickdraw::ROOT}/")}"

@@ -39,10 +39,11 @@ class Quickdraw::Reporters::Human
 		@color = io.tty? && !ENV.key?("NO_COLOR")
 		@status_line = Quickdraw::Reporters::StatusLine.new(io:, live:, color: @color)
 		@problems = []
-		@tallies = Hash.new { |hash, path| hash[path] = FileTally.new }
+		# By path, then variant (see Reporters).
+		@tallies = Hash.new { |paths, path| paths[path] = Hash.new { |variants, variant| variants[variant] = FileTally.new } }
 		@set_aside = []
 		@leaks = []
-		# The worst that happened in each file with a problem.
+		# The worst that happened in each file with a problem, by path with variant.
 		@file_statuses = {}
 		@path_width = 0
 	end
@@ -67,7 +68,7 @@ class Quickdraw::Reporters::Human
 		@timings.record(path, test, result)
 		@profile.record(result)
 		status = result["quarantined"] ? "quarantined" : Quickdraw::Outcome.status(result)
-		tally = @tallies[path]
+		tally = @tallies[path][test["variant"]]
 		tally.tests += 1
 		tally.duration += result["duration"].to_f
 		tally.statuses[status] += 1
@@ -75,10 +76,10 @@ class Quickdraw::Reporters::Human
 
 		case status
 		in "failed" | "errored"
-			@file_statuses[path] = "failed"
+			@file_statuses[with_variant(path, test["variant"])] = "failed"
 			@problems << [path, test, result]
 		in "flaky" | "quarantined"
-			@file_statuses[path] ||= "flaky"
+			@file_statuses[with_variant(path, test["variant"])] ||= "flaky"
 			@problems << [path, test, result]
 		in "skipped" | "pending" then @set_aside << [path, test, result["skipped"]]
 		in "passed" then nil
@@ -87,22 +88,22 @@ class Quickdraw::Reporters::Human
 		@leaks << [path, test, result["leaks"]] if result["leaks"]
 	end
 
-	def finished_file(path)
+	def finished_file(path, variant)
 		@status_line.file_done
-		@status_line.above { print_file(path) }
+		@status_line.above { print_file(path, variant) }
 	end
 
 	# A file with no tests to run, as none matched a filter, gets no line, but counts as done.
-	def nothing_to_run(_path)
+	def nothing_to_run(_path, _variant)
 		@status_line.file_done
 		@status_line.redraw
 	end
 
-	def load_failed(path, error)
-		@file_statuses[path] = "failed to load"
-		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
+	def load_failed(path, error, variant)
+		@file_statuses[with_variant(path, variant)] = "failed to load"
+		@problems << [path, nil, { "errors" => [error], "failures" => [], "variant" => variant }]
 		@status_line.file_done
-		@status_line.above { @io.puts "#{red('✗')} #{path_column(path)}  #{red('could not be loaded')}" }
+		@status_line.above { @io.puts "#{red('✗')} #{path_column(with_variant(path, variant))}  #{red('could not be loaded')}" }
 	end
 
 	def shows_loading_output? = true
@@ -141,10 +142,11 @@ class Quickdraw::Reporters::Human
 		print_summary(outcome)
 	end
 
-	private def print_file(path)
-		tally = @tallies.fetch(path)
+	private def print_file(path, variant)
+		tally = @tallies.fetch(path).fetch(variant)
+		label = with_variant(path, variant)
 
-		mark = case @file_statuses[path]
+		mark = case @file_statuses[label]
 			in "failed" then red("✗")
 			in "flaky" then yellow("~")
 			in nil then green("✓")
@@ -161,7 +163,7 @@ class Quickdraw::Reporters::Human
 			(dim("#{statuses['pending']} pending") if statuses["pending"] > 0),
 		].compact
 
-		@io.puts "#{mark} #{path_column(path)}  #{details.join(dim(' · '))}"
+		@io.puts "#{mark} #{path_column(label)}  #{details.join(dim(' · '))}"
 	end
 
 	# The directory dimmed, padded so details line up for paths that fit.
@@ -174,9 +176,9 @@ class Quickdraw::Reporters::Human
 		@io.puts
 
 		if test
-			@io.puts "#{badge(result)} #{bold(test['description'] || "line #{test['line']}")}  #{dim([test['class_name'], "#{path}:#{test['line']}"].compact.join(' · '))}"
+			@io.puts "#{badge(result)} #{bold(test['description'] || "line #{test['line']}")}  #{dim([test['class_name'], "#{path}:#{test['line']}", test['variant']].compact.join(' · '))}"
 		else
-			@io.puts "#{badge(result)} #{bold(path)} could not be loaded"
+			@io.puts "#{badge(result)} #{bold(with_variant(path, result['variant']))} could not be loaded"
 		end
 
 		result["failures"].each do |failure|
@@ -208,7 +210,7 @@ class Quickdraw::Reporters::Human
 		end
 
 		@io.puts
-		@io.puts "  #{dim("↻ #{rerun_command(path, test)}")}"
+		@io.puts "  #{dim("↻ #{rerun_command(path, test, problem_variant(test, result))}")}"
 	end
 
 	# The message, then the code where it was raised, then the rest of the backtrace.
@@ -524,7 +526,7 @@ class Quickdraw::Reporters::Human
 	end
 
 	private def recap(path, test, result)
-		return "#{red('✗')} #{path} could not be loaded" unless test
+		return "#{red('✗')} #{with_variant(path, result['variant'])} could not be loaded" unless test
 
 		"#{marker(result)} #{path}:#{test['line']} #{name_of(test)}#{dim(' (quarantined)') if result['quarantined']}#{dim(' (flaky)') if result['passed_on_retry'] && !result['quarantined']}"
 	end

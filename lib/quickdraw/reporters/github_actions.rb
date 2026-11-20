@@ -27,14 +27,14 @@ class Quickdraw::Reporters::GitHubActions
 		@leaks << [path, test, result["leaks"]] if result["leaks"]
 	end
 
-	def load_failed(path, error)
-		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
+	def load_failed(path, error, variant)
+		@problems << [path, nil, { "errors" => [error], "failures" => [], "variant" => variant }]
 	end
 
-	def finished_file(_path) = nil
+	def finished_file(_path, _variant) = nil
 	def shows_loading_output? = false
 	def booting = nil
-	def nothing_to_run(_path) = nil
+	def nothing_to_run(_path, _variant) = nil
 	def pause = nil
 	def resume = nil
 
@@ -51,7 +51,7 @@ class Quickdraw::Reporters::GitHubActions
 
 	private def annotate(path, test, result)
 		file, line = location(path, test, result)
-		title = test ? name_of(test) : "#{path} could not be loaded"
+		title = test ? name_of(test) : "#{with_variant(path, result['variant'])} could not be loaded"
 
 		if result["quarantined"]
 			@io.puts "::warning file=#{property(file)},line=#{line},title=#{property("#{title} (quarantined)")}::#{data("#{message(result)}\n\n#{QUARANTINED}")}"
@@ -95,7 +95,7 @@ class Quickdraw::Reporters::GitHubActions
 		if @problems.any?
 			lines << ""
 			@problems.each do |path, test, result|
-				lines << "- `#{test ? "#{path}:#{test['line']}" : path}` #{test ? name_of(test) : 'could not be loaded'}#{' (quarantined)' if result['quarantined']}#{' (flaky)' if result['passed_on_retry'] && !result['quarantined']}"
+				lines << "- `#{test ? "#{path}:#{test['line']}" : path}` #{test ? name_of(test) : with_variant('could not be loaded', result['variant'])}#{' (quarantined)' if result['quarantined']}#{' (flaky)' if result['passed_on_retry'] && !result['quarantined']}"
 			end
 		end
 

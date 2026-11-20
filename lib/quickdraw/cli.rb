@@ -72,6 +72,7 @@ class Quickdraw::CLI
 			fail_fast: false,
 			names: [],
 			excludes: [],
+			browsers: [],
 			outputs: [],
 		}
 
@@ -248,6 +249,10 @@ class Quickdraw::CLI
 
 			parser.on("-x", "--exclude PATTERN", "Leave out tests whose name contains PATTERN, or matches /PATTERN/flags") do |it|
 				options[:excludes] << it
+			end
+
+			parser.on("--browser NAME", "Browser tests only in NAME, one of config.browser’s browsers (or a group’s variant)") do |it|
+				options[:browsers] |= [it]
 			end
 
 			parser.on("-f", "--failed", "Only the tests that failed or errored in the last run") do
@@ -581,6 +586,7 @@ class Quickdraw::CLI
 				*options[:lines].sort.map { |path, lines| "#{path}:#{lines.sort.join(':')}" },
 				*options[:names].map { |name| "--name #{name}" },
 				*options[:excludes].map { |name| "--exclude #{name}" },
+				*options[:browsers].sort.map { |browser| "--browser #{browser}" },
 				("--failed" if options[:failed]),
 				("--changed" if options[:changed]),
 				("path contains #{options[:path_contains]}" if options[:path_contains]),
@@ -614,6 +620,7 @@ class Quickdraw::CLI
 			warm_loaders: options[:warm_loaders],
 			timeline: options[:timeline],
 			elastic: options[:elastic],
+			variants: (options[:browsers] if options[:browsers].any?),
 		).call
 	end
 

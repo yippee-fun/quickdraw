@@ -229,7 +229,7 @@ class Quickdraw::Commands::Fuzz
 	private def report_for_people
 		findings.each do |target, finding|
 			text, background = BADGES.fetch(finding.kind)
-			@io.puts "#{label(text, background)} #{test_heading(target.path, target.test['line'], target.test['class_name'], target.test['description'])}"
+			@io.puts "#{label(text, background)} #{test_heading(target.path, target.test['line'], target.test['class_name'], target.test['description'], target.test['variant'])}"
 			@io.puts
 			details(finding).each { |line| @io.puts "    #{line}" }
 			@io.puts

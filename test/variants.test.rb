@@ -1,0 +1,48 @@
+# frozen_string_literal: true
+
+class VariantsTest < Quickdraw::Test
+	test "config.browser with browsers: has a group for each, with the browser as its variant" do
+		config = Quickdraw::Configuration.new
+		config.browser("test/system/**/*.test.rb", browsers: [:chromium, :webkit]) { :app }
+
+		assert_equal config.groups.map { |group| [group.name, group.patterns, group.cores, group.variant] }, [
+			["browser:chromium", ["test/system/**/*.test.rb"], 2, "chromium"],
+			["browser:webkit", ["test/system/**/*.test.rb"], 2, "webkit"],
+		]
+	end
+
+	test "config.browser with browser: has one group, with no variant" do
+		config = Quickdraw::Configuration.new
+		config.browser("test/system/**/*.test.rb", browser: :webkit) { :app }
+
+		assert_equal config.groups.map { |group| [group.name, group.variant] }, [["browser", nil]]
+	end
+
+	test "config.browser takes browser: or browsers:, each a browser once" do
+		error = assert_raises(ArgumentError) { Quickdraw::Configuration.new.browser("test/**/*.test.rb", browser: :chromium, browsers: [:webkit]) }
+		assert_equal error.message, "config.browser takes browser: or browsers:, not both."
+
+		error = assert_raises(ArgumentError) { Quickdraw::Configuration.new.browser("test/**/*.test.rb", browsers: [:webkit, :webkit]) }
+		assert_equal error.message, "config.browser’s browsers: has webkit twice."
+
+		error = assert_raises(ArgumentError) { Quickdraw::Configuration.new.browser("test/**/*.test.rb", browsers: [:safari]) }
+		assert_equal error.message, "config.browser’s browsers must be chromium, firefox or webkit, not safari."
+
+		config = Quickdraw::Configuration.new
+		config.browser("test/a/**/*.test.rb", browsers: [:chromium])
+		error = assert_raises(ArgumentError) { config.browser("test/b/**/*.test.rb", browsers: [:webkit]) }
+		assert_equal error.message, "config.browser can only be called once. Give it every pattern, and browsers: for several browsers."
+	end
+
+	test "a test's name and history key have its variant" do
+		test = { "class_name" => "SignupTest", "description" => "signs up", "line" => 3 }
+		firefox = test.merge("variant" => "firefox")
+
+		assert_equal Quickdraw::Filter.name_of(firefox), "SignupTest › signs up [firefox]"
+		assert_equal Quickdraw::Filter.name_of(test), "SignupTest › signs up"
+
+		keys = [test, firefox, test.merge("variant" => "webkit")].map { |it| Quickdraw::History.keys("a.test.rb", [it]).first }
+		assert_equal keys.uniq.size, 3
+		assert_equal keys.first, '["a.test.rb","SignupTest","signs up",1]'
+	end
+end

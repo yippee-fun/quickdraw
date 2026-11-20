@@ -8,13 +8,12 @@ class Quickdraw::Coordinator::Scheduler
 	# Without history, a guess, which only matters against groups' estimates.
 	DEFAULT_FILE_SECONDS = 0.1
 
-	# `groups` are as the first loader reports them, and `group_of` is each test
-	# file's group, by display path. Workers use up to `core_budget` cores
-	# between them (see #fits?).
-	def initialize(groups:, group_of:, plan:, core_budget:, unloaded:, files:, workers:, leaving:, loaders:, retries:)
+	# `groups` are as the first loader reports them, and `unloaded` the files
+	# to load, as [path, display path, group]. Workers use up to `core_budget`
+	# cores between them (see #fits?).
+	def initialize(groups:, plan:, core_budget:, unloaded:, files:, workers:, leaving:, loaders:, retries:)
 		@group_cores = groups.to_h { |name, _patterns, _gemfile, cores| [name, cores || 1] }
 		@group_file_seconds = groups.to_h { |name, _patterns, _gemfile, _cores, seconds| [name, seconds] }
-		@group_of = group_of
 		@plan = plan
 		@core_budget = core_budget
 		@unloaded = unloaded
@@ -29,7 +28,7 @@ class Quickdraw::Coordinator::Scheduler
 	# load: one for each first, slowest first, then each next to the group
 	# whose tests would take longest per worker.
 	def allocate(processes)
-		work = @unloaded.map { |_path, display_path| @group_of[display_path] }.uniq.to_h { |group| [group, remaining_seconds(group)] }
+		work = @unloaded.map { |_path, _display_path, group| group }.uniq.to_h { |group| [group, remaining_seconds(group)] }
 		allocation = work.transform_values { 0 }
 		used = 0
 
@@ -66,8 +65,8 @@ class Quickdraw::Coordinator::Scheduler
 	end
 
 	def work_left?(group)
-		@unloaded.any? { |_path, display_path| @group_of[display_path] == group } ||
-			@files.each_value.any? { |file| file.pending.any? && @group_of[file.display_path] == group } ||
+		@unloaded.any? { |_path, _display_path, file_group| file_group == group } ||
+			@files.each_value.any? { |file| file.pending.any? && file.group == group } ||
 			@retries.waiting?(group)
 	end
 
@@ -94,21 +93,21 @@ class Quickdraw::Coordinator::Scheduler
 	# Seconds of tests left in `group`: from history and how this run's have
 	# gone so far, or else as files are expected to take (see #file_seconds).
 	private def remaining_seconds(group)
-		unloaded = @unloaded.sum { |_path, display_path| (@group_of[display_path] == group) ? file_seconds(display_path) : 0.0 }
+		unloaded = @unloaded.sum { |_path, display_path, file_group| (file_group == group) ? file_seconds(display_path, group) : 0.0 }
 
 		loaded = @files.each_value.sum do |file|
-			next 0.0 unless file.pending.any? && @group_of[file.display_path] == group
+			next 0.0 unless file.pending.any? && file.group == group
 
-			file.estimated_pending_time || (file_seconds(file.display_path) * file.pending.size / [file.size, 1].max)
+			file.estimated_pending_time || (file_seconds(file.display_path, group) * file.pending.size / [file.size, 1].max)
 		end
 
 		unloaded + loaded
 	end
 
-	# How long a file is expected to take: from history, or else as its
-	# group's files are, or else as the average file is.
-	private def file_seconds(display_path)
-		@plan&.files&.dig(display_path, 1) || @group_file_seconds[@group_of[display_path]] || average_file_seconds
+	# How long a file is expected to take in `group`: from history, or else as
+	# the group's files are, or else as the average file is.
+	private def file_seconds(display_path, group)
+		@plan&.files&.dig(display_path, 1) || @group_file_seconds[group] || average_file_seconds
 	end
 
 	private def average_file_seconds

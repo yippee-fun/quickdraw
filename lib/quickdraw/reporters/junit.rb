@@ -20,14 +20,14 @@ class Quickdraw::Reporters::JUnit
 		@suites[path] << [test, result]
 	end
 
-	def load_failed(path, error)
-		@suites[path] << [nil, { "errors" => [error], "failures" => [], "duration" => 0 }]
+	def load_failed(path, error, variant)
+		@suites[path] << [nil, { "errors" => [error], "failures" => [], "duration" => 0, "variant" => variant }]
 	end
 
-	def finished_file(_path) = nil
+	def finished_file(_path, _variant) = nil
 	def shows_loading_output? = false
 	def booting = nil
-	def nothing_to_run(_path) = nil
+	def nothing_to_run(_path, _variant) = nil
 	def pause = nil
 	def resume = nil
 
@@ -70,7 +70,7 @@ class Quickdraw::Reporters::JUnit
 	end
 
 	private def test_case(file, test, result)
-		name = test ? test["description"] || "line #{test['line']}" : "#{file} could not be loaded"
+		name = test ? with_variant(test["description"] || "line #{test['line']}", test["variant"]) : "#{with_variant(file, result['variant'])} could not be loaded"
 		class_name = test&.fetch("class_name") || file
 		attributes = %(name="#{attribute(name)}" classname="#{attribute(class_name)}" file="#{attribute(file)}" line="#{test&.fetch('line') || 1}" time="#{format('%.6f', result['duration'] || 0)}")
 

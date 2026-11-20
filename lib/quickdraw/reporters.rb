@@ -4,9 +4,10 @@
 #
 #   start(processes:, worker_choice:, seed:, paths:, estimate:)
 #   result(path, test, result)
-#   finished_file(path)         once each of its tests has its final result
-#   load_failed(path, error)
-#   pause / resume              around a debugger having the terminal
+#   finished_file(path, variant)        once each of its tests has its final result
+#   nothing_to_run(path, variant)       a file none of whose tests were selected
+#   load_failed(path, error, variant)
+#   pause / resume                      around a debugger having the terminal
 #   finish(outcome)
 #
 # and answers `shows_loading_output?`: whether it shows what loading test
@@ -14,9 +15,14 @@
 #
 #   printed(output)
 #
-# `paths` are the test files the run will load. `estimate` is how many tests
-# the run is expected to have and how long it's expected to take, from the
-# last run of the same tests, or nil.
+# A file runs once in each group it's in with a variant, such as each of
+# config.browser's browsers (see Configuration::Group). `variant` is the
+# one it ran in, or nil, as is a test's "variant".
+#
+# `paths` are the test files the run will load, each once for every group it
+# runs in, as "path [variant]" in one with a variant. `estimate` is how many
+# tests the run is expected to have and how long it's expected to take, from
+# the last run of the same tests, or nil.
 #
 # They run in the coordinator, after the loader has forked, so they may load
 # libraries (such as json) as long as they do it lazily, not at construction.
@@ -123,8 +129,21 @@ module Quickdraw::Reporters
 			end
 		end
 
-		private def rerun_command(path, test)
-			"#{Quickdraw::Reporters.command} #{shell_quote(test ? "#{path}:#{test['line']}" : path)}"
+		# In just the browser it ran in, if config.browser has several. The option
+		# comes first, since with POSIXLY_CORRECT, options end at the first path.
+		private def rerun_command(path, test, variant)
+			"#{Quickdraw::Reporters.command} #{"--browser #{shell_quote(variant)} " if variant}#{shell_quote(test ? "#{path}:#{test['line']}" : path)}"
+		end
+
+		# `text`, such as a file's path, followed by the variant it ran in, if any.
+		private def with_variant(text, variant)
+			variant ? "#{text} [#{variant}]" : text
+		end
+
+		# The variant a problem's test, or file that couldn't load, ran in. A load
+		# failure has no test, so its result has it.
+		private def problem_variant(test, result)
+			test ? test["variant"] : result["variant"]
 		end
 
 		# For a test that failed, then passed when retried.

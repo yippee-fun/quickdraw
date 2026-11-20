@@ -462,7 +462,15 @@ end
 
 Browser tests run in a group of their own (see Configuration). Each worker's browser needs a core of its own, so a browser test's worker counts as two of the run's cores (`config.browser(…, cores: 1)` to count it as one), and since browser tests are usually the slowest, they get workers first, before history says how long they take, rather than holding up the end of the run.
 
-`qt browser install` installs Playwright and config's browser (or the ones you name: `qt browser install firefox webkit`), and `qt doctor` checks they're there. Tests never download anything.
+To run every browser test in several browsers, give `browsers:` instead of `browser:`. Each browser gets a group of its own, `browser:chromium` and so on, so they run at the same time, sharing the run's cores:
+
+```ruby
+config.browser("test/system/**/*.test.rb", browsers: [:chromium, :firefox, :webkit]) { Rails.application }
+```
+
+Each test's name ends with the browser it ran in (`SignupTest › signs up [firefox]`), as do file lines, and JSON gives it as `variant`. Each browser's results are separate in history, so durations, flakiness, retries and quarantine are per browser, and `--failed` reruns a failure only in the browser it failed in. `qt test/system/signup.test.rb:4` runs that test in every browser; `--browser firefox` (repeatable) runs browser tests in just that one, as a failure's rerun command does; a browser config doesn't have runs nothing and fails. A failure's screenshot, HTML and console log go in `.quickdraw/browser/firefox/` and so on. `Quickdraw::Browser.browser_name` is the worker's browser.
+
+`qt browser install` installs Playwright and config's browsers (or the ones you name: `qt browser install firefox webkit`), and `qt doctor` checks they're there. Tests never download anything.
 
 ```ruby
 class SignupTest < Quickdraw::Test
@@ -483,7 +491,7 @@ end
 - **The app:** each worker serves it with Puma, in the worker's threads. With `config.rails`, the page sees the records a test creates, and they're rolled back after it. What the app raises while serving the page is raised in the test.
 - **Waiting assertions:** `assert_text` and `refute_text` (a String or Regexp, `within:` a selector or locator), and `assert_selector` and `refute_selector` (with `text:` or `count:`) wait, in Node, for the page to match. A browser test that calls `sleep` gets a warning, and the summary counts them.
 - **Failures:** a failed or errored test's screenshot, HTML and console log are saved in `.quickdraw/browser/`, and their paths are shown with it.
-- **Options:** `browser: "firefox"` or `"webkit"`, `headless: false`, `timeout:` in seconds for actions and assertions (5 by default), `port:` for a fixed port (plus the worker's number) rather than any free one, and `launch:` and `context:` options for Playwright's `launch` and `newContext`.
+- **Options:** `browser: "firefox"` or `"webkit"` (or `browsers:`, above), `headless: false`, `timeout:` in seconds for actions and assertions (5 by default), `port:` for a fixed port (plus the worker's number) rather than any free one, and `launch:` and `context:` options for Playwright's `launch` and `newContext`.
 - **Where Playwright comes from:** the project's own `node_modules/playwright-core` or `node_modules/playwright` if there is one, else the one `qt browser install` put in your cache directory (or `QUICKDRAW_BROWSERS_PATH`, such as a directory CI caches). `QUICKDRAW_PLAYWRIGHT` names another package, and `QUICKDRAW_NODE` another Node. Browsers go where Playwright keeps them (`PLAYWRIGHT_BROWSERS_PATH`).
 
 ## Commands

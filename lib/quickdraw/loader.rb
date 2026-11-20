@@ -22,7 +22,7 @@ class Quickdraw::Loader
 	# runs, or is nil for tests in none. Once it has booted, the loader writes
 	# to `report`, if given, a length-prefixed Marshal message: [:booted,
 	# groups, coverage, settings] with the groups config defines as [name,
-	# patterns, gemfile, cores, file_seconds], with `coverage`, what booting
+	# patterns, gemfile, cores, file_seconds, variant], with `coverage`, what booting
 	# covered (see CoverageCollector), and the run settings config set (see
 	# Configuration#settings); or [:failed, error] if booting raised.
 	#
@@ -157,7 +157,7 @@ class Quickdraw::Loader
 		end
 
 		if @report || @link
-			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile, group.cores, group.file_seconds] }
+			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile, group.cores, group.file_seconds, group.variant] }
 			@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage), Quickdraw::Config.settings]
 		end
 
@@ -435,7 +435,7 @@ class Quickdraw::Loader
 		# Before the callbacks, so processes they start aren't blamed on tests.
 		Quickdraw::Leaks::ProcessStarts.watch if leaks
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:).call
+		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:, variant:).call
 	end
 
 	# Whether workers capture what tests print, as the run said or else config
@@ -444,6 +444,11 @@ class Quickdraw::Loader
 	private def capture
 		capture = @capture.nil? ? Quickdraw::Config.settings.fetch(:capture, true) : @capture
 		(capture && @capture_loading) ? :loading : capture
+	end
+
+	# The variant of the group this loader runs (see Configuration::Group), or nil.
+	private def variant
+		Quickdraw::Config.groups.find { |group| group.name == @group }&.variant if @group
 	end
 
 	# :warn, :fail, or nil for off, as the run said or else config.

@@ -41,8 +41,10 @@ class Quickdraw::Filter
 
 	def any? = @lines.any? || @names.any? || @required_names.any? || @excludes.any?
 
+	# With its group's variant, such as the browser it ran in, if it has one.
 	def self.name_of(test)
-		[test["class_name"], test["description"]].compact.join(" › ")
+		name = [test["class_name"], test["description"]].compact.join(" › ")
+		(variant = test["variant"]) ? "#{name} [#{variant}]" : name
 	end
 
 	# The indices of `tests` (as workers describe them) to run from the file at

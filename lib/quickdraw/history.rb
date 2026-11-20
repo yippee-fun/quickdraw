@@ -17,7 +17,7 @@ class Quickdraw::History
 
 	TABLES = ["runs", "tests", "results", "files", "coverage_map"].freeze
 
-	SCHEMA_VERSION = 8
+	SCHEMA_VERSION = 9
 	KEPT_RUNS = 100
 
 	# Weight of the latest run in each test's rolling average duration.
@@ -77,7 +77,8 @@ class Quickdraw::History
 		CREATE INDEX runs_by_selection ON runs (selection, id);
 
 		-- One row per test. key is a JSON array of path, class, description and the
-		-- occurrence of that description in the file. Lines aren't part of the key
+		-- occurrence of that description in the file, then the variant of the
+		-- group it ran in (such as a browser), if any. Lines aren't part of the key
 		-- (except for tests without a description), so editing a file doesn't lose
 		-- the history of tests below the edit.
 		CREATE TABLE tests (
@@ -87,6 +88,7 @@ class Quickdraw::History
 			line INTEGER NOT NULL,
 			class_name TEXT,
 			description TEXT,
+			variant TEXT,
 			average_duration REAL,
 			runs INTEGER NOT NULL DEFAULT 0,
 			failures INTEGER NOT NULL DEFAULT 0,
@@ -156,7 +158,7 @@ class Quickdraw::History
 
 	# An upsert, so a concurrent run that adds the same test doesn't conflict.
 	UPSERT_TESTS = <<~SQL
-		INSERT INTO tests (key, path, line, class_name, description) VALUES %s
+		INSERT INTO tests (key, path, line, class_name, description, variant) VALUES %s
 		ON CONFLICT (key) DO UPDATE SET line = excluded.line
 		RETURNING id, key
 	SQL
@@ -186,7 +188,7 @@ class Quickdraw::History
 	# A test's result, with only what history keeps, so a run's records are
 	# quick to send to the process that saves them. `details` are the failures
 	# and errors of a test that didn't pass.
-	Record = Data.define(:key, :path, :line, :class_name, :description, :status, :duration, :stats, :assertions, :details, :worker, :slot, :sequence) do
+	Record = Data.define(:key, :path, :line, :class_name, :description, :variant, :status, :duration, :stats, :assertions, :details, :worker, :slot, :sequence) do
 		def self.from(key:, path:, test:, result:, worker:, slot:, sequence:)
 			status = Quickdraw::History.status(result)
 
@@ -196,6 +198,7 @@ class Quickdraw::History
 				line: test["line"],
 				class_name: test["class_name"],
 				description: test["description"],
+				variant: test["variant"],
 				status:,
 				duration: result["duration"],
 				stats: result["stats"],
@@ -210,10 +213,10 @@ class Quickdraw::History
 	KnownTest = Data.define(:id, :path, :line, :average_duration)
 
 	RunSummary = Data.define(:finished_at, :seed, :processes, :worker_choice, :git_sha, :git_branch, :duration, :tests, :failed, :errored, :passed)
-	SlowTest = Data.define(:path, :line, :class_name, :description, :average_duration)
-	FlakyTest = Data.define(:path, :line, :class_name, :description, :runs, :failures)
-	OrderedTest = Data.define(:path, :line, :class_name, :description)
-	Outcome = Data.define(:run_id, :test_id, :path, :line, :class_name, :description, :status, :seed)
+	SlowTest = Data.define(:path, :line, :class_name, :description, :variant, :average_duration)
+	FlakyTest = Data.define(:path, :line, :class_name, :description, :variant, :runs, :failures)
+	OrderedTest = Data.define(:path, :line, :class_name, :description, :variant)
+	Outcome = Data.define(:run_id, :test_id, :path, :line, :class_name, :description, :variant, :status, :seed)
 	FailureOrder = Data.define(:run_id, :seed, :slot, :before, :test)
 
 	FLAKY = <<~SQL
@@ -236,7 +239,7 @@ class Quickdraw::History
 
 	FLAKY_TESTS = <<~SQL.freeze
 		#{FLAKY}
-		SELECT tests.path, tests.line, tests.class_name, tests.description, SUM(flaky.runs), SUM(flaky.failures) AS failures
+		SELECT tests.path, tests.line, tests.class_name, tests.description, tests.variant, SUM(flaky.runs), SUM(flaky.failures) AS failures
 		FROM flaky JOIN tests ON tests.id = flaky.test_id
 		GROUP BY flaky.test_id
 		ORDER BY failures DESC, tests.path, tests.line
@@ -325,7 +328,8 @@ class Quickdraw::History
 		tests.map do |test|
 			name = test["description"] || "line #{test['line']}"
 			occurrence = occurrences[[test["class_name"], name]] += 1
-			JSON.generate([path, test["class_name"], name, occurrence].map { |part| (String === part) ? Quickdraw.utf8(part) : part })
+			parts = [path, test["class_name"], name, occurrence, *test["variant"]]
+			JSON.generate(parts.map { |part| (String === part) ? Quickdraw.utf8(part) : part })
 		end
 	end
 
@@ -518,7 +522,7 @@ class Quickdraw::History
 		return unless run_id
 
 		tests = @db.execute(<<~SQL, [run_id, worker, sequence]).map { |row| OrderedTest.new(*row) }
-			SELECT tests.path, tests.line, tests.class_name, tests.description
+			SELECT tests.path, tests.line, tests.class_name, tests.description, tests.variant
 			FROM results JOIN tests ON tests.id = results.test_id
 			WHERE results.run_id = ? AND results.worker = ? AND results.sequence <= ?
 			ORDER BY results.sequence
@@ -585,7 +589,7 @@ class Quickdraw::History
 	# with the id `after`, with the run's seed.
 	def outcomes(scan:, after:)
 		@db.execute(<<~SQL, [scan, after]).map { |row| Outcome.new(*row) }
-			SELECT runs.id, tests.id, tests.path, tests.line, tests.class_name, tests.description, results.status, runs.seed
+			SELECT runs.id, tests.id, tests.path, tests.line, tests.class_name, tests.description, tests.variant, results.status, runs.seed
 			FROM results JOIN tests ON tests.id = results.test_id JOIN runs ON runs.id = results.run_id
 			WHERE runs.scan = ? AND runs.id > ?
 			ORDER BY results.run_id
@@ -597,7 +601,7 @@ class Quickdraw::History
 	# The tests with the longest average duration, longest first.
 	def slowest_tests(limit:)
 		@db.execute(<<~SQL, [limit]).map { |row| SlowTest.new(*row) }
-			SELECT path, line, class_name, description, average_duration FROM tests
+			SELECT path, line, class_name, description, variant, average_duration FROM tests
 			WHERE average_duration IS NOT NULL
 			ORDER BY average_duration DESC LIMIT ?
 		SQL
@@ -734,7 +738,7 @@ class Quickdraw::History
 		end
 
 		changed.each_slice(BATCH_SIZE) do |batch|
-			rows = batch.map { |record| [record.key, record.path, record.line, record.class_name, record.description] }
+			rows = batch.map { |record| [record.key, record.path, record.line, record.class_name, record.description, record.variant] }
 
 			@db.execute(format(UPSERT_TESTS, tuples(rows)), utf8(rows.flatten(1))).each do |id, key|
 				ids[key] = id

@@ -43,14 +43,14 @@ class Quickdraw::Reporters::Agent
 		@profile.record(result)
 	end
 
-	def load_failed(path, error)
-		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
+	def load_failed(path, error, variant)
+		@problems << [path, nil, { "errors" => [error], "failures" => [], "variant" => variant }]
 	end
 
-	def finished_file(_path) = nil
+	def finished_file(_path, _variant) = nil
 	def shows_loading_output? = false
 	def booting = nil
-	def nothing_to_run(_path) = nil
+	def nothing_to_run(_path, _variant) = nil
 	def pause = nil
 	def resume = nil
 
@@ -117,7 +117,7 @@ class Quickdraw::Reporters::Agent
 			if problems.one?
 				@io.puts summary(path, test, result)
 			else
-				@io.puts "#{delimit(problems.size)} × #{kind(test, result)} #{reason(result)}, such as #{location(path, test)}"
+				@io.puts "#{delimit(problems.size)} × #{kind(test, result)} #{reason(result)}, such as #{location(path, test, result)}"
 			end
 		end
 
@@ -146,7 +146,7 @@ class Quickdraw::Reporters::Agent
 	end
 
 	private def summary(path, test, result)
-		"#{kind(test, result)} #{location(path, test)}: #{reason(result)}"
+		"#{kind(test, result)} #{location(path, test, result)}: #{reason(result)}"
 	end
 
 	private def kind(test, result)
@@ -160,9 +160,10 @@ class Quickdraw::Reporters::Agent
 		end
 	end
 
-	# On one line, whatever the test's name has in it.
-	private def location(path, test)
-		test ? "#{path}:#{test['line']} #{name_of(test).gsub(/\s*\n\s*/, ' ')}" : "#{path} could not be loaded"
+	# On one line, whatever the test's name has in it. Without a test, the file
+	# couldn't load, in the variant its `result` has.
+	private def location(path, test, result)
+		test ? "#{path}:#{test['line']} #{name_of(test).gsub(/\s*\n\s*/, ' ')}" : "#{with_variant(path, result['variant'])} could not be loaded"
 	end
 
 	private def reason(result)
@@ -257,7 +258,7 @@ class Quickdraw::Reporters::Agent
 
 		@io.puts "  #{QUARANTINED}" if result["quarantined"]
 
-		@io.puts "  Rerun: #{rerun_command(path, test)}"
+		@io.puts "  Rerun: #{rerun_command(path, test, problem_variant(test, result))}"
 		@io.puts
 	end
 
@@ -270,11 +271,11 @@ class Quickdraw::Reporters::Agent
 	end
 
 	private def print_leak(path, test, leaks)
-		leaks.each { |leak| @io.puts "LEAK #{location(path, test)}: #{leak['message']}" }
+		leaks.each { |leak| @io.puts "LEAK #{location(path, test, nil)}: #{leak['message']}" }
 	end
 
 	private def heading(path, test, result)
-		"#{kind(test, result)} #{location(path, test)}"
+		"#{kind(test, result)} #{location(path, test, result)}"
 	end
 
 	# "path:line: code", or just "path:line" if the line can't be read.
