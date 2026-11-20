@@ -20,6 +20,8 @@ class GroupsTest < Quickdraw::Test
 	)
 
 	test "only a group's tests see what its setup loads", timeout: 20 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		result = browser_project(
 			"test/browser/page.test.rb" => "class Page < Quickdraw::Test; test('has a browser') { assert defined?(Browser) }; end\n",
 			"test/model.test.rb" => "class Model < Quickdraw::Test; test('has no browser') { refute defined?(Browser) }; end\n",
@@ -30,6 +32,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "runs a group's tests with every worker when nothing else is selected", timeout: 20 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		result = browser_project(
 			"test/browser/page.test.rb" => <<~RUBY,
 				class Page < Quickdraw::Test
@@ -43,6 +47,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "moves workers to a group that still has work", timeout: 20 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		result = browser_project(
 			"test/browser/slow.test.rb" => <<~RUBY,
 				class Slow < Quickdraw::Test
@@ -58,6 +64,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "a group's workers use its cores, so fewer run at once, and its slow files get workers first", timeout: 30 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		# Each test notes when it ran, so how many overlapped can be counted.
 		spans = <<~RUBY
 			def span
@@ -181,6 +189,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "bisect replays a group's tests with the group's setup", timeout: 60 do
+		skip "bisect needs fork" unless Process.respond_to?(:fork)
+
 		project = browser_project(
 			"test/browser/polluter.test.rb" => <<~RUBY,
 				class Polluter < Quickdraw::Test
@@ -205,6 +215,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "group loaders don't inherit what the coordinator loads for run history", timeout: 20 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		isolated = "test('isolated') { refute defined?(SQLite3); refute defined?(JSON) }"
 
 		result = browser_project(
@@ -216,6 +228,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "a worker moving to another group doesn't start until the one before it in its slot has exited", timeout: 20 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		project = project(
 			"config/quickdraw.rb" => <<~RUBY,
 				Quickdraw.configure do |config|
@@ -237,6 +251,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "a process a group's setup starts doesn't keep the run waiting", timeout: 20 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		result = project(
 			"config/quickdraw.rb" => <<~RUBY,
 				Quickdraw.configure do |config|
@@ -252,6 +268,8 @@ class GroupsTest < Quickdraw::Test
 	end
 
 	test "a group whose setup fails doesn't stop other tests", timeout: 20 do
+		skip "Group loaders need fork" unless Process.respond_to?(:fork)
+
 		result = project(
 			"config/quickdraw.rb" => <<~RUBY,
 				Quickdraw.configure do |config|

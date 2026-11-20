@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
-Point = Data.define(:x, :y)
-Pair = Struct.new(:left, :right)
-Shadowing = Data.define(:to_h, :each_pair)
+# Subclasses, since TruffleRuby doesn't name a class assigned to a constant in
+# the anonymous module test files load in.
+class Point < Data.define(:x, :y); end
+class Pair < Struct.new(:left, :right); end
+class Shadowing < Data.define(:to_h, :each_pair); end
 
 class Account
 	def initialize(owner, balance)

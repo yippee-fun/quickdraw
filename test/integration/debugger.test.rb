@@ -36,6 +36,8 @@ class DebuggerTest < Quickdraw::Test
 	# then quits watch mode. irb runs a line typed ahead as Ruby rather than as
 	# a command, so `exit` would exit the worker.
 	def debug(*arguments, debugger: IRB, first: nil)
+		skip "This Ruby has no PTY" unless terminal?
+
 		project = stopping(debugger)
 		answers = ["x = 2", debugger[:leave]]
 		sessions = 0
@@ -94,6 +96,8 @@ class DebuggerTest < Quickdraw::Test
 	end
 
 	test "leaves Ctrl-C to the debugger rather than stopping the run", timeout: 40 do
+		skip "On JRuby, the terminal isn't the run's controlling terminal, so Ctrl-C typed in it sends no signal" if RUBY_ENGINE == "jruby"
+
 		result = debug("-p", "2", first: ["\x03", "x = 2", "exit"])
 
 		assert_includes result.output, "^C"
@@ -139,6 +143,4 @@ class DebuggerTest < Quickdraw::Test
 		assert_match result.output, IRB[:prompt]
 		passed(result)
 	end
-
-	private def bundled?(library) = $LOAD_PATH.any? { |path| File.exist?(File.join(path, "#{library}.rb")) }
 end

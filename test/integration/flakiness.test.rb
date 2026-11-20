@@ -5,6 +5,11 @@ require_relative "../support/integration"
 class FlakinessTest < Quickdraw::Test
 	include Integration
 
+	def setup
+		super
+		skip "flaky and bisect need fork" unless Process.respond_to?(:fork)
+	end
+
 	POLLUTED = {
 		"polluter.test.rb" => <<~RUBY,
 			class Polluter < Quickdraw::Test

@@ -101,6 +101,8 @@ class FormatsTest < Quickdraw::Test
 	end
 
 	test "puts what a failing test printed in its JSON event and JUnit testcase", timeout: 20 do
+		skip "Capturing what tests print needs fork" unless Process.respond_to?(:fork)
+
 		require "json"
 		project = project("noisy.test.rb" => <<~RUBY)
 			puts "loading"

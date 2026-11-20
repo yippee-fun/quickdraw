@@ -6,6 +6,8 @@ class HistoryTest < Quickdraw::Test
 	include Integration
 
 	test "--failed runs failing tests until they pass, even after a narrower run", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project(
 			"a.test.rb" => <<~RUBY,
 				class A < Quickdraw::Test
@@ -32,6 +34,8 @@ class HistoryTest < Quickdraw::Test
 	end
 
 	test "--failed reruns files that failed to load", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project("broken.test.rb" => "raise 'broken'\n")
 
 		project.run("-p", "1")
@@ -42,6 +46,8 @@ class HistoryTest < Quickdraw::Test
 	end
 
 	test "rebuilds a corrupt history and keeps going", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
 		project = project(
 			"a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
 			".quickdraw/history.sqlite3" => "not a database",
@@ -54,6 +60,8 @@ class HistoryTest < Quickdraw::Test
 	end
 
 	test "estimates the worker count, then tunes it from history", timeout: 30 do
+		skip "Choosing the worker count needs fork" unless Process.respond_to?(:fork)
+
 		project = project("a.test.rb" => "class A < Quickdraw::Test; 10.times { |i| test(i.to_s) { assert true } }; end\n")
 
 		assert_includes project.run("--timings").output, "(estimated)"

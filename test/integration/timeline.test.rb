@@ -8,6 +8,8 @@ class TimelineTest < Quickdraw::Test
 	def chart(project) = File.read(File.join(project.directory, ".quickdraw/timeline.html"), encoding: Encoding::UTF_8)
 
 	test "summarises how workers spent the run and names the tests it waited for at the end", timeout: 20 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
 		project = project(
 			"slow.test.rb" => "class Slow < Quickdraw::Test; test('sleeps') { sleep 0.5; assert true }; end\n",
 			"fast.test.rb" => "class Fast < Quickdraw::Test; 20.times { |i| test(\"fast \#{i}\") { assert true } }; end\n",
@@ -25,6 +27,8 @@ class TimelineTest < Quickdraw::Test
 	end
 
 	test "charts each worker slot's batches, file loads and the tests the run waited for", timeout: 20 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
 		project = project(
 			"slow.test.rb" => "class Slow < Quickdraw::Test; test('sleeps') { sleep 0.3; assert true }; end\n",
 			"fast.test.rb" => "class Fast < Quickdraw::Test; 5.times { |i| test(\"fast \#{i}\") { assert true } }; end\n",
@@ -41,6 +45,8 @@ class TimelineTest < Quickdraw::Test
 	end
 
 	test "shows a test that crashed its worker running until it exited, and the worker that replaced it", timeout: 20 do
+		skip "Replacing crashed workers needs fork" unless Process.respond_to?(:fork)
+
 		project = project("crash.test.rb" => <<~RUBY)
 			class Crash < Quickdraw::Test
 				test("kills its worker") { sleep 0.05; exit!(1) }

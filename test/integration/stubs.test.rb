@@ -6,6 +6,8 @@ class StubsIntegrationTest < Quickdraw::Test
 	include Integration
 
 	test "undoes a test's stubs before the next test in its worker, however it ends, without leaking", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		result = project("stubbed.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--leaks", "fail", "--format", "human")
 			module Clock
 				def self.now = :real

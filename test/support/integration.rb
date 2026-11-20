@@ -232,9 +232,20 @@ module Integration
 
 		# The process leads a new session, so it has its own process group too.
 		# PTY.spawn has no chdir option, hence the Ruby that changes directory.
+		# JRuby's takes no environment, and forks, which can crash the JVM on
+		# macOS, so there the terminal isn't the process's controlling terminal.
 		private def spawn_on_terminal(environment, command, rows, columns)
 			require "pty"
 			require "io/console"
+
+			if RUBY_ENGINE == "jruby"
+				terminal, process_side = PTY.open
+				terminal.winsize = [rows, columns]
+				pid = Process.spawn(environment, *command, chdir: @directory, in: process_side, out: process_side, err: process_side, pgroup: true)
+				process_side.close
+
+				return [pid, terminal, nil, terminal]
+			end
 
 			reader, writer, pid = PTY.spawn(environment, RbConfig.ruby, "-e", "Dir.chdir(ARGV.shift); exec(*ARGV)", @directory, *command)
 			reader.winsize = [rows, columns]
@@ -278,5 +289,16 @@ module Integration
 	# A Project in a new temporary directory, with `files` written to it.
 	def project(files = {})
 		Project.new(tmpdir).tap { |project| project.write(files) }
+	end
+
+	# Without requiring it, which would load it into this worker.
+	def bundled?(library) = $LOAD_PATH.any? { |path| File.exist?(File.join(path, "#{library}.rb")) }
+
+	# For runs with `tty:`. TruffleRuby has no PTY.
+	def terminal?
+		require "pty"
+		true
+	rescue LoadError
+		false
 	end
 end

@@ -123,8 +123,9 @@ module Quickdraw
 		@tests << test
 	end
 
+	# JRuby labels a required file's top level <main>.
 	private_class_method def self.top_required(locations)
-		locations&.find { |location| location.label == "<top (required)>" }
+		locations&.find { |location| location.label in "<top (required)>" | "<main>" }
 	end
 
 	# Deletes a file, or a directory and everything in it, without following

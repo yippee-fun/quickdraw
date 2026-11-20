@@ -48,6 +48,8 @@ class MutatorTest < Quickdraw::Test
 	end
 
 	test "keeps the encoding the source declares, and shows the change in UTF-8" do
+		skip "Only CRuby keeps a source's declared encoding here, and mutate needs fork anyway" unless RUBY_ENGINE == "ruby"
+
 		source = "# encoding: iso-8859-1\nclass Example\n\tdef call(a) = a ? \"caf\xE9\" : \"th\xE9\"\nend\n"
 
 		assert_equal changes(source), [

@@ -27,14 +27,17 @@ module Quickdraw::HTMLPrettifier
 		"track",
 	].freeze
 
+	# JRuby's Nokogiri has no HTML5 parser.
+	PARSER = defined?(Nokogiri::HTML5) ? Nokogiri::HTML5 : Nokogiri::HTML4
+
 	def prettify(html)
 		node = case html
-		when Nokogiri::HTML5::DocumentFragment
+		when Nokogiri::HTML4::DocumentFragment
 			html
 		when String
-			Nokogiri::HTML5.fragment(html)
+			PARSER.fragment(html)
 		else
-			raise ArgumentError.new("Expected a Nokogiri::HTML5::DocumentFragment or a String, but got a #{html.class}")
+			raise ArgumentError.new("Expected a Nokogiri HTML fragment or a String, but got a #{html.class}")
 		end
 
 		prettify_node(node)
@@ -44,7 +47,7 @@ module Quickdraw::HTMLPrettifier
 		indent = "  " * depth
 
 		case node
-		when Nokogiri::HTML5::DocumentFragment
+		when Nokogiri::HTML4::DocumentFragment
 			map_children(node, depth)
 		when Nokogiri::XML::Element
 			attributes = node.attribute_nodes.sort_by(&:name).map { |attr| prettify_node(attr) }.join

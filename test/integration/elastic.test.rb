@@ -40,6 +40,8 @@ class ElasticWorkersTest < Quickdraw::Test
 	# 32s of tests is enough for workers to be added once a second has gone,
 	# whatever the starting count, which follows the machine's cores.
 	test "adds workers in new slots while tests wait and CPU is idle", timeout: 40 do
+		skip "Elastic workers need fork" unless Process.respond_to?(:fork)
+
 		project = waiting(files: 8, tests: 40)
 		result = run_with_iostat(project, "--no-history", "--elastic", "--timeline", "--timings")
 

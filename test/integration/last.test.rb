@@ -54,6 +54,8 @@ class LastTest < Quickdraw::Test
 	end
 
 	test "keeps the run as JSON, with leaks, and quotes a path with a space in the command it suggests", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
 		project = project(
 			"test/my math.test.rb" => <<~RUBY,
 				class MathTest < Quickdraw::Test

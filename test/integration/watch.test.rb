@@ -5,6 +5,11 @@ require_relative "../support/integration"
 class WatchTest < Quickdraw::Test
 	include Integration
 
+	def setup
+		super
+		skip "Watch mode needs fork" unless Process.respond_to?(:fork)
+	end
+
 	def calculator = project(
 		"lib/calculator.rb" => "def add(a, b) = a + b\n",
 		"test/calculator.test.rb" => <<~RUBY,

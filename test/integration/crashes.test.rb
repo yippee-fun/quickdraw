@@ -5,6 +5,11 @@ require_relative "../support/integration"
 class CrashesTest < Quickdraw::Test
 	include Integration
 
+	def setup
+		super
+		skip "Replacing crashed workers and timing tests out need fork" unless Process.respond_to?(:fork)
+	end
+
 	test "reports a test that kills its worker and runs the rest on a replacement", timeout: 20 do
 		result = project("crash.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "crash.test.rb")
 			class Crash < Quickdraw::Test

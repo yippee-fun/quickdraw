@@ -7,7 +7,8 @@ require_relative "../support/integration"
 # up. QUICKDRAW_PLAYWRIGHT can point at another package,
 # PLAYWRIGHT_BROWSERS_PATH at its browsers, and QUICKDRAW_NODE at Node. A
 # browser that can't run here fails its tests, saying why, rather than
-# skipping them, which would hide that they never ran.
+# skipping them, which would hide that they never ran. They're skipped on
+# other engines, whose bundles have no Puma.
 class BrowserTest < Quickdraw::Test
 	include Integration
 
@@ -51,6 +52,7 @@ class BrowserTest < Quickdraw::Test
 	# Fails at once, after the first test to find out, if `browser` can't run
 	# here because Puma, Node, Playwright or the browser is missing.
 	def run_browser(browser, project, *arguments)
+		skip "Only CRuby's bundle has Puma" unless RUBY_ENGINE == "ruby"
 		unavailable(browser) if UNAVAILABLE[browser]
 
 		run_quickdraw(project, *arguments).tap do |result|
@@ -71,6 +73,8 @@ class BrowserTest < Quickdraw::Test
 	def run_quickdraw(project, *, env: {}) = project.run("--no-history", *, env:, timeout: 30)
 
 	test "other tests don't start a browser, and can't open a page", timeout: 20 do
+		skip "Only CRuby's bundle has Puma" unless RUBY_ENGINE == "ruby"
+
 		result = run_quickdraw(app("chromium", "test/model.test.rb" => <<~RUBY), "-p", "1")
 			class ModelTest < Quickdraw::Test
 				include Quickdraw::Browser

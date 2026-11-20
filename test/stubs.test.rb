@@ -128,7 +128,8 @@ class StubsTest < Quickdraw::Test
 			end
 
 			assert_equal stubbed.singleton_methods, []
-			assert_equal stubbed.singleton_class.ancestors.take_while { |it| !it.equal?(String) }, [stubbed.singleton_class]
+			# Prism prepends a polyfill to String on JRuby.
+			assert_equal stubbed.singleton_class.ancestors.take_while { |it| !it.equal?(String) }, [stubbed.singleton_class, *String.ancestors.take_while { |it| !it.equal?(String) }]
 			assert_equal Marshal.load(Marshal.dump(stubbed)), "text"
 		end
 

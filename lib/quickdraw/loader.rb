@@ -290,13 +290,29 @@ class Quickdraw::Loader
 	# Used where fork isn’t available: a single worker in a thread of this process.
 	# Tests then share a process with the coordinator, so they can see what it
 	# loads (sqlite3 and json for run history), and every group's setup runs.
+	# It writes to `report` once booted, as a loader process does.
 	def call_in_thread
 		Thread.new do
 			channel = @channels.fetch(0)
-			self.class.boot
-			Quickdraw::Config.groups.each { |group| group.setup&.call }
+
+			begin
+				self.class.boot
+
+				Quickdraw::Config.groups.each do |group|
+					group.setup&.call
+				rescue Exception => error
+					raise error.exception("The #{group.name} group’s setup failed: #{error.message}")
+				end
+			rescue Exception => error
+				next boot_failed(error)
+			end
+
+			# No groups, which would get loaders of their own: this thread runs every group's tests.
+			report([:booted, [], nil, Quickdraw::Config.settings])
 			start_worker(channel, 0, real_paths, timeouts: false)
 		ensure
+			# If something failed before reporting, which the coordinator waits for.
+			@report.close
 			channel.close
 		end
 	end

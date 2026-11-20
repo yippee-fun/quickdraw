@@ -24,5 +24,10 @@ Gem::Specification.new do |spec|
 	spec.executables = ["quickdraw", "qt", "qc"]
 
 	spec.add_dependency "phlex", "~> 2.4"
-	spec.add_dependency "sqlite3", ">= 1.6"
+
+	if RUBY_ENGINE == "jruby"
+		spec.platform = "java"
+	else
+		spec.add_dependency "sqlite3", ">= 1.6"
+	end
 end
