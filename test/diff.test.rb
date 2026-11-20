@@ -149,6 +149,40 @@ class DiffTest < Quickdraw::Test
 		assert diff.end_with?("  0\n- 1\n+ 2")
 	end
 
+	test "finds where a text comes closest to a needle it doesn't include" do
+		text = "#{(1..40).map { |i| "line #{i}" }.join("\n")}\nERROR: but nothing matches it\nFAILED"
+
+		assert_equal Quickdraw::Diff.closest(text, "but nothing matched it"), Quickdraw::Diff::Location.new(start: text.index("but nothing matches"), line: 41, column: 8)
+	end
+
+	test "aligns the closest match a character at a time" do
+		assert_equal Quickdraw::Diff.closest("xxxxx abcdXfgh xxxxx", "abcdefgh").start, 6
+		assert_equal Quickdraw::Diff.closest("ab", "abc").start, 0
+	end
+
+	test "finds the closest match in text that isn't ASCII" do
+		text = "#{'é' * 300}naïve café#{'ü' * 300}"
+
+		assert_equal Quickdraw::Diff.closest(text, "naive café").start, 300
+	end
+
+	test "finds a short needle with a typo that breaks every trigram" do
+		assert_equal Quickdraw::Diff.closest("#{'.' * 300}ERROR", "ERXOR").start, 300
+	end
+
+	test "finds nothing close in a text that shares nothing with the needle" do
+		assert_nil Quickdraw::Diff.closest("a" * 500, "xyz")
+		assert_nil Quickdraw::Diff.closest("abc", "")
+	end
+
+	test "finds the closest match in a long text quickly" do
+		text = "#{'lorem ipsum dolor ' * 20_000}the needle is here"
+		started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+		assert_equal Quickdraw::Diff.closest(text, "the needle was here").start, text.index("the needle")
+		assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
+	end
+
 	test "preserves order of changes" do
 		old_text = "1\n2\n3"
 		new_text = "1\ntwo\n3"

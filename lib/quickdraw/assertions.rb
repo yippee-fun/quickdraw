@@ -100,6 +100,8 @@ module Quickdraw::Assertions
 
 	def assert_includes(collection, member)
 		assert(collection.include?(member)) do
+			next Quickdraw::Assertions.not_found(collection, member, member, "to include") if String === member && Quickdraw::Assertions.long_string?(collection, member)
+
 			<<~MESSAGE
 				\e[34mExpected:\e[0m
 
@@ -114,6 +116,8 @@ module Quickdraw::Assertions
 
 	def refute_includes(collection, member)
 		refute(collection.include?(member)) do
+			next Quickdraw::Assertions.found(collection, collection.index(member), member.size, member, "not to include") if String === member && Quickdraw::Assertions.long_string?(collection, member)
+
 			<<~MESSAGE
 				\e[34mExpected:\e[0m
 
@@ -130,6 +134,8 @@ module Quickdraw::Assertions
 	# Class, or anything else that defines ===.
 	def assert_match(actual, pattern)
 		assert(pattern === actual) do
+			next Quickdraw::Assertions.not_found(actual, Quickdraw::Assertions.literal(pattern), pattern, "to match") if Regexp === pattern && Quickdraw::Assertions.long_string?(actual, pattern)
+
 			<<~MESSAGE
 				\e[34mExpected:\e[0m
 
@@ -144,6 +150,11 @@ module Quickdraw::Assertions
 
 	def refute_match(actual, pattern)
 		refute(pattern === actual) do
+			if Regexp === pattern && Quickdraw::Assertions.long_string?(actual, pattern)
+				match = pattern.match(actual)
+				next Quickdraw::Assertions.found(actual, match.begin(0), match[0].size, pattern, "not to match")
+			end
+
 			<<~MESSAGE
 				\e[34mExpected:\e[0m
 
@@ -308,6 +319,84 @@ module Quickdraw::Assertions
 		path, line = (Proc === expression) && expression.source_location
 		path ? "the value at #{path.delete_prefix("#{Quickdraw::ROOT}/")}:#{line}" : expression.inspect
 	end
+
+	# Strings longer than this fail showing where they come closest to what was
+	# expected, then in full, which a terminal cuts short (see Reporters::Formatting).
+	LONG_STRING = 200
+	# Characters shown either side of where a long string comes closest.
+	EXCERPT_CONTEXT = 60
+
+	# In an encoding that can be searched for `expected`, a String or Regexp.
+	def self.long_string?(text, expected)
+		String === text && text.size > LONG_STRING && text.valid_encoding? && text.encoding.ascii_compatible? && !!Encoding.compatible?(text, expected)
+	end
+
+	# For a long `text` without `needle`: where it comes closest, with what
+	# differs marked. `expected` is what was asserted, the needle or a pattern.
+	def self.not_found(text, needle, expected, description)
+		location = Quickdraw::Diff.closest(text, needle)
+
+		closest = if location
+			excerpt = excerpt(text, location.start, needle.size)
+			excerpt = "#{excerpt}\n\n#{difference(text[location.start, needle.size], needle)}" if String === expected
+			"\e[34mClosest match, at line #{location.line}, column #{location.column}:\e[0m\n\n#{excerpt}"
+		else
+			"\e[34mNothing in it is like that.\e[0m"
+		end
+
+		long_string_message(text, expected, description, closest)
+	end
+
+	# For a long `text` with what it shouldn't have at `start`.
+	def self.found(text, start, size, expected, description)
+		location = Quickdraw::Diff.location(text, start)
+		long_string_message(text, expected, description, "\e[34mFound at line #{location.line}, column #{location.column}:\e[0m\n\n#{excerpt(text, start, size)}")
+	end
+
+	private_class_method def self.long_string_message(text, expected, description, location)
+		<<~MESSAGE
+			\e[34mExpected a string of #{delimit(text.size)} characters #{description}:\e[0m
+
+			#{expected.inspect}
+
+			#{location}
+
+			\e[34mThe whole string:\e[0m
+
+			#{text.inspect}
+		MESSAGE
+	end
+
+	# Around `size` characters at `start`, inspected, marked underneath.
+	private_class_method def self.excerpt(text, start, size)
+		first = [start - EXCERPT_CONTEXT, 0].max
+		finish = [start + size, text.size].min
+		last = [finish + EXCERPT_CONTEXT, text.size].min
+		before = "#{'…' if first > 0}\"#{escaped(text[first...start])}"
+		marked = escaped(text[start...finish])
+
+		"#{before}#{marked}#{escaped(text[finish...last])}\"#{'…' if last < text.size}\n#{' ' * before.size}#{'^' * [marked.size, 1].max}"
+	end
+
+	# The expected text over the actual, with a caret at the first difference.
+	private_class_method def self.difference(actual, expected)
+		same = expected.each_char.zip(actual.each_char).take_while { |expected_char, actual_char| expected_char == actual_char }.size
+
+		"\e[31m- #{expected.inspect}\e[0m\n\e[32m+ #{actual.inspect}\e[0m\n#{' ' * (3 + escaped(expected[0, same]).size)}^"
+	end
+
+	# Inside the quotes of the text's inspect.
+	private_class_method def self.escaped(text) = text.inspect[1...-1]
+
+	# Roughly the text a pattern matches, to find where a string comes closest to it.
+	def self.literal(pattern)
+		pattern.source
+			.gsub(/\\[AzZbBGdDsSwWhH]|[\^$]/, "")
+			.gsub(/\\[nt]/, "\\n" => "\n", "\\t" => "\t")
+			.gsub(/\\(.)/m, '\1')
+	end
+
+	private_class_method def self.delimit(number) = number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 
 	def assert_same(actual, expected)
 		assert actual.equal?(expected) do

@@ -48,6 +48,14 @@ module Quickdraw::Reporters
 		AGENT_VARIABLES.any? { |name| ENV[name] && !ENV[name].empty? }
 	end
 
+	def self.ci?
+		!(ENV.fetch("CI", "") in "" | "0" | "false") || ENV["GITHUB_ACTIONS"] == "true"
+	end
+
+	# Whether `io` is read as it's written, by someone who can look again,
+	# rather than afterwards, as a CI log or a file is.
+	def self.terminal?(io) = io.tty? && !ci?
+
 	# How to run Quickdraw again, for rerun commands.
 	def self.command
 		program = File.basename($PROGRAM_NAME)
@@ -71,15 +79,71 @@ module Quickdraw::Reporters
 			Quickdraw::Filter.name_of(test)
 		end
 
+		# The one rule for how much of a value, such as an assertion's actual
+		# value, a test's context or what it printed, is shown: each line is cut
+		# to TERMINAL_LINE_LIMIT characters in a terminal, where a long line
+		# wraps into screenfuls, and to LOG_LINE_LIMIT anywhere else, such as a
+		# CI log, which is read after the run, so shows practically everything.
+		TERMINAL_LINE_LIMIT = 500
+		LOG_LINE_LIMIT = 100_000
+
+		# Frames of an error Quickdraw raised itself that are shown, as the rest
+		# are the runner's.
+		QUICKDRAW_FRAMES = 10
+
 		# Quickdraw's own frames are dropped wherever they are, since an error can
 		# be raised inside an assertion. Everything from Quickdraw's executable on
-		# is the runner starting up.
+		# is the runner starting up. When every frame is Quickdraw's, as when it
+		# raised the error itself, the first of them, since none would say nothing.
 		private def user_backtrace(frames)
-			user_frames = frames
-				.reject { |frame| frame.start_with?(LIBRARY) }
-				.take_while { |frame| !frame.start_with?(EXECUTABLES) }
+			if raised_in_quickdraw?(frames)
+				frames.first(QUICKDRAW_FRAMES)
+			else
+				frames.take_while { |frame| !frame.start_with?(EXECUTABLES) }.reject { |frame| frame.start_with?(LIBRARY) }
+			end
+		end
 
-			user_frames.empty? ? frames : user_frames
+		# Whether the error has frames, and none but Quickdraw's and Ruby's own.
+		private def raised_in_quickdraw?(frames)
+			frames.any? && frames.take_while { |frame| !frame.start_with?(EXECUTABLES) }.all? { |frame| frame.start_with?(LIBRARY, "<internal:") }
+		end
+
+		private def terminal? = Quickdraw::Reporters.terminal?(@io)
+
+		# `text` with each line cut to the line limit, saying how much was left
+		# out. A lone carriage return ends a line, as a CI log shows it.
+		private def fit(text)
+			limit = terminal? ? TERMINAL_LINE_LIMIT : LOG_LINE_LIMIT
+
+			text.gsub(/\r\n?/, "\n").each_line.map do |line|
+				next line if line.size <= limit
+
+				content = line.chomp
+				length = content.gsub(ANSI, "").size
+				next line if length <= limit
+
+				shown = +""
+				visible = 0
+
+				content.scan(/#{ANSI}|[^\e]+|\e/o) do |token|
+					break if visible >= limit
+
+					if token.match?(ANSI)
+						shown << token
+					else
+						shown << token[0, limit - visible]
+						visible += token.size
+					end
+				end
+
+				shown << "\e[0m" if content.match?(ANSI)
+				where = " (shown when the output isn’t a terminal)" if limit == TERMINAL_LINE_LIMIT
+				"#{shown}… #{delimit(length - limit)} more characters#{where}#{line.delete_prefix(content)}"
+			end.join
+		end
+
+		private def delimit(number)
+			number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 		end
 
 		private def relative(path)
@@ -112,8 +176,10 @@ module Quickdraw::Reporters
 			"#{pluralize(outcome.browser_files_left_out, 'browser test file')} · #{Quickdraw::Reporters.command} all runs them too"
 		end
 
+		# Every line, including those after a lone carriage return, which a CI log
+		# shows as a new line, so nested output can't pass for the run's own.
 		private def indent(text, spaces)
-			text.gsub(/^(?=.)/, " " * spaces)
+			text.gsub(/\r\n?/, "\n").gsub(/^(?=.)/, " " * spaces)
 		end
 
 		# The stripped source at `line` of `path`, or nil if it can't be read or

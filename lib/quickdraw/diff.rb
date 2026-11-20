@@ -7,7 +7,65 @@ module Quickdraw
 		# Above a diff of expected (old) against actual (new) text.
 		LEGEND = "\e[31m- Expected\e[0m  \e[32m+ Actual\e[0m"
 
+		# Where in a text a match starts, from 0, and its line and column, from 1.
+		Location = Data.define(:start, :line, :column)
+
+		# Needles longer than this are placed by trigrams alone, since aligning
+		# them a character at a time takes the square of their length.
+		ALIGNABLE = 200
+
 		extend self
+
+		# Where `text` is most like `needle`, or nil if they share nothing. Each
+		# window of the needle's length is scored by how many of its trigrams are
+		# also the needle's, or of its characters if no trigram is, as when a
+		# short needle has a typo in the middle, then the best is aligned a
+		# character at a time. In one pass, keeping only a window's scores.
+		def closest(text, needle, gram = [3, needle.size, text.size].min)
+			return if gram == 0
+
+			grams = needle.each_char.each_cons(gram).to_h { |chars| [chars.join, true] }
+			width = needle.size - gram + 1
+			window = []
+			score = 0
+			best_score = 0
+			best = 0
+
+			text.each_char.each_cons(gram).with_index do |chars, index|
+				hit = grams.key?(chars.join) ? 1 : 0
+				window << hit
+				score += hit - ((window.size > width) ? window.shift : 0)
+				next unless score > best_score
+
+				best = index - window.size + 1
+				best_score = score
+			end
+
+			if best_score == 0
+				return (gram > 1) ? closest(text, needle, 1) : nil
+			end
+
+			location(text, (needle.size > ALIGNABLE) ? best : align(text, needle.chars, best))
+		end
+
+		def location(text, start)
+			before = text[0, start]
+			line_start = before.rindex("\n")&.+(1) || 0
+			Location.new(start:, line: before.count("\n") + 1, column: start - line_start + 1)
+		end
+
+		# The start near `start` where the most characters equal the needle's.
+		private def align(text, needle, start)
+			first = [start - needle.size, 0].max
+			# Only the region it can be in, as indexing text that isn't ASCII is linear.
+			region = text[first, needle.size * 3].chars
+
+			offset = region.each_index.max_by do |candidate|
+				[needle.each_with_index.count { |char, index| region[candidate + index] == char }, -candidate]
+			end
+
+			first + offset
+		end
 
 		# Computes a diff between two strings.
 		# @param old_text [String] The original/baseline text (e.g., expected)

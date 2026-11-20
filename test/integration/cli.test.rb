@@ -253,7 +253,7 @@ class CLITest < Quickdraw::Test
 		result = project(
 			"fails.test.rb" => "class A < Quickdraw::Test; test('fails') { assert false }; end\n",
 			"slow.test.rb" => "class B < Quickdraw::Test; test('slow') { sleep 0.5; assert true }; end\n",
-		).run("-p", "2", "--no-history")
+		).run("-p", "2", "--no-history", env: { "CI" => nil })
 
 		assert_match result.stdout, /\A✗ fails\.test\.rb  1 test · .*\n✓ slow\.test\.rb   1 test · .*\n\nFAIL fails  A · fails\.test\.rb:1\n/
 		assert_match result.stdout, /^FAILED  .*\n\n  ✗ fails\.test\.rb:1 A › fails\n/
