@@ -101,6 +101,36 @@ class FlakinessTest < Quickdraw::Test
 		assert_includes result.stdout, "FOUND It fails after this test:\n      ✗ sets a global  Polluter · polluter.test.rb:3\n"
 	end
 
+	test "bisect finds every test a failure needs, when it needs more than one", timeout: 60 do
+		project = project(
+			"setup.test.rb" => <<~RUBY,
+				class Setup < Quickdraw::Test
+					test("sets a") { $a = true; assert true }
+					test("harmless 1") { assert true }
+					test("harmless 2") { assert true }
+					test("harmless 3") { assert true }
+					test("harmless 4") { assert true }
+					test("harmless 5") { assert true }
+					test("sets b") { $b = true; assert true }
+				end
+			RUBY
+			"victim.test.rb" => <<~RUBY,
+				class Victim < Quickdraw::Test
+					test("fails when both are set") { refute $a && $b }
+				end
+			RUBY
+		)
+		seed = (1..200).find { |it| !project.run("-p", "1", "--no-history", "--seed", it.to_s).success? }
+		refute project.run("-p", "1", "--seed", seed.to_s).success?
+
+		result = project.run("bisect", "victim.test.rb:2")
+
+		assert(result.success?) { result.output }
+		assert_includes result.stdout, "FOUND It fails after these tests, together:\n"
+		found = result.stdout.scan(/✗ (.+?)  Setup/).flatten
+		assert_equal found.sort, ["sets a", "sets b"]
+	end
+
 	test "bisect explains a failure that doesn't depend on order", timeout: 30 do
 		project = project("a.test.rb" => <<~RUBY)
 			class A < Quickdraw::Test

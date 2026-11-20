@@ -35,6 +35,22 @@ class PropertiesTest < Quickdraw::Test
 		assert_equal Dir.children(saved), []
 	end
 
+	test "tests with the same description keep their own saved cases", timeout: 30 do
+		project = project("same.test.rb" => <<~RUBY)
+			class Same < Quickdraw::Test
+				test("sorts") { check(array(integer)) { |list| assert_equal list, list.sort } }
+				test("sorts") { check(array(integer)) { |list| assert_equal list.sort, list.sort } }
+			end
+		RUBY
+		saved = File.join(project.directory, ".quickdraw/properties")
+
+		refute project.run("-p", "1", "--no-history", "--seed", "1").success?
+		assert_equal Dir.children(saved).size, 2
+
+		refute project.run("-p", "1", "--no-history", "--seed", "1").success?
+		assert_equal Dir.children(saved).size, 2
+	end
+
 	test "the seed repeats a property's cases", timeout: 30 do
 		project = project("sorting.test.rb" => SORTING)
 		saved = File.join(project.directory, ".quickdraw/properties")

@@ -50,6 +50,8 @@ class Quickdraw::Replay
 
 	attr_reader :attempts
 
+	def attempts_left = @channels.size - @attempts
+
 	# The status of each step: passed, failed, errored, skipped or pending;
 	# missing if the test can't be found; crashed if the worker died running it
 	# or loading its file; or not run if it died before.
