@@ -23,7 +23,7 @@ module Quickdraw::Commands
 		["browser", :Browser, " [paths]", "Run only the browser tests, or with install, install what they need"],
 		["init", :Init, "", "Create config/quickdraw.rb and an example test"],
 		["doctor", :Doctor, "", "Check that this machine and project are ready to run tests"],
-		["last", :Last, "", "The last run’s results, for an AI agent that didn’t see it"],
+		["last", :Last, " [--from FILE]", "The last run’s results, for an AI agent that didn’t see it"],
 		["history", :History, "", "Recent runs, and the slowest and flakiest tests"],
 		["flaky", :Flaky, " [--runs N] …", "Run tests many times in different orders to find flaky ones"],
 		["bisect", :Bisect, " PATH:LINE", "Find the tests a failing test depends on running before it"],

@@ -688,7 +688,7 @@ class Quickdraw::CLI
 
 	private def reporter(options, terminal)
 		# First, so it's saved before the agent format, which points to it, finishes.
-		last_run = Quickdraw::Reporters::LastRun.new(command: @command_line, rerun: run_command, backtrace: options[:backtrace]) if options[:history]
+		last_run = Quickdraw::Reporters::LastRun.new(command: @command_line, arguments: [*@scope, *@args], rerun: run_command, backtrace: options[:backtrace]) if options[:history]
 
 		# A status line, which what tests print would garble unless it's captured, which needs fork.
 		live = options[:capture] != false && Quickdraw::Platform.supports_forking?

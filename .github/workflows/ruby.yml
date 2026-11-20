@@ -41,6 +41,13 @@ jobs:
           bundle exec qd browser install chromium firefox webkit
       - name: Quickdraw tests
         run: bundle exec qd
+      - name: Keep the run for qd last --from
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quickdraw-${{ matrix.ruby-version }}
+          path: .quickdraw/last-run.jsonl
+          include-hidden-files: true
   rubocop:
     runs-on: ubuntu-latest
     strategy:
