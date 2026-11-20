@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-# Finds state a test left behind, after every test: threads it started that are
-# still running, child processes it didn't wait for, and changes to ENV. Unless
-# a test changed ENV or started a process, this only compares the thread list.
+# Finds state a test left behind, after every test: threads and Ractors it
+# started that are still running, a fiber scheduler it set, child processes it
+# didn't wait for, and changes to ENV. Unless a test changed ENV or started a
+# process, this only compares the thread list, scheduler and Ractor count.
 #
 # Runs in the worker alongside user code, so it must only use core Ruby.
 class Quickdraw::Leaks
@@ -66,6 +67,48 @@ class Quickdraw::Leaks
 		def self.watching? = Process.singleton_class.include?(Fork)
 	end
 
+	# Threads started since the last check, so one that ended with an exception
+	# nothing joined it to see can be reported, and whether each was joined.
+	module ThreadStarts
+		@threads = []
+
+		# Not in other Ractors, which can't reach this list, and whose threads
+		# Thread.list doesn't have.
+		def self.started(thread)
+			@threads << thread if !defined?(Ractor) || Ractor.current.equal?(Ractor.main)
+		end
+
+		def self.take
+			threads = @threads
+			@threads = []
+			threads
+		end
+
+		module Starting
+			def new(...) = super.tap { |thread| ThreadStarts.started(thread) }
+			def start(...) = super.tap { |thread| ThreadStarts.started(thread) }
+			def fork(...) = super.tap { |thread| ThreadStarts.started(thread) }
+		end
+
+		module Joining
+			# Only once it has ended, as a join with a timeout can return before.
+			# In ensure, as rescuing and raising again here loses the exception.
+			def join(...)
+				super
+			ensure
+				@quickdraw_joined = true unless alive?
+			end
+
+			def value
+				super
+			ensure
+				@quickdraw_joined = true
+			end
+
+			def quickdraw_joined? = @quickdraw_joined
+		end
+	end
+
 	# Threads are only reported if they started in `root`, outside vendor/, so
 	# the threads libraries start for themselves (Timeout's, connection pool
 	# reapers) aren't blamed on the first test to use them.
@@ -74,6 +117,8 @@ class Quickdraw::Leaks
 		@vendor = "#{root}/vendor/"
 		@library = "#{Quickdraw::LIB}/"
 		ENV.singleton_class.prepend(ENVChanges)
+		Thread.singleton_class.prepend(ThreadStarts::Starting)
+		Thread.prepend(ThreadStarts::Joining)
 		raise "ProcessStarts.watch must be called before after_forking callbacks." unless ProcessStarts.watching?
 		# Not by waiting, which would reap a process config started and will wait for.
 		@children = ProcessStarts.started ? :unknown : :none
@@ -83,7 +128,10 @@ class Quickdraw::Leaks
 
 	# What's there now is the starting point, e.g. after loading a file.
 	def reset
+		ThreadStarts.take
 		@threads = Thread.list
+		@scheduler = Fiber.scheduler
+		@ractors = ractor_count
 		@env = ENV.to_h
 		ENVChanges.changed = false
 		# A test file can start processes as it loads, which aren't its tests' leaks.
@@ -103,6 +151,31 @@ class Quickdraw::Leaks
 			end
 
 			@threads = threads
+		end
+
+		# Unsetting it would run its fibers to the end, which could take forever.
+		scheduler = Fiber.scheduler
+
+		unless scheduler.equal?(@scheduler)
+			if scheduler
+				message = Quickdraw.utf8("A fiber scheduler (#{scheduler.class}) was set and not unset, so later tests' fibers would run in it. Unset it with Fiber.set_scheduler(nil).")
+				(leaks ||= []) << { "kind" => "scheduler", "message" => message }
+			end
+
+			@scheduler = scheduler
+		end
+
+		# Thread.list only has this Ractor's threads.
+		ractors = ractor_count
+
+		if ractors > @ractors
+			(leaks ||= []) << { "kind" => "ractor", "message" => "#{ractors - @ractors} Ractor#{'s' if ractors - @ractors > 1} started here #{(ractors - @ractors > 1) ? 'are' : 'is'} still running." }
+		end
+
+		@ractors = ractors
+
+		if (deaths = thread_deaths).any?
+			(leaks ||= []).concat(deaths)
 		end
 
 		if ENVChanges.changed
@@ -209,6 +282,28 @@ class Quickdraw::Leaks
 
 	# Where the thread's block is, relative to the project, or nil if that's
 	# outside it.
+	# Threads started since the last check that ended with an exception which
+	# nothing joined them to see. A thread's status is nil once an exception has
+	# ended it.
+	private def thread_deaths
+		ThreadStarts.take.filter_map do |thread|
+			next if thread.alive? || !thread.status.nil? || thread.quickdraw_joined?
+
+			location = started_at(thread) or next
+			error = begin
+				thread.join
+				nil
+			rescue Exception => error
+				error
+			end
+
+			{ "kind" => "thread", "message" => Quickdraw.utf8("A thread started at #{location} ended with #{error.class}: #{error.message}") } if error
+		end
+	end
+
+	# Not on Rubies without Ractors.
+	private def ractor_count = defined?(Ractor) ? Ractor.count : 1
+
 	private def started_at(thread)
 		# Without the name, which can contain anything, including spaces and colons.
 		description = thread.inspect.sub(THREAD_ADDRESS, "")

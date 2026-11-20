@@ -70,10 +70,7 @@ class CoverageHTMLTest < Quickdraw::Test
 
 	test "emphasises changed lines no test ran", timeout: 20 do
 		project = calculator
-		git = -> (*arguments) { system("git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false", *arguments, exception: true) }
-		git.("init", "--quiet")
-		git.("add", "--all")
-		git.("commit", "--quiet", "--no-verify", "-m", "Calculator")
+		project.commit("Calculator")
 		project.write("lib/calculator.rb" => CALCULATOR.sub("def unused = :never", "def unused = :never\n\tdef subtract(a, b) = a - b"))
 
 		project.run("-p", "1", "--no-history", "--coverage")

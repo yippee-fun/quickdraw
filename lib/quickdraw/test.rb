@@ -26,7 +26,8 @@ class Quickdraw::Test < Quickdraw::BasicTest
 	def check(*generators, cases: 100, seconds: nil, &block)
 		raise ::ArgumentError, "check needs a block." unless block
 
-		runner = @runner
+		# The test's, or the case of a property this checks within.
+		test_runner = runner
 		@checks = (@checks || 0) + 1
 		path, line = @block.source_location
 		class_name = self.class.name&.gsub(/#<Module:0x\h+>::/, "")
@@ -34,22 +35,29 @@ class Quickdraw::Test < Quickdraw::BasicTest
 		name = @description || line
 		key = "#{path.delete_prefix("#{Quickdraw::ROOT}/")}\0#{class_name}\0#{name}\0#{@checks}"
 
+		# Each case's assertions go to its own recorder through fiber storage,
+		# which only the case's fibers and the threads they start inherit, so
+		# another thread's can't fail a case. One a case's thread makes after it
+		# ends goes to the test.
 		property = Quickdraw::Property.new(generators, cases:, seconds:, key:) do |values|
 			recorder = Quickdraw::Property::Recorder.new
-			@runner = recorder
+			outer = Fiber[:quickdraw_case]
+			# With the test, so another test run inside the case records its own.
+			Fiber[:quickdraw_case] = [self, recorder]
 			block.call(*values)
 			recorder.failure
 		rescue StandardError, ScriptError, SystemStackError => error
 			recorder.failure(error)
 		ensure
-			@runner = runner
+			Fiber[:quickdraw_case] = outer
+			recorder.close(test_runner)
 		end
 
 		# Under `quickdraw fuzz`, the test's first property is fuzzed instead.
 		fuzzer = Quickdraw::Fuzz.claim
 
 		if (counterexample = fuzzer ? fuzzer.call(property) : property.check)
-			counterexample.report(runner)
+			counterexample.report(test_runner)
 		else
 			success!
 		end

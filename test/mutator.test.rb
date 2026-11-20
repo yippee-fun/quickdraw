@@ -55,8 +55,8 @@ class MutatorTest < Quickdraw::Test
 			["negated the condition", "def call(a) = !(a) ? \"café\" : \"thé\""],
 			["condition → true", "def call(a) = true ? \"café\" : \"thé\""],
 			["condition → false", "def call(a) = false ? \"café\" : \"thé\""],
-			["emptied the string", "def call(a) = a ? \"\" : \"thé\""],
-			["emptied the string", "def call(a) = a ? \"café\" : \"\""],
+			["\"café\" → \"\"", "def call(a) = a ? \"\" : \"thé\""],
+			["\"thé\" → \"\"", "def call(a) = a ? \"café\" : \"\""],
 		]
 		assert_equal mutants(source).map { |mutant| mutant.source.encoding }.uniq, [Encoding::ISO_8859_1]
 	end
@@ -83,7 +83,7 @@ class MutatorTest < Quickdraw::Test
 			["1 → 2", "total = a * 2"],
 			["1 → 0", "total = a * 0"],
 			["removed the statement", "nil"],
-			["emptied the string", "\"\" + a"],
+			["\"x\" → \"\"", "\"\" + a"],
 			["removed the negation", "a.nil?"],
 		]
 	end
@@ -109,6 +109,64 @@ class MutatorTest < Quickdraw::Test
 		assert_equal subjects.first.id, "lib/example.rb:7:11"
 	end
 
+	test "mutates methods in the blocks of Data.define, Struct.new and class_methods, named by their constants" do
+		source = <<~RUBY
+			Point = Data.define(:x, :y) do
+				def sum = x + y
+
+				class << self
+					def origin = new(x: 0, y: 0)
+				end
+			end
+
+			module Outer
+				Pair = ::Struct.new(:a, :b, keyword_init: true) { def sum = a + b }
+
+				Range = Data.define(:low) do
+					Inner = Struct.new(:c) do
+						def double = c * 2
+					end
+				end
+
+				module Concern
+					extend ActiveSupport::Concern
+
+					class_methods do
+						def two = 2
+					end
+				end
+
+				# Another DSL by that name may not define them in ClassMethods.
+				module Plain
+					class_methods do
+						def three = 3
+					end
+				end
+			end
+
+			Outer::Box = Data.define(:width) do
+				def double = width * 2
+			end
+
+			Other = Class.new { def one = 1 }
+			Other = Data.new { def one = 1 }
+			Other = Data.define(:a)
+			class_methods { def one = 1 }
+		RUBY
+
+		subjects = mutants(source).map(&:subject).uniq
+
+		assert_equal subjects.map(&:label), ["Point#sum", "Point.origin", "Outer::Pair#sum", "Outer::Inner#double", "Outer::Concern::ClassMethods#two", "Outer::Box#double"]
+		assert_equal subjects.map(&:nesting), [
+			[["class_eval", "Point"]],
+			[["class_eval", "Point"], ["class", "<< self"]],
+			[["module", "Outer"], ["class_eval", "Pair"]],
+			[["module", "Outer"], ["class_eval", "Inner"]],
+			[["module", "Outer"], ["module", "Concern"], ["class_eval", "ClassMethods"]],
+			[["class_eval", "Outer::Box"]],
+		]
+	end
+
 	test "mutates only what touches the lines given, and knows each mutant's statement" do
 		source = <<~RUBY
 			class Example
@@ -123,7 +181,7 @@ class MutatorTest < Quickdraw::Test
 
 		assert_equal mutants(source, lines: [5]).map { |mutant| [mutant.description, mutant.line, mutant.covering_line] }, [
 			["replaced the body with nil", 3, 2],
-			["emptied the array", 4, 4],
+			["[ a + 1, ] → []", 4, 4],
 			["+ → -", 5, 4],
 			["1 → 2", 5, 4],
 			["1 → 0", 5, 4],
@@ -363,8 +421,8 @@ class MutatorTest < Quickdraw::Test
 			["removed the block", "a.each"],
 			["removed the statement", "nil"],
 			["removed the statement", "nil"],
-			["emptied the string", "\"\".to_s + \"\#{a.to_s}\""],
-			["emptied the string", "\"x\".to_s + \"\""],
+			["\"x\" → \"\"", "\"\".to_s + \"\#{a.to_s}\""],
+			["\"\#{a.to_s}\" → \"\"", "\"x\".to_s + \"\""],
 			["removed the statement", "nil"],
 			["reverse_each → each", "a&.strip.sort_by { it }.each { log(it) }"],
 			["removed the block", "a&.strip.sort_by { it }.reverse_each"],
@@ -398,16 +456,16 @@ class MutatorTest < Quickdraw::Test
 		# first statement, which would leave the heredoc's body behind.
 		assert_equal changes(source), [
 			["replaced the body with nil", "nil"],
-			["emptied the string", "log(\"\", \"\", <<~TEXT)"],
+			["\"x\#{a}\" → \"\"", "log(\"\", \"\", <<~TEXT)"],
 			["removed the statement", "nil"],
-			["emptied the array", "log([], { b: 1, c: a }, :symbol, 1.5)"],
-			["removed an element", "log([a], { b: 1, c: a }, :symbol, 1.5)"],
-			["removed an element", "log([1], { b: 1, c: a }, :symbol, 1.5)"],
+			["[1, a] → []", "log([], { b: 1, c: a }, :symbol, 1.5)"],
+			["removed 1", "log([a], { b: 1, c: a }, :symbol, 1.5)"],
+			["removed a", "log([1], { b: 1, c: a }, :symbol, 1.5)"],
 			["1 → 2", "log([2, a], { b: 1, c: a }, :symbol, 1.5)"],
 			["1 → 0", "log([0, a], { b: 1, c: a }, :symbol, 1.5)"],
-			["emptied the hash", "log([1, a], {}, :symbol, 1.5)"],
-			["removed a pair", "log([1, a], { c: a }, :symbol, 1.5)"],
-			["removed a pair", "log([1, a], { b: 1 }, :symbol, 1.5)"],
+			["{ b: 1, c: a } → {}", "log([1, a], {}, :symbol, 1.5)"],
+			["removed b: 1", "log([1, a], { c: a }, :symbol, 1.5)"],
+			["removed c: a", "log([1, a], { b: 1 }, :symbol, 1.5)"],
 			["1 → 2", "log([1, a], { b: 2, c: a }, :symbol, 1.5)"],
 			["1 → 0", "log([1, a], { b: 0, c: a }, :symbol, 1.5)"],
 			["1.5 → 2.5", "log([1, a], { b: 1, c: a }, :symbol, 2.5)"],
@@ -501,7 +559,7 @@ class MutatorTest < Quickdraw::Test
 			["1 → 2", "@total *= 2"],
 			["1 → 0", "@total *= 0"],
 			["removed the statement", "nil"],
-			["emptied the string", "@name += \"\""],
+			["\"x\" → \"\"", "@name += \"\""],
 			["removed the statement", "nil"],
 			["||= → =", "@cache = {}"],
 			["||= → =", "b = []"],

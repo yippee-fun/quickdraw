@@ -4,7 +4,9 @@ require "prism"
 
 # Finds the mutants of a source file: changes to the code in its methods that
 # a test running that code should notice. Only methods defined directly in
-# classes, modules and `class << self`, which a worker can redefine.
+# classes, modules, `class << self`, and the blocks of `Data.define`,
+# `Struct.new` (assigned to a constant) and `class_methods`, which a worker
+# can redefine.
 #
 # Mutations that can't change behaviour (x + 0 to x - 0) or that only break
 # code any test running it would notice anyway (removing a local variable's
@@ -16,7 +18,7 @@ class Quickdraw::Mutation::Mutator
 	IDENTITIES = { :+ => 0, :- => 0, :* => 1, :/ => 1, :** => 1 }.freeze
 	LOGICAL = { "&&" => "||", "||" => "&&", "and" => "or", "or" => "and" }.freeze
 
-	METHODS = {
+	METHODS = Quickdraw.deep_freeze({
 		select: ["reject"],
 		filter: ["reject"],
 		reject: ["select"],
@@ -49,7 +51,7 @@ class Quickdraw::Mutation::Mutator
 		public_send: ["send"],
 		is_a?: ["instance_of?"],
 		kind_of?: ["instance_of?"],
-	}.freeze
+	})
 
 	# Calls that return their receiver changed, which code still runs without.
 	TRANSFORMS = [:dup, :to_s, :to_a, :to_h, :to_sym, :to_i, :to_f, :strip, :lstrip, :rstrip, :chomp, :squeeze, :compact, :uniq, :flatten, :sort, :sort_by, :reverse, :abs].freeze
@@ -96,9 +98,14 @@ class Quickdraw::Mutation::Mutator
 
 		body.body.each do |node|
 			case node
-			in Prism::ClassNode then scope(node.body, [*nesting, ["class", node.constant_path.slice]])
-			in Prism::ModuleNode then scope(node.body, [*nesting, ["module", node.constant_path.slice]])
+			in Prism::ClassNode then scope(node.body, [*lexical(nesting), ["class", node.constant_path.slice]])
+			in Prism::ModuleNode then scope(node.body, [*lexical(nesting), ["module", node.constant_path.slice]])
 			in Prism::SingletonClassNode[expression: Prism::SelfNode] then scope(node.body, [*nesting, ["class", "<< self"]])
+			in Prism::ConstantWriteNode | Prism::ConstantPathWriteNode then defined_class(node, nesting)
+			# ActiveSupport::Concern's, which defines its methods in the module's
+			# ClassMethods. Other DSLs by that name may define them elsewhere.
+			in Prism::CallNode[receiver: nil | Prism::SelfNode, name: :class_methods, arguments: nil, block: Prism::BlockNode[body: block_body]] if (nesting.last in ["module", _]) && concern?(body)
+				scope(block_body, [*nesting, ["class_eval", "ClassMethods"]])
 			in Prism::DefNode then definition(node, nesting)
 			in Prism::CallNode[
 				receiver: nil,
@@ -110,6 +117,44 @@ class Quickdraw::Mutation::Mutator
 			else nil
 			end
 		end
+	end
+
+	# Whether a module's body extends a Concern, such as ActiveSupport::Concern.
+	private def concern?(statements)
+		statements.body.any? do |node|
+			case node
+			in Prism::CallNode[receiver: nil | Prism::SelfNode, name: :extend, arguments: Prism::ArgumentsNode[arguments: [Prism::ConstantReadNode | Prism::ConstantPathNode => constant]]]
+				constant.slice.split("::").last == "Concern"
+			else false
+			end
+		end
+	end
+
+	# A class made by `Data.define` or `Struct.new` with a block, named by the
+	# constant it's assigned to, as in `Point = Data.define(:x, :y) do … end`.
+	private def defined_class(node, nesting)
+		return unless node.value in Prism::CallNode[
+			receiver: Prism::ConstantReadNode | Prism::ConstantPathNode[parent: nil] => receiver,
+			name:,
+			block: Prism::BlockNode[body:],
+		]
+
+		return unless [receiver.name, name] in [:Data, :define] | [:Struct, :new]
+
+		constant = case node
+		in Prism::ConstantWriteNode then node.name_loc.slice
+		in Prism::ConstantPathWriteNode then node.target.slice
+		end
+
+		scope(body, [*lexical(nesting), ["class_eval", constant]])
+	end
+
+	# Where a constant defined here goes: not in a block's class, since a block
+	# keeps the constant scope around it.
+	private def lexical(nesting)
+		nesting = nesting.dup
+		nesting.pop while nesting.last in ["class_eval", _]
+		nesting
 	end
 
 	private def definition(node, nesting)
@@ -203,17 +248,17 @@ class Quickdraw::Mutation::Mutator
 				add(node.location, value.to_s, "#{node.slice} → #{value}", statement_line) unless value == node.value
 			end
 		in Prism::StringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || node.unescaped.empty?
-			add(node.location, '""', "emptied the string", statement_line)
+			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
 		in Prism::InterpolatedStringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<")
-			add(node.location, '""', "emptied the string", statement_line)
+			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
 		in Prism::RegularExpressionNode | Prism::InterpolatedRegularExpressionNode
 			add(node.location, "/(?!)/", "regexp → never matches", statement_line)
 		in Prism::ArrayNode[opening_loc: Prism::Location, elements: [_, *] => elements]
-			add(node.location, "[]", "emptied the array", statement_line)
-			remove_each(elements, "removed an element", statement_line) if elements.size > 1
+			add(node.location, "[]", "#{abbreviate(node.slice)} → []", statement_line)
+			remove_each(elements, statement_line) if elements.size > 1
 		in Prism::HashNode[elements: [_, *] => elements]
-			add(node.location, "{}", "emptied the hash", statement_line)
-			remove_each(elements, "removed a pair", statement_line) if elements.size > 1
+			add(node.location, "{}", "#{abbreviate(node.slice)} → {}", statement_line)
+			remove_each(elements, statement_line) if elements.size > 1
 		in Prism::RangeNode[right: Prism::Node, operator_loc:]
 			replacement = node.exclude_end? ? ".." : "..."
 			add(operator_loc, replacement, "#{operator_loc.slice} → #{replacement}", statement_line)
@@ -458,9 +503,18 @@ class Quickdraw::Mutation::Mutator
 		[*parameters.requireds, *parameters.optionals, parameters.rest, *parameters.posts, *parameters.keywords, parameters.keyword_rest].compact
 	end
 
-	private def remove_each(nodes, description, line)
-		nodes.each_index { |index| add(cut(nodes, index), "", description, line) }
+	private def remove_each(nodes, line)
+		nodes.each_with_index { |node, index| add(cut(nodes, index), "", "removed #{abbreviate(node.slice)}", line) }
 	end
+
+	# Code on one line and short enough for a description, so it can say
+	# which of several literals on a line a mutant changes.
+	private def abbreviate(code)
+		code = Quickdraw.utf8(code).gsub(/\s*\n\s*/, " ")
+		(code.size > ABBREVIATION) ? "#{code[0, ABBREVIATION - 1]}…" : code
+	end
+
+	ABBREVIATION = 30
 
 	private def remove(statement)
 		case statement

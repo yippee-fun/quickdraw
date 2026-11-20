@@ -5,12 +5,18 @@
 # in the format of Property's saved cases. Every worker fuzzing the property
 # adds to it, and reads the others' new cases as it goes.
 class Quickdraw::Fuzz::Corpus
+	def self.root = File.join(Quickdraw::ROOT, ".quickdraw/fuzz")
+
 	def self.directory(key)
-		File.join(Quickdraw::ROOT, ".quickdraw/fuzz", Quickdraw.stable_hash(key).to_s(16))
+		File.join(root, Quickdraw.stable_hash(key).to_s(16))
 	end
 
-	def initialize(directory)
+	# The corpus of the property named `key`.
+	def self.for(key) = new(directory(key), key:)
+
+	def initialize(directory, key: nil)
 		@directory = directory
+		@key = key
 		@known = {}
 	end
 
@@ -35,6 +41,7 @@ class Quickdraw::Fuzz::Corpus
 
 		@known[name] = true
 		Quickdraw::Property.save(File.join(@directory, name), [choices])
+		Quickdraw::Property.label(@directory, @key) if @key
 	end
 
 	def size

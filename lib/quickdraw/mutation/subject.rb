@@ -2,23 +2,29 @@
 
 # A method that mutants change. `nesting` is the classes and modules around its
 # definition, outermost first, as [keyword, name] such as ["class", "Admin::User"]
-# or ["class", "<< self"]. `path` is absolute, and `id` is unique in a run.
+# or ["class", "<< self"], or ["class_eval", "Point"] for a block evaluated in
+# a class, as in `Point = Data.define do`. `path` is absolute, and `id` is
+# unique in a run.
 Quickdraw::Mutation::Subject = Data.define(:id, :path, :line, :nesting, :name, :singleton) do
 	# The class or module the method is defined on. Raises NameError if one of
 	# those around it isn't defined, and TypeError if it isn't a module.
 	def owner
 		scopes = [Object]
+		# Not a block's class, which doesn't change where constants are found.
+		lexical_scopes = [Object]
 
 		nesting.each do |keyword, name|
 			scopes << case [keyword, name]
 			in ["class", "<< self"] then scopes.last.singleton_class
 			in [_, /\A::(?<absolute>.+)\z/] then Object.const_get($~[:absolute], false)
 			# As in `class Admin::User`, where Admin is found from any scope around it.
-			in [_, /\A(?<first>[^:]+)::(?<rest>.+)\z/] then lexical(scopes, $~[:first]).const_get($~[:rest], false)
+			in [_, /\A(?<first>[^:]+)::(?<rest>.+)\z/] then lexical(lexical_scopes, $~[:first]).const_get($~[:rest], false)
 			else scopes.last.const_get(name, false)
 			end
 
 			raise TypeError, "#{scopes.last.inspect} isn’t a class or module" unless Module === scopes.last
+
+			lexical_scopes << scopes.last unless keyword == "class_eval"
 		end
 
 		singleton ? scopes.last.singleton_class : scopes.last

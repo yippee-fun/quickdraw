@@ -7,6 +7,7 @@ class Quickdraw::Reporters::Multiple
 	end
 
 	def booting = @reporters.each(&:booting)
+	def nothing_to_run(path) = @reporters.each { |reporter| reporter.nothing_to_run(path) }
 	def start(...) = @reporters.each { |reporter| reporter.start(...) }
 	def result(...) = @reporters.each { |reporter| reporter.result(...) }
 	def load_failed(...) = @reporters.each { |reporter| reporter.load_failed(...) }

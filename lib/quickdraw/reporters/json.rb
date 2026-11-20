@@ -34,6 +34,7 @@ class Quickdraw::Reporters::JSON
 			"output" => result["output"]&.then { |output| plain(output) },
 			"leaks" => result["leaks"],
 			"passed_on_retry" => result["passed_on_retry"],
+			"quarantined" => !!result["quarantined"],
 			"flake" => result["flake"],
 			"attempts" => result["attempts"]&.map { |attempt| attempt.slice("in", "status", "duration") },
 		)
@@ -46,6 +47,7 @@ class Quickdraw::Reporters::JSON
 	def finished_file(_path) = nil
 	def shows_loading_output? = false
 	def booting = nil
+	def nothing_to_run(_path) = nil
 	def pause = nil
 	def resume = nil
 
@@ -58,6 +60,7 @@ class Quickdraw::Reporters::JSON
 			"assertions" => outcome.assertions,
 			"failed" => outcome.failed,
 			"flaky" => outcome.flaky,
+			"quarantined" => outcome.quarantined,
 			"skipped" => outcome.skipped,
 			"pending" => outcome.pending,
 			"errored" => outcome.errored,

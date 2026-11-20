@@ -127,6 +127,40 @@ class FuzzIntegrationTest < Quickdraw::Test
 		]
 	end
 
+	test "--forget deletes the failing cases and corpora kept for the tests in the files given, or every test", timeout: 30 do
+		# Fuzzing keeps a corpus for "lexes", and a test run saves a failing case for "fails".
+		test_file = lambda do |name|
+			<<~RUBY
+				require_relative "../lib/lexer"
+
+				class #{name}Test < Quickdraw::Test
+					fuzz("lexes", bytes(dictionary: ["let", "x"])) { |input| Lexer.run(input) }
+					test("fails") { check(integer(0..100)) { |n| assert n < 50 } }
+				end
+			RUBY
+		end
+
+		project = project("lib/lexer.rb" => LEXER, "test/a.test.rb" => test_file.("A"), "test/b.test.rb" => test_file.("B"))
+		project.run("fuzz", "--seconds", "0.5", "-p", "1", "--seed", "1")
+		project.run("-p", "1")
+
+		cases = -> { Dir.children(File.join(project.directory, ".quickdraw/properties")).reject { |name| name.include?(".") }.size }
+		corpora = -> { Dir.children(File.join(project.directory, ".quickdraw/fuzz")).reject { |name| name.include?(".") }.size }
+		assert_equal [cases.(), corpora.()], [2, 2]
+
+		forgotten = project.run("fuzz", "--forget", "test/a.test.rb")
+		assert forgotten.success?
+		assert_equal forgotten.stdout, "Forgot the failing cases saved for 1 property and the corpora of 1 fuzz test in test/a.test.rb.\n"
+		assert_equal [cases.(), corpora.()], [1, 1]
+		assert_includes project.run("-p", "1", "--format", "agent").stdout, "Counterexample (saved from an earlier run)"
+
+		# That run saved a's failing case again.
+		assert_includes project.run("fuzz", "--forget").stdout, "Forgot the failing cases saved for 2 properties and the corpora of 1 fuzz test."
+		assert_equal [cases.(), corpora.()], [0, 0]
+		assert_equal project.run("fuzz", "--forget", "test").stdout, "Nothing to forget for test.\n"
+		match { project.run("fuzz", "--forget", "test/a.test.rb:2") => { exit_status: 2, stderr: /--forget takes test files or directories, not lines/ } }
+	end
+
 	test "says when there's nothing to fuzz" do
 		result = project("test/plain.test.rb" => "class PlainTest < Quickdraw::Test\n  test('fuzzy') { assert true }\nend\n").run("fuzz", "--format", "agent")
 

@@ -161,7 +161,7 @@ class FormatsTest < Quickdraw::Test
 
 		assert_includes result.output, "::error file=shapes.test.rb,line=5,title=Shapes › computes area::Expected  7%0AActual    6"
 		assert_includes result.output, "::error file=shapes.test.rb,line=2,title=Shapes › raises in a helper::NoMethodError"
-		assert_includes File.read(summary), "| 3 | 1 | 1 | 0 | 1 | 0 |"
+		assert_includes File.read(summary), "| 3 | 1 | 1 | 0 | 0 | 1 | 0 |"
 	end
 
 	test "writes JUnit XML", timeout: 20 do

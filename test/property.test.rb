@@ -139,8 +139,10 @@ class PropertyTest < Quickdraw::Test
 		end
 
 		assert_test(failures: 1, &property)
+		# With a label naming the test, for `quickdraw fuzz --forget`.
 		saved = Dir.children(Quickdraw::Property.directory)
-		assert_equal saved.size, 1
+		assert_equal saved.size, 2
+		assert_includes File.read(File.join(Quickdraw::Property.directory, saved.find { |name| name.end_with?(".key") })), "test/property.test.rb\0"
 
 		values.clear
 		runner = assert_test(failures: 1, &property)

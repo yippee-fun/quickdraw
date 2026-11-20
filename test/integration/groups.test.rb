@@ -57,6 +57,38 @@ class GroupsTest < Quickdraw::Test
 		assert_equal result.stdout.scan(/^browser worker (\d)$/).flatten.uniq.sort, ["0", "1"]
 	end
 
+	test "a group's workers use its cores, so fewer run at once, and its slow files get workers first", timeout: 30 do
+		# Each test notes when it ran, so how many overlapped can be counted.
+		spans = <<~RUBY
+			def span
+				started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+				yield
+				File.write("spans", "\#{started} \#{Process.clock_gettime(Process::CLOCK_MONOTONIC)}\\n", mode: "a")
+			end
+		RUBY
+
+		files = 4.times.to_h do |file|
+			["test/browser/page#{file}.test.rb", "#{spans}class Page#{file} < Quickdraw::Test\n\t3.times { |i| test(\"t\#{i}\") { span { sleep 0.1; assert true } } }\nend\n"]
+		end
+
+		project = project(
+			"config/quickdraw.rb" => <<~RUBY,
+				Quickdraw.configure do |config|
+					config.group :browser, "test/browser/**/*.test.rb", cores: 2, file_seconds: 5
+				end
+			RUBY
+			"test/quick.test.rb" => "class Quick < Quickdraw::Test\n\t20.times { |i| test(\"q\#{i}\") { sleep 0.01; assert true } }\nend\n",
+			**files,
+		)
+
+		assert project.run("-p", "4", "--no-history").success?
+
+		spans = File.readlines(File.join(project.directory, "spans")).map { |line| line.split.map(&:to_f) }
+		overlapping = spans.map { |started, _| spans.count { |other_started, other_ended| other_started <= started && started < other_ended } }
+		# Two workers, using two cores each, of the four.
+		assert_equal overlapping.max, 2
+	end
+
 	# The greeting gem is only in the group's bundle, from a path, so it needs
 	# neither a network nor gems installed beforehand.
 	def bundled_project(files = {}) = project(

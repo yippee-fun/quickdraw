@@ -216,7 +216,7 @@ class Quickdraw::History
 	Outcome = Data.define(:run_id, :test_id, :path, :line, :class_name, :description, :status, :seed)
 	FailureOrder = Data.define(:run_id, :seed, :slot, :before, :test)
 
-	FLAKY_TESTS = <<~SQL
+	FLAKY = <<~SQL
 		WITH recent AS (
 			SELECT results.test_id, runs.code,
 				results.status IN ('failed', 'errored', 'crashed', 'flaky') AS failed,
@@ -232,11 +232,23 @@ class Quickdraw::History
 			GROUP BY test_id, code
 			HAVING (MIN(failed) = 0 AND MAX(failed) = 1) OR MAX(passed_on_retry) = 1
 		)
+	SQL
+
+	FLAKY_TESTS = <<~SQL.freeze
+		#{FLAKY}
 		SELECT tests.path, tests.line, tests.class_name, tests.description, SUM(flaky.runs), SUM(flaky.failures) AS failures
 		FROM flaky JOIN tests ON tests.id = flaky.test_id
 		GROUP BY flaky.test_id
 		ORDER BY failures DESC, tests.path, tests.line
 	SQL
+
+	FLAKY_KEYS = <<~SQL.freeze
+		#{FLAKY}
+		SELECT DISTINCT tests.key FROM flaky JOIN tests ON tests.id = flaky.test_id
+	SQL
+
+	# Tests flaky in this many recent runs are quarantined, with --quarantine.
+	QUARANTINE_WINDOW = 50
 
 	# Read-only, it never creates, migrates or rebuilds the history, so looking
 	# at it can't lose it. That's for reading only, as `quickdraw history` does.
@@ -595,6 +607,13 @@ class Quickdraw::History
 
 	# Tests that both passed and failed on the same code (see #git_revision)
 	# within the last `within` runs, counting only the runs of code they did both on.
+	# { key => true } for the tests flaky in the last QUARANTINE_WINDOW runs.
+	def flaky_keys
+		@db.execute(FLAKY_KEYS, [QUARANTINE_WINDOW]).to_h { |(key)| [key, true] }
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
 	def flaky_tests(within:)
 		@db.execute(FLAKY_TESTS, [within]).map { |row| FlakyTest.new(*row) }
 	rescue SQLite3::Exception => error

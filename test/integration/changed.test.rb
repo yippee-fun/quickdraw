@@ -24,14 +24,7 @@ class ChangedTest < Quickdraw::Test
 			class ReportTest < Quickdraw::Test; test("reports") { assert_equal Report.call(1, 2), "TOTAL 3" }; end
 		RUBY
 		".gitignore" => ".quickdraw/\n",
-	).tap { |it| commit(it) }
-
-	def commit(project)
-		git = ["git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false"]
-		system(*git, "init", "--quiet", exception: true) unless Dir.exist?(File.join(project.directory, ".git"))
-		system(*git, "add", "--all", exception: true)
-		system(*git, "commit", "--quiet", "--no-verify", "-m", "Commit", exception: true)
-	end
+	).tap(&:commit)
 
 	test "runs the tests that ran a changed file in the last --coverage run", timeout: 30 do
 		project = project_with_history
@@ -96,7 +89,7 @@ class ChangedTest < Quickdraw::Test
 				test("shouts") { assert_equal Shout.call("a"), "A" }
 			end
 		RUBY
-		commit(project)
+		project.commit
 		project.run("-p", "1", "--coverage")
 		project.run("-p", "1", "--coverage", "--name", "adds")
 		project.write("lib/shout.rb" => "module Shout\n\tdef self.call(text) = text.upcase.strip\nend\n")
@@ -107,7 +100,7 @@ class ChangedTest < Quickdraw::Test
 	test "runs everything when a file that only loads with config changes", timeout: 30 do
 		project = project_with_history
 		project.write("config/quickdraw.rb" => "require_relative '../lib/settings'\n", "lib/settings.rb" => "SETTING = 1\n")
-		commit(project)
+		project.commit
 		project.run("-p", "1", "--coverage")
 		project.write("lib/settings.rb" => "SETTING = 2\n")
 
@@ -120,7 +113,7 @@ class ChangedTest < Quickdraw::Test
 	test "runs the tests of a renamed file's old name", timeout: 30 do
 		project = project_with_history
 		project.run("-p", "1", "--coverage")
-		system("git", "-C", project.directory, "mv", "lib/shout.rb", "lib/yell.rb", exception: true)
+		project.git("mv", "lib/shout.rb", "lib/yell.rb")
 
 		result = project.run("-p", "1", "--changed", "--format", "agent")
 		assert_match result.stdout, %r{^2 × ERROR LoadError: cannot load such file -- .+, such as test/\w+\.test\.rb could not be loaded$}
@@ -139,15 +132,13 @@ class ChangedTest < Quickdraw::Test
 
 	test "--base runs the tests for what changed since the branch left REF, committed or not", timeout: 30 do
 		project = project_with_history
-		git = ["git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false"]
-		system(*git, "branch", "-M", "main", exception: true)
-		system(*git, "switch", "--quiet", "-c", "feature", exception: true)
+		project.git("switch", "--quiet", "-c", "feature")
 		project.write("lib/adder.rb" => "module Adder\n\tdef self.add(a, b) = b + a\nend\n")
-		commit(project)
-		system(*git, "switch", "--quiet", "main", exception: true)
+		project.commit
+		project.git("switch", "--quiet", "main")
 		project.write("lib/shout.rb" => "module Shout\n\tdef self.call(text) = text.upcase.strip\nend\n")
-		commit(project)
-		system(*git, "switch", "--quiet", "feature", exception: true)
+		project.commit
+		project.git("switch", "--quiet", "feature")
 
 		match { project.run("-p", "1", "--changed", "--format", "agent") => { stderr: /Nothing has changed/ } }
 		match { project.run("-p", "1", "--changed", "--base", "main", "--format", "agent") => { stdout: /PASSED: 1 test, 1 passed/ } }
@@ -158,7 +149,7 @@ class ChangedTest < Quickdraw::Test
 
 	test "--base explains when it can't be used", timeout: 20 do
 		project = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n")
-		commit(project)
+		project.commit
 
 		match { project.run("--base", "main") => { stderr: /--base says what --changed compares with, so it needs --changed\./, exit_status: 2 } }
 		match { project.run("--changed", "--base", "nope") => { stderr: /Git can’t find/, exit_status: 2 } }

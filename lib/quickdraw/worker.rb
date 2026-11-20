@@ -24,7 +24,7 @@ class Quickdraw::Worker
 		# Not every Ruby implementation has these. Without a CPU clock, CPU time
 		# equals wall time and nothing is reported as waiting.
 		CPU_CLOCK = Process.const_defined?(:CLOCK_PROCESS_CPUTIME_ID) ? Process::CLOCK_PROCESS_CPUTIME_ID : Process::CLOCK_MONOTONIC
-		GC_KEYS = GC.stat.keys
+		GC_KEYS = GC.stat.keys.freeze
 
 		def initialize
 			@assertions = 0
@@ -59,7 +59,7 @@ class Quickdraw::Worker
 			children = children_cpu
 			gc = gc_milliseconds
 			allocations = allocated_objects
-			Quickdraw::Counters.take
+			Quickdraw::Counters.start
 
 			yield
 		ensure
@@ -75,6 +75,8 @@ class Quickdraw::Worker
 		end
 
 		def failure!(failure)
+			return @late.call(failure) if @late
+
 			@assertions += 1
 			@failures << failure
 		end
@@ -98,9 +100,15 @@ class Quickdraw::Worker
 		attr_writer :output
 
 		# From Leaks#check, as warnings.
-		attr_writer :leaks
+		attr_accessor :leaks
 
 		def problem? = @failures.any? || @errors.any?
+
+		# Once its result is sent: a failure a thread the test started makes
+		# after that goes to the block, rather than being lost.
+		def close(&late)
+			@late = late
+		end
 
 		# Output and leaks only when there are some, since each key sent costs
 		# about 250ns.
@@ -158,6 +166,9 @@ class Quickdraw::Worker
 		@files = {}
 		@file_seeds = {}
 		@class_names = {}
+		# Failures threads made after the tests that started them finished, as
+		# leaks, for the test running when they're found.
+		@late = Thread::Queue.new
 	end
 
 	def call
@@ -338,23 +349,40 @@ class Quickdraw::Worker
 			recorder.error!(Quickdraw.serialize_error(error))
 		end
 
-		if @leaks && (leaks = @leaks.check)
-			if @leak_mode == :fail
-				recorder.error!({ "name" => "Quickdraw::Leak", "message" => leaks.map { |leak| leak["message"] }.join("\n"), "backtrace" => [] })
-			else
-				recorder.leaks = leaks
+		# Taken from every test, so the next one starts empty.
+		output = if @capture
+			@capture.take
+		else
+			flush_output
+			nil
+		end
+
+		if @leaks
+			leaks = [*@leaks.check, *late_failures]
+
+			if leaks.any?
+				if @leak_mode == :fail
+					recorder.error!({ "name" => "Quickdraw::Leak", "message" => leaks.map { |leak| leak["message"] }.join("\n"), "backtrace" => [] })
+				else
+					recorder.leaks = leaks
+				end
 			end
 		end
 
-		if @capture
-			# Taken from every test, so the next one starts empty.
-			output = @capture.take
-			recorder.output = output if recorder.problem?
-		else
-			flush_output
+		recorder.output = output if output && recorder.problem?
+		result = recorder.to_h
+
+		# A thread the test left running may fail an assertion yet, which is a leak.
+		if @leaks
+			name = "#{Quickdraw::Filter.name_of(describe(definition))} (line #{definition.line})"
+			recorder.close { |failure| @late << { "kind" => "late failure", "message" => Quickdraw.utf8("After #{name} finished, a thread it started failed an assertion at #{failure['path'].delete_prefix("#{Dir.pwd}/")}:#{failure['line']}: #{failure['message']}") } }
 		end
 
-		recorder.to_h
+		result
+	end
+
+	private def late_failures
+		Array.new(@late.size) { @late.pop }
 	end
 
 	# Runs the file's tests unmutated, tracing what they run of `subjects` (see

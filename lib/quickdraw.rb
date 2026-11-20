@@ -13,9 +13,9 @@ module Quickdraw
 
 	Box = (defined?(Ruby::Box) && ENV["RUBY_BOX"]) ? Ruby::Box.new : NoBox
 
-	LIB = __dir__
+	LIB = __dir__.freeze
 	# Where Quickdraw runs, before a test can change directory.
-	ROOT = Dir.pwd
+	ROOT = Dir.pwd.freeze
 
 	autoload :CLI, "quickdraw/cli"
 	autoload :Commands, "quickdraw/commands"
@@ -149,6 +149,19 @@ module Quickdraw
 		string.each_byte.reduce(0xcbf29ce484222325) do |hash, byte|
 			((hash ^ byte) * 0x100000001b3) & 0xffffffffffffffff
 		end
+	end
+
+	# Freezes `value` and the strings, arrays and hashes in it, so a Ractor can
+	# share it, as Ractor.make_shareable would, without needing Ractor, which
+	# not every Ruby has.
+	def self.deep_freeze(value)
+		case value
+		in Array then value.each { |item| deep_freeze(item) }
+		in Hash then value.each { |pair| pair.each { |part| deep_freeze(part) } }
+		else nil
+		end
+
+		value.freeze
 	end
 
 	# The string as valid UTF-8, with anything invalid or unmappable replaced.

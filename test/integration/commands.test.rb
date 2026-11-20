@@ -23,7 +23,7 @@ class CommandsTest < Quickdraw::Test
 
 	test "init follows git's own rules for what's ignored", timeout: 20 do
 		project = project(".gitignore" => ".quickdraw/\n!.quickdraw/\n", "a.test.rb" => "")
-		system("git", "init", "--quiet", project.directory)
+		project.git("init", "--quiet")
 
 		assert_match project.run("doctor").stdout, %r{^  ! Git +git doesn’t ignore \.quickdraw/$}
 		project.run("init")

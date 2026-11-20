@@ -11,8 +11,8 @@
 # is why they're weighted by time. Core Ruby only, since it runs in workers.
 class Quickdraw::Sampler
 	INTERVAL = 0.001
-	QUICKDRAW = ["#{Quickdraw::LIB}/", "#{File.expand_path('../exe', Quickdraw::LIB)}/"].freeze
-	WORKER = File.join(Quickdraw::LIB, "quickdraw/worker.rb")
+	QUICKDRAW = Quickdraw.deep_freeze(["#{Quickdraw::LIB}/", "#{File.expand_path('../exe', Quickdraw::LIB)}/"])
+	WORKER = File.join(Quickdraw::LIB, "quickdraw/worker.rb").freeze
 	# With modifiers such as `private` before it.
 	DEFINITION = /^\s*(?:[a-z_]+\s+)*def\s+(?:self\.)?([^\s(=;]+=?)/
 

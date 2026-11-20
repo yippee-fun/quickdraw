@@ -20,7 +20,14 @@ Quickdraw::Mutation::Mutant = Data.define(:id, :subject, :line, :last_line, :cov
 		end
 
 		function = module_function?(owner, original)
-		wrapped = "#{subject.nesting.map { |keyword, scope| "#{keyword} #{scope}; " }.join}#{source}\n#{'end; ' * subject.nesting.size}"
+		opening = subject.nesting.map do |keyword, scope|
+			case keyword
+			in "class_eval" then "#{scope}.class_eval do; "
+			in "class" | "module" then "#{keyword} #{scope}; "
+			end
+		end
+
+		wrapped = "#{opening.join}#{source}\n#{'end; ' * subject.nesting.size}"
 		# On the definition's line, so backtraces and __LINE__ are as they were.
 		first_line = subject.line
 

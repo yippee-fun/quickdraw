@@ -42,7 +42,7 @@ class CalculatorTest < Quickdraw::Test
 end
 ```
 
-- **Assertions:** `assert`, `refute`, `assert_equal`, `assert_includes`, `assert_match` (uses `===`, so regexes, ranges and classes work), `assert_in_delta`, `assert_operator`, `assert_raises`, `assert_same`, `assert_equivalent_html` and `assert_equivalent_ruby`, most with a `refute_` form. `match { value => pattern }` asserts a pattern match. Failure messages are only built when a test fails, so detailed ones cost nothing.
+- **Assertions:** `assert`, `refute`, `assert_equal`, `assert_includes`, `assert_match` (uses `===`, so regexes, ranges and classes work), `assert_in_delta`, `assert_operator`, `assert_raises`, `assert_same`, `assert_nil`, `assert_equivalent_html` and `assert_equivalent_ruby`, most with a `refute_` form. `assert_eventually(within: 1) { ready? }` waits for what another thread or process does, rather than sleeping long enough. `match { value => pattern }` asserts a pattern match. Failure messages are only built when a test fails, so detailed ones cost nothing.
 - **Diffs:** `assert_equal` diffs strings line by line, and hashes, arrays, sets, `Data`, structs and plain objects one element per line.
 - **Groups of tests:** `describe` blocks nest, and their names join the test's name (`CalculatorTest › #divide › divides`). Each block is a subclass, so `setup` and helper methods work with `super`.
 - **Skipping:** `skip "needs a network"` stops a test and reports it as skipped. A `test` without a block is pending.
@@ -95,6 +95,7 @@ qt fuzz                          # the tests fuzz defines, in every test file th
 qt fuzz test/parser.test.rb      # in a file, or a directory
 qt fuzz test/sorting.test.rb:12  # any test that checks a property, by line
 qt fuzz --seconds 300            # for longer (the default is 30 seconds a test)
+qt fuzz --forget test/parser.test.rb  # forget what fuzzing found there, after changing a property
 ```
 
 ```
@@ -198,11 +199,20 @@ Debuggers work in any run. When a test reaches `binding.irb`, `debugger`, `bindi
 
 After each test, Quickdraw checks for state it left behind, which can make later tests fail depending on the order they run in:
 
-- threads it started (in your project, not in a gem) that are still running;
+- threads it started (in your project, not in a gem) that are still running, and Ractors;
+- a thread it started that ended with an exception nobody saw, since it wasn't joined;
+- a failed assertion from a thread it started, made after it finished, which is reported with the test running then, naming the one that started the thread;
+- a fiber scheduler it set and didn't unset, in which later tests' fibers would run;
 - child processes it started and didn't wait for (unless config started some too, which can't be told apart);
 - changes to `ENV` it didn't undo. Only the names are reported, since values can be secrets.
 
 Leaks are listed as warnings after the run. `--leaks fail` makes them errors, and `--leaks off` turns the checks off. They cost about a microsecond per test.
+
+## Threads, fibers and Ractors
+
+Assertions made in threads, fibers, enumerators and fiber schedulers (such as Async's) count towards the test that made them, and their failures fail it, with the line they were made on. A property's cases only take assertions from their own fibers and the threads they start, so another thread can't fail a case and make up a counterexample. Counters (see Rails) from threads a test started count towards it, even if they run on after it.
+
+A Ractor can't use the test's assertions, since the test isn't shareable, so return what it computes and assert on that. Quickdraw's constants are shareable, apart from `Quickdraw::Config`. Ruby's coverage only sees the main Ractor, so code that runs only in a Ractor counts as not run, both for `--coverage` and for choosing which tests run a mutant. What a Ractor writes to `$stdout` isn't captured, as it's buffered apart from the test's; `$stderr` is.
 
 ## History, flaky tests and order bugs
 
@@ -222,6 +232,7 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
   ```
 
   A flake has a `key` that stays the same from run to run, for grouping; its `path`, `line` and `name`; its `kind` (`:nondeterministic`, `:order_dependent`, or `:unknown` if its worker crashed); each of its `attempts`, with where it ran, its status, duration, failures and errors; the run's `seed` and a `rerun` command; and the `commit`, `branch` and CI build's `ci_url` (on GitHub Actions, Buildkite, GitLab or CircleCI). `--flakes FILE` writes the same as JSON, for a pipeline that isn't in Ruby.
+- **Quarantine:** with `--quarantine`, a test that was flaky in the last 50 runs still runs, and its failures are still shown and recorded, but it doesn't fail the run, so a known flaky test doesn't block a merge while someone fixes it. It's quarantined until 50 runs have gone by without it being flaky. In JUnit reports it's skipped, and on GitHub Actions it's a warning. In CI, quarantine needs the history from earlier runs, so cache `.quickdraw/` (see On pull requests).
 - `qt history` lists recent runs, the slowest tests, and flaky tests: those that both passed and failed on the same code.
 - `qt flaky --runs 20` runs the tests 20 times in different orders and lists the ones that sometimes fail.
 - `qt bisect test/user.test.rb:12` takes the last run where that test failed and replays the tests that ran before it in the same worker, in halves, to find which one it depends on.
@@ -257,7 +268,7 @@ Mutation score 90% · 18 killed · 2 survived
 20 mutants in 0.12s (167/s)
 ```
 
-- **Changes:** only in methods.
+- **Changes:** only in methods, including those in `Data.define`, `Struct.new` (assigned to a constant) and `class_methods` blocks.
   - Conditions: negating one, or making it `true` or `false` (in `if`, `unless`, ternaries, loops and `in … if` guards); `a && b` to `a || b`, `a` or `b`; removing a `!`.
   - Operators: comparisons (`>` to `>=`, `==` to `!=`), arithmetic (`+` to `-`, `*` to `/`, `+=` to `-=`), `..` to `...`, and `||=` to `=`.
   - Literals: `true` to `false`, a number to one more or to 0, emptying a string, array or hash or dropping one of its elements or pairs, and a regexp to one that never matches.
@@ -266,7 +277,8 @@ Mutation score 90% · 18 killed · 2 survived
   - Not changes that can't make a difference, such as `x + 0` to `x - 0`, `map` to `each` where the value isn't used, or dropping `to_s` in interpolation, and not changes that could only raise, such as removing an argument the method requires, or a block `tap` needs.
 - **Which tests:** the test files that run a file, from the last `qt --coverage` run, or else its counterpart by name. Those run once unchanged, tracing which lines of the changed methods each test runs, so each change runs only the tests that reach it, fastest first, and stops at the first failure. Tests that fail without changes don't count, and changes no test reaches aren't run, but are listed by line.
 - **Safely:** your files never change. Config boots once, and each change is made by redefining its method in a process forked for it, which exits when its tests finish. A change that makes tests run three times as long as they did (plus half a second) is taken to loop forever, and counts as noticed.
-- **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs.
+- **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs. On GitHub Actions, each surviving change, and each test that fails `--unique-kills`, is also an error annotation on its line, so it shows in the pull request's diff.
+- **Only what changed runs again:** a mutant's outcome is kept in `.quickdraw/mutants.json`, and reused while nothing it depends on has changed: its file, the test files that run it, the files those tests ran in the last `qt --coverage` run, `Gemfile.lock` and `config/quickdraw.rb`. So after you add a test for a survivor, only the mutants that test file runs are tried again. `--no-cache` runs every mutant.
 - **Survivors** have ids that stay the same while their method's code does, since they don't include line numbers. For agents, each survivor is one line with its id, and `qt mutate --show ID` shows its change and the tests that ran it (`--show all` lists them all again).
 - **Which tests do the work:** `--matrix` runs every test that reaches each change, rather than stopping at the first failure, and lists **blind** tests, which ran changed code and noticed none of the changes, so they run code without checking it, and **redundant** tests, which only noticed changes another test noticed too. Since each change only runs the tests that reached its line, a blind test really did run the changed code. Redundancy is judged one test at a time, so remove redundant tests one at a time. It takes longer, since every test runs, but doesn't change the score.
 - **Equivalent changes:** some changes can't make a difference, such as `>` to `>=` where the two are never equal. Mark one with a comment on its line, naming the change as the output does and saying why, and it's left out of the score and listed as marked equivalent. A mark without a name covers every change on its line. Quickdraw warns about a mark with no reason, or one that matches no change.
@@ -300,7 +312,9 @@ jobs:
           bundler-cache: true
       - uses: actions/cache@v4
         with:
-          path: .quickdraw/history.sqlite3
+          path: |
+            .quickdraw/history.sqlite3
+            .quickdraw/mutants.json
           key: quickdraw-${{ github.sha }}
           restore-keys: quickdraw-
       - if: github.event_name == 'push'
@@ -354,6 +368,12 @@ Quickdraw.configure do |config|
 
   # Or with a bundle of their own, such as another version of Rails.
   config.group :rails7, "test/rails7/**/*.test.rb", gemfile: "gemfiles/rails7.gemfile"
+
+  # A group whose workers run something else beside them, such as a server,
+  # can count each as more than one core, so fewer run at once. One whose
+  # tests are slow can say how long a file takes before history says, so it
+  # gets workers early, rather than finishing last.
+  config.group :search, "test/search/**/*.test.rb", cores: 2, file_seconds: 3
 
   # Around every test, including its setup and teardown.
   config.around_test { |test, run| Timecop.freeze { run.call } }
@@ -428,6 +448,8 @@ Quickdraw.configure do |config|
   config.browser("test/system/**/*.test.rb") { Rails.application }
 end
 ```
+
+Browser tests run in a group of their own (see Configuration). Each worker's browser needs a core of its own, so a browser test's worker counts as two of the run's cores (`config.browser(…, cores: 1)` to count it as one), and since browser tests are usually the slowest, they get workers first, before history says how long they take, rather than holding up the end of the run.
 
 `qt browser install` installs Playwright and config's browser (or the ones you name: `qt browser install firefox webkit`), and `qt doctor` checks they're there. Tests never download anything.
 

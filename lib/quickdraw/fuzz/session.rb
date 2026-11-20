@@ -19,7 +19,7 @@ class Quickdraw::Fuzz::Session
 	LIVENESS_INTERVAL = 0.1
 
 	# What a test that finished after fuzzing, but not as usual, reports.
-	NOTHING = { "failures" => [], "errors" => [] }.freeze
+	NOTHING = Quickdraw.deep_freeze({ "failures" => [], "errors" => [] })
 
 	# `timeout` is how long a case may run before it counts as hanging, and
 	# `seed` seeds the fuzzer. `test_seed` seeds `rand` in the test, as test

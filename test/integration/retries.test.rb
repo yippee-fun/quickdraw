@@ -181,6 +181,41 @@ class RetriesTest < Quickdraw::Test
 		assert_includes flakes.first[:attempts].first[:errors].first[:message], "bad � byte"
 	end
 
+	test "--quarantine lets a test that was flaky in recent runs fail without failing the run, and shows it", timeout: 30 do
+		project = project(
+			"sometimes.test.rb" => <<~RUBY,
+				class Sometimes < Quickdraw::Test
+					test("fails every other run") do
+						File.write("runs", "run\\n", mode: "a")
+						assert File.readlines("runs").size.odd?
+					end
+
+					test("fails while FAIL is set") { refute ENV["FAIL"] }
+				end
+			RUBY
+		)
+
+		run = -> (*arguments, **options) { project.run("-p", "1", "--retry", "0", *arguments, **options) }
+		# It passes in odd runs and fails in even ones, so it's flaky by the second.
+		3.times { run.() }
+
+		result = run.("--quarantine", "--format", "human", env: { "FAIL" => "1" })
+		refute result.success?
+		match { result => { summary: /\A2 tests · 2 assertions · 1 failed · 1 quarantined · / } }
+		assert_includes result.output, "QUARANTINED fails every other run  Sometimes · sometimes.test.rb:2"
+		assert_includes result.output, "Quarantined (--quarantine), as it was flaky in recent runs, so it doesn’t fail the run."
+
+		run.()
+		quarantined = run.("--quarantine", "--format", "agent")
+		assert quarantined.success?
+		assert_match quarantined.stdout, /^QUARANTINED sometimes\.test\.rb:2 Sometimes › fails every other run: /
+		assert_match quarantined.stdout, /^PASSED: 2 tests, 1 passed, 1 quarantined /
+
+		run.()
+		refute run.().success?
+		match { project.run("--no-history", "--quarantine") => { exit_status: 2, stderr: /--quarantine needs run history/ } }
+	end
+
 	test "--flakes can't be used with --watch", timeout: 20 do
 		match { project(FIRST_RUN_FAILS).run("--watch", "--flakes", "flakes.json") => { exit_status: 2, stderr: /--flakes is for a single run/ } }
 	end

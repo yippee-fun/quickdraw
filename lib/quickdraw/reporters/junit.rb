@@ -27,6 +27,7 @@ class Quickdraw::Reporters::JUnit
 	def finished_file(_path) = nil
 	def shows_loading_output? = false
 	def booting = nil
+	def nothing_to_run(_path) = nil
 	def pause = nil
 	def resume = nil
 
@@ -59,6 +60,8 @@ class Quickdraw::Reporters::JUnit
 
 	# A flaky test counts as its failure or error, unless flaky tests are allowed.
 	private def junit_status(result)
+		return "skipped" if result["quarantined"]
+
 		case Quickdraw::Outcome.status(result)
 		in "flaky" if @allow_flaky then "passed"
 		in "flaky" then result["errors"].any? ? "errored" : "failed"
@@ -76,7 +79,11 @@ class Quickdraw::Reporters::JUnit
 		# A passing test's flakyFailure and flakyError are Surefire's, which CI systems show.
 		error_element, failure_element = (flaky_text && @allow_flaky) ? ["flakyError", "flakyFailure"] : ["error", "failure"]
 
-		problem = if (error = result["errors"].first)
+		problem = if result["quarantined"]
+			# Skipped, as CI systems would fail the build on a failure.
+			reason = one_line((result["errors"].first || result["failures"].first)["message"])
+			%(      <skipped message="#{attribute("Quarantined, as it was flaky in recent runs: #{reason}")}"/>\n)
+		elsif (error = result["errors"].first)
 			body = [
 				plain(error["message"]),
 				*user_backtrace(error["backtrace"]).map { |frame| relative(frame) },

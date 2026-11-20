@@ -25,6 +25,7 @@ class Quickdraw::Outcome
 		@tests = 0
 		@assertions = 0
 		@flaky = 0
+		@quarantined = 0
 		@failed = 0
 		@errored = 0
 		@skipped = 0
@@ -39,7 +40,7 @@ class Quickdraw::Outcome
 		@interrupted = false
 	end
 
-	attr_reader :tests, :assertions, :flaky, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions, :allow_flaky
+	attr_reader :tests, :assertions, :flaky, :quarantined, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions, :allow_flaky
 	# `not_run` counts tests in loaded files. Files never loaded (e.g. after
 	# --fail-fast stopped the run) are counted in `unloaded_files`, since their
 	# tests are unknown.
@@ -70,6 +71,7 @@ class Quickdraw::Outcome
 	def record(result)
 		@tests += 1
 		@assertions += result["assertions"]
+		return @quarantined += 1 if result["quarantined"]
 
 		case self.class.status(result)
 		in "flaky" then @flaky += 1
@@ -86,7 +88,7 @@ class Quickdraw::Outcome
 	end
 
 	def passed
-		@tests - @flaky - @failed - @errored - @skipped - @pending
+		@tests - @quarantined - @flaky - @failed - @errored - @skipped - @pending
 	end
 
 	def passed?

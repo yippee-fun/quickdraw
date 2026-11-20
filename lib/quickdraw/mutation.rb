@@ -11,4 +11,5 @@ module Quickdraw::Mutation
 	autoload :Mutator, "quickdraw/mutation/mutator"
 	autoload :Runner, "quickdraw/mutation/runner"
 	autoload :KillMatrix, "quickdraw/mutation/kill_matrix"
+	autoload :Cache, "quickdraw/mutation/cache"
 end

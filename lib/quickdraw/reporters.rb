@@ -57,8 +57,8 @@ module Quickdraw::Reporters
 		ANSI = /\e\[[\d;]*m/
 
 		# With trailing slashes, so they can't match paths like "exercises".
-		LIBRARY = "#{Quickdraw::LIB}/"
-		EXECUTABLES = "#{File.expand_path('../exe', Quickdraw::LIB)}/"
+		LIBRARY = "#{Quickdraw::LIB}/".freeze
+		EXECUTABLES = "#{File.expand_path('../exe', Quickdraw::LIB)}/".freeze
 
 		private def name_of(test)
 			Quickdraw::Filter.name_of(test)
@@ -145,6 +145,8 @@ module Quickdraw::Reporters
 				"Passed when retried in a fresh worker#{retry_number}, so it’s flaky or depends on tests that ran before it."
 			end
 		end
+
+		QUARANTINED = "Quarantined (--quarantine), as it was flaky in recent runs, so it doesn’t fail the run."
 
 		# Whether bisecting could find what a flaky test depends on.
 		private def bisect?(result)

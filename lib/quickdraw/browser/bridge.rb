@@ -5,7 +5,7 @@ require "json"
 # The worker's Node process, running bridge.mjs, which runs Playwright. Each
 # request is a line of JSON on its input, answered by a line on its output.
 class Quickdraw::Browser::Bridge
-	SCRIPT = File.join(__dir__, "bridge.mjs")
+	SCRIPT = File.join(__dir__, "bridge.mjs").freeze
 
 	# Starts Node, which launches the browser and opens the first pages while
 	# the worker loads test files. `settings` are bridge.mjs's.

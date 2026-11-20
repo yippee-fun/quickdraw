@@ -153,7 +153,7 @@ class Quickdraw::Loader
 		end
 
 		if @report || @link
-			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile] }
+			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile, group.cores, group.file_seconds] }
 			@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage)]
 		end
 

@@ -73,10 +73,7 @@ class CoverageTest < Quickdraw::Test
 
 	test "lists changed lines that no test ran, including in methods nothing calls", timeout: 20 do
 		project = calculator
-		git = -> (*arguments) { system("git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false", *arguments, exception: true) }
-		git.("init", "--quiet")
-		git.("add", "--all")
-		git.("commit", "--quiet", "--no-verify", "-m", "Calculator")
+		project.commit("Calculator")
 		project.write("lib/calculator.rb" => CALCULATOR.sub("def unused = :never", "def unused = :never\n\tdef subtract(a, b) = a - b"))
 
 		result = project.run("-p", "1", "--no-history", "--coverage")
@@ -94,10 +91,7 @@ class CoverageTest < Quickdraw::Test
 			"lib/quote\"d.rb" => "module Quoted\n\tdef self.run = :ran\nend\n",
 			"test/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
 		)
-		git = -> (*arguments) { system("git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false", *arguments, exception: true) }
-		git.("init", "--quiet")
-		git.("add", "--all")
-		git.("commit", "--quiet", "--no-verify", "-m", "Files")
+		project.commit("Files")
 		project.write("lib/with space.rb" => "module Spaced\n\tdef self.run = :ran\n\tdef self.walk = :walked\nend\n", "lib/quote\"d.rb" => "module Quoted\n\tdef self.run = :ran\n\tdef self.walk = :walked\nend\n")
 
 		result = project.run("-p", "1", "--no-history", "--coverage")
@@ -121,7 +115,7 @@ class CoverageTest < Quickdraw::Test
 			"app/lib/new.rb" => "module New\n\tdef self.used = :used\n\tdef self.unused = :unused\nend\n",
 			"app/test/new.test.rb" => "require_relative '../lib/new'\nclass NewTest < Quickdraw::Test; test('used') { assert_equal New.used, :used }; end\n",
 		)
-		system("git", "-C", project.directory, "init", "--quiet", exception: true)
+		project.git("init", "--quiet")
 
 		app = Project.new(File.join(project.directory, "app"))
 		result = app.run("-p", "1", "--no-history", "--coverage")
@@ -148,7 +142,7 @@ class CoverageTest < Quickdraw::Test
 		project = calculator
 		result = project.run("-p", "1", "--no-history", "--coverage", "--format", "json")
 
-		finish = JSON.parse(result.stdout.lines.last)
+		finish = result.events.last
 		assert_equal finish["coverage"]["lines"], { "covered" => 5, "total" => 7 }
 
 		report = JSON.parse(File.read(File.join(project.directory, ".quickdraw/coverage/coverage.json")))

@@ -21,7 +21,7 @@ class Quickdraw::Commands::Fuzz
 	# they aren't loaded.
 	MENTION = /\bfuzz\b/
 
-	BADGES = { "failed" => ["FAILED", 41], "errored" => ["ERRORED", 41], "crashed" => ["CRASHED", 45], "hung" => ["HUNG", 43] }.freeze
+	BADGES = Quickdraw.deep_freeze({ "failed" => ["FAILED", 41], "errored" => ["ERRORED", 41], "crashed" => ["CRASHED", 45], "hung" => ["HUNG", 43] })
 
 	# What to fuzz in a test file: the tests at `lines`, and the tests fuzz
 	# defines if `fuzz_tests`.
@@ -95,6 +95,8 @@ class Quickdraw::Commands::Fuzz
 		in Integer => status then return status
 		in Hash => options then options
 		end
+
+		return forget(options[:targets]) if options[:forget]
 
 		unless Process.respond_to?(:fork)
 			warn "fuzz needs fork, which this platform doesn’t support."
@@ -373,6 +375,55 @@ class Quickdraw::Commands::Fuzz
 		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
 	end
 
+	# Deletes the failing cases saved and the corpora kept for the properties of
+	# the test files in `targets`, or of every test without targets, so a
+	# property that has changed starts afresh. Those saved before Quickdraw
+	# noted their test go only with everything.
+	private def forget(targets)
+		return usage("--forget takes test files or directories, not lines.") if targets.any? { |target| SPECIFICATION.match(target)[:line] }
+
+		paths = targets.map { |target| (File.expand_path(target) == Dir.pwd) ? "." : relative(File.expand_path(target)) }
+		missing = paths.find { |path| !File.exist?(path) }
+		return usage("#{missing} doesn’t exist.") if missing
+
+		chosen = lambda do |path|
+			test_path = Quickdraw::Property.labelled(path)
+			targets.empty? || paths.include?(".") || (test_path && paths.any? { |target| test_path == target || test_path.start_with?("#{target.chomp('/')}/") })
+		end
+
+		saved = children(Quickdraw::Property.directory).select { |path| File.file?(path) && chosen.(path) }
+		corpora = children(Quickdraw::Fuzz::Corpus.root).select { |path| File.directory?(path) && chosen.(path) }
+
+		require "fileutils"
+
+		begin
+			# A file another process deleted first is forgotten all the same.
+			[*saved, *corpora].each do |path|
+				[path, "#{path}.key"].each { |file| FileUtils.rm_r(file) if File.exist?(file) }
+			rescue Errno::ENOENT
+				nil
+			end
+		rescue SystemCallError => error
+			warn "Couldn’t forget everything: #{error.message}"
+			return 1
+		end
+
+		if saved.empty? && corpora.empty?
+			@io.puts "Nothing to forget#{" for #{list(paths)}" if targets.any?}."
+		else
+			@io.puts "Forgot the failing cases saved for #{saved.size} #{(saved.size == 1) ? 'property' : 'properties'} and the corpora of #{pluralize(corpora.size, 'fuzz test')}#{" in #{list(paths)}" if targets.any?}."
+		end
+
+		0
+	end
+
+	# The files and directories in `directory` that hold cases, not labels or files being written.
+	private def children(directory)
+		Dir.children(directory).reject { |name| name.include?(".") }.map { |name| File.join(directory, name) }
+	rescue SystemCallError
+		[]
+	end
+
 	# { path => Selection }, or a String if a path doesn't exist.
 	private def select(targets)
 		return test_files(".").to_h { |path| [path, Selection.new(lines: [], fuzz_tests: true)] } if targets.empty?
@@ -404,7 +455,7 @@ class Quickdraw::Commands::Fuzz
 	end
 
 	private def parse
-		options = { targets: [], processes: nil, seconds: DEFAULT_SECONDS, timeout: DEFAULT_TIMEOUT, seed: nil, format: nil }
+		options = { targets: [], processes: nil, seconds: DEFAULT_SECONDS, timeout: DEFAULT_TIMEOUT, seed: nil, format: nil, forget: false }
 
 		until @args.empty?
 			argument = @args.shift
@@ -428,6 +479,8 @@ class Quickdraw::Commands::Fuzz
 			in "--format"
 				options[:format] = @args.shift
 				return usage("--format needs one of #{FORMATS.join(', ')}.") unless FORMATS.include?(options[:format])
+			in "--forget"
+				options[:forget] = true
 			in "-h" | "--help"
 				@io.puts help
 				return 0
@@ -460,6 +513,9 @@ class Quickdraw::Commands::Fuzz
 			    -p, --processes N     Run N workers
 			    -s, --seed N          Seed the fuzzers with N, for the same cases as another run
 			        --format FORMAT   human, agent or json
+			        --forget          Fuzz nothing, and delete the failing cases saved and the corpora kept
+			                          for the tests in the files and directories given (or every test), as
+			                          after changing a property
 		TEXT
 	end
 

@@ -17,7 +17,7 @@ module Quickdraw::Commands
 	autoload :Last, "quickdraw/commands/last"
 
 	# Name, constant, arguments and summary, in the order --help lists them.
-	LIST = [
+	LIST = Quickdraw.deep_freeze([
 		["init", :Init, "", "Create config/quickdraw.rb and an example test"],
 		["doctor", :Doctor, "", "Check that this machine and project are ready to run tests"],
 		["browser", :Browser, " install", "Install the browser, and any driver, that browser tests need"],
@@ -29,7 +29,7 @@ module Quickdraw::Commands
 		["fuzz", :Fuzz, " [PATH[:LINE] …]", "Run properties for longer, guided by the code their cases reach"],
 		["counterpart", :Counterpart, " PATH", "The test file for a source file, or the source file for a test"],
 		["completions", :Completions, " SHELL", "Print completions for bash, zsh or fish"],
-	].freeze
+	])
 
 	def self.find(name)
 		_, constant = LIST.find { |command, *| command == name }

@@ -155,6 +155,7 @@ class Quickdraw::CLI
 		end
 
 		usage_error "--failed needs run history, so it can’t be used with --no-history." if options[:failed] && !options[:history]
+		usage_error "--quarantine needs run history, so it can’t be used with --no-history." if options[:quarantine] && !options[:history]
 
 		unless LEAK_MODES.include?(options[:leaks])
 			suggestion = suggest(options[:leaks], LEAK_MODES)
@@ -280,6 +281,10 @@ class Quickdraw::CLI
 				options[:allow_flaky] = true
 			end
 
+			parser.on("--quarantine", "Let tests that were flaky in the last #{Quickdraw::History::QUARANTINE_WINDOW} runs fail without failing the run") do
+				options[:quarantine] = true
+			end
+
 			parser.on("--flakes FILE", "Write the tests that passed on retry, with each attempt, to FILE as JSON") do |it|
 				options[:flakes_path] = it
 			end
@@ -335,7 +340,7 @@ class Quickdraw::CLI
 			parser.separator ""
 			parser.separator bold("Workers")
 
-			parser.on("-p N", "--processes N", Integer, "Run N workers (default: tuned from run history)") do |it|
+			parser.on("-p N", "--processes N", Integer, "Run N workers, or fewer where a group's use more than one core, as browser tests' do (default: tuned from run history)") do |it|
 				options[:processes] = it
 			end
 
@@ -604,6 +609,7 @@ class Quickdraw::CLI
 			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
+			quarantined: (flaky_keys if options[:quarantine]),
 			flakes_path: options[:flakes_path],
 			repeatable: !options[:changed],
 			warm_loaders: options[:warm_loaders],
@@ -708,6 +714,25 @@ class Quickdraw::CLI
 
 	# Read in a throwaway process, since the loader forks from this one and
 	# sqlite3 must not reach it.
+	# { key => true } for the tests flaky in recent runs, for --quarantine,
+	# or none without history yet. A history that can't be read, such as one a
+	# CI cache restored from an older Quickdraw, quarantines nothing, rather
+	# than stop the run that would rebuild it.
+	private def flaky_keys
+		result = Quickdraw.isolate do
+			Quickdraw::History.exist?(HISTORY_PATH) ? Quickdraw::History.new(HISTORY_PATH, read_only: true).flaky_keys : {}
+		rescue Quickdraw::History::Error => error
+			error.message
+		end
+
+		case result
+		in Hash then result
+		in String => message
+			warn "--quarantine couldn’t read the run history (#{message}), so nothing is quarantined this run."
+			{}
+		end
+	end
+
 	private def failing
 		result = Quickdraw.isolate do
 			history = Quickdraw::History.new(HISTORY_PATH)

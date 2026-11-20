@@ -68,6 +68,10 @@ class Quickdraw::Reporters::Human
 		@frame = 0
 		@width = terminal_width
 		@ticks = Thread::Queue.new
+		hide_cursor
+		# Not in loaders and workers, which inherit it as they fork.
+		pid = Process.pid
+		at_exit { show_cursor if Process.pid == pid }
 
 		@spinner = Thread.new do
 			until @ticks.pop(timeout: SPIN_INTERVAL)
@@ -91,7 +95,7 @@ class Quickdraw::Reporters::Human
 	def result(path, test, result)
 		@timings.record(path, test, result)
 		@profile.record(result)
-		status = Quickdraw::Outcome.status(result)
+		status = result["quarantined"] ? "quarantined" : Quickdraw::Outcome.status(result)
 		tally = @tallies[path]
 		tally.tests += 1
 		tally.duration += result["duration"].to_f
@@ -103,7 +107,7 @@ class Quickdraw::Reporters::Human
 			@file_statuses[path] = "failed"
 			@problems << [path, test, result]
 			@failing += 1
-		in "flaky"
+		in "flaky" | "quarantined"
 			@file_statuses[path] ||= "flaky"
 			@problems << [path, test, result]
 			@flaky += 1
@@ -117,6 +121,14 @@ class Quickdraw::Reporters::Human
 	def finished_file(path)
 		@files_done += 1
 		printing { print_file(path) }
+	end
+
+	# A file with no tests to run, as none matched a filter, gets no line, but counts as done.
+	def nothing_to_run(_path)
+		@lock.synchronize do
+			@files_done += 1
+			draw_status
+		end
 	end
 
 	def load_failed(path, error)
@@ -140,6 +152,7 @@ class Quickdraw::Reporters::Human
 	def pause
 		@lock.synchronize do
 			clear_status
+			show_cursor
 			@paused = true
 		end
 	end
@@ -149,6 +162,7 @@ class Quickdraw::Reporters::Human
 			@paused = false
 			held, @held = @held, []
 			held.each(&:call)
+			hide_cursor if @spinner
 			draw_status
 			@io.flush
 		end
@@ -210,6 +224,7 @@ class Quickdraw::Reporters::Human
 			"#{delimit(outcome.assertions)} #{(outcome.assertions == 1) ? 'assertion' : 'assertions'}",
 			(red("#{outcome.failed} failed") if outcome.failed > 0),
 			(yellow("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}") if outcome.flaky > 0),
+			(yellow("#{outcome.quarantined} quarantined") if outcome.quarantined > 0),
 			(dim("#{outcome.skipped} skipped") if outcome.skipped > 0),
 			(dim("#{outcome.pending} pending") if outcome.pending > 0),
 			(red("#{outcome.errored} errored") if outcome.errored > 0),
@@ -224,7 +239,7 @@ class Quickdraw::Reporters::Human
 	private def recap(path, test, result)
 		return "#{red('✗')} #{path} could not be loaded" unless test
 
-		"#{marker(result)} #{path}:#{test['line']} #{name_of(test)}#{dim(' (flaky)') if result['passed_on_retry']}"
+		"#{marker(result)} #{path}:#{test['line']} #{name_of(test)}#{dim(' (quarantined)') if result['quarantined']}#{dim(' (flaky)') if result['passed_on_retry'] && !result['quarantined']}"
 	end
 
 	# [label, text] pairs, under each other, their labels lined up.
@@ -300,6 +315,7 @@ class Quickdraw::Reporters::Human
 			(red("#{statuses['failed']} failed") if statuses["failed"] > 0),
 			(red("#{statuses['errored']} errored") if statuses["errored"] > 0),
 			(yellow("#{statuses['flaky']} flaky") if statuses["flaky"] > 0),
+			(yellow("#{statuses['quarantined']} quarantined") if statuses["quarantined"] > 0),
 			(dim("#{statuses['skipped']} skipped") if statuses["skipped"] > 0),
 			(dim("#{statuses['pending']} pending") if statuses["pending"] > 0),
 		].compact
@@ -355,8 +371,27 @@ class Quickdraw::Reporters::Human
 		@ticks.push(:stop)
 		@spinner.join
 		@spinner = nil
-		@lock.synchronize { clear_status }
+
+		@lock.synchronize do
+			clear_status
+			show_cursor
+		end
+
 		@io.flush
+	end
+
+	# The cursor sits at the start of the status line, so it would cover the spinner.
+	private def hide_cursor
+		@io.print "\e[?25l"
+		@cursor_hidden = true
+	end
+
+	private def show_cursor
+		return unless @cursor_hidden
+
+		@io.print "\e[?25h"
+		@io.flush
+		@cursor_hidden = false
 	end
 
 	# From stty rather than io/console, which group loaders, forked from this
@@ -609,6 +644,11 @@ class Quickdraw::Reporters::Human
 			@io.puts "  #{dim("⌕ #{bisect_command(path, test)}")}" if bisect?(result)
 		end
 
+		if result["quarantined"]
+			@io.puts
+			@io.puts "  #{yellow(QUARANTINED)}"
+		end
+
 		@io.puts
 		@io.puts "  #{dim("↻ #{rerun_command(path, test)}")}"
 	end
@@ -675,6 +715,8 @@ class Quickdraw::Reporters::Human
 	end
 
 	private def badge(result)
+		return label("QUARANTINED", 43) if result["quarantined"]
+
 		case Quickdraw::Outcome.status(result)
 		in "flaky" then label("FLAKY", 43)
 		in "errored" then label("ERROR", 41)
@@ -688,7 +730,7 @@ class Quickdraw::Reporters::Human
 	end
 
 	private def marker(result)
-		result["passed_on_retry"] ? yellow("~") : red("✗")
+		(result["passed_on_retry"] || result["quarantined"]) ? yellow("~") : red("✗")
 	end
 
 	private def clean(text)

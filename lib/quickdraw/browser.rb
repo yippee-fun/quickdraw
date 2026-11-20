@@ -28,7 +28,7 @@ module Quickdraw::Browser
 	autoload :Bridge, "quickdraw/browser/bridge"
 	autoload :Remote, "quickdraw/browser/remote"
 
-	ARTIFACTS = File.join(Quickdraw::ROOT, ".quickdraw", "browser")
+	ARTIFACTS = File.join(Quickdraw::ROOT, ".quickdraw", "browser").freeze
 
 	# What Playwright raised, such as when an action timed out.
 	class Error < StandardError; end
@@ -41,9 +41,14 @@ module Quickdraw::Browser
 	# Quickdraw's dependencies, since only browser tests need it.
 	class MissingGem < StandardError; end
 
-	def self.configure(config, patterns, gemfile:, app:, **settings)
+	# Each browser test's worker has a browser beside it, which needs a core of
+	# its own, and a browser test usually takes far longer than others.
+	DEFAULT_CORES = 2
+	FILE_SECONDS = 5.0
+
+	def self.configure(config, patterns, gemfile:, app:, cores: DEFAULT_CORES, **settings)
 		@settings = { **settings, gemfile:, app: !app.nil? }
-		config.group(:browser, *patterns, gemfile:) { prepare(app:, **settings) }
+		config.group(:browser, *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS) { prepare(app:, **settings) }
 		config.after_forking { start if @prepared }
 	end
 

@@ -87,7 +87,7 @@ class Quickdraw::BasicTest
 
 	# Indicate that an assertion passed successfully.
 	def success!
-		@runner.success!(@description)
+		runner.success!(@description)
 
 		nil
 	end
@@ -101,7 +101,7 @@ class Quickdraw::BasicTest
 			locations.find { |it| !it.path.start_with?(Quickdraw::LIB) } ||
 			locations.first
 
-		@runner.failure!({
+		runner.failure!({
 			"message" => Quickdraw.plain_string(yield),
 			"path" => location.path,
 			"line" => location.lineno,
@@ -111,9 +111,16 @@ class Quickdraw::BasicTest
 	end
 
 	def error!(error)
-		@runner.error!(Quickdraw.serialize_error(error))
+		runner.error!(Quickdraw.serialize_error(error))
 
 		nil
+	end
+
+	# What records assertions: a property's case while one of this test's runs
+	# (see Test#check), in its fiber and the threads it starts, or the test's.
+	private def runner
+		test, recorder = Fiber[:quickdraw_case]
+		test.equal?(self) ? recorder : @runner
 	end
 
 	def setup = nil

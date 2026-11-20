@@ -164,9 +164,6 @@ class CLITest < Quickdraw::Test
 		match { result => { summary: /\A0 tests · 0 assertions · 1 not run/ } }
 	end
 
-	# What's left on a terminal once each status line is cleared.
-	def screen(output) = output.gsub(/[^\r\n]*\r+\e\[K/, "")
-
 	test "on a terminal, prints a line for each file, lined up, under a status line that's gone at the end", timeout: 20 do
 		result = project(
 			"config/quickdraw.rb" => "sleep 0.3\n",
@@ -176,10 +173,22 @@ class CLITest < Quickdraw::Test
 
 		assert_match result.stdout, /\r\e\[K\S Booting · \d+\.\ds/
 		assert_match result.stdout, %r{\r\e\[K\S [012]/2 files · \d+ tests? · \d+\.\ds}
-		screen = screen(result.stdout)
+		# The cursor is hidden while it would cover the spinner, and shown before the summary.
+		assert_match result.stdout, /\A\e\[\?25l.*\r\e\[K\e\[\?25h[^\e]*PASSED/m
+		screen = result.screen
 		assert_match screen, /^✓ a\.test\.rb         3 tests · /
 		assert_match screen, %r{^✓ models/b\.test\.rb  1 test · }
 		refute_includes screen, "\e["
+	end
+
+	test "counts a file with no tests matching a filter as done in the status line", timeout: 20 do
+		result = project(
+			"a.test.rb" => "class A < Quickdraw::Test; test('wanted') { sleep 0.3; assert true }; end\n",
+			"b.test.rb" => "class B < Quickdraw::Test; test('other') { assert true }; end\n",
+		).run("-p", "1", "-n", "wanted", tty: [20, 80])
+
+		frames = result.stdout.scan(%r{\r\e\[K\S (\d+/\d+ files · [^\r]*)\r}).flatten
+		assert_match frames.last, %r{\A2/2 files · 1 test · }
 	end
 
 	test "doesn't show a status line where it can't be cleared, or with --no-capture", timeout: 20 do
@@ -204,11 +213,11 @@ class CLITest < Quickdraw::Test
 			"b.test.rb" => "puts 'loading b'\nwarn 'warning from b'\nclass B < Quickdraw::Test; test('b') { assert true }; end\n",
 		)
 
-		output = screen(project.run("-p", "1", tty: [20, 80]).stdout)
+		output = project.run("-p", "1", tty: [20, 80]).screen
 
 		assert_equal output.scan("loading b").size, 1
 		assert_equal output.scan("warning from b").size, 1
-		assert_match output, /^loading b\r\nwarning from b\r\n/
+		assert_match output, /^loading b\nwarning from b\n/
 	end
 
 	test "shows each problem in full after every file's line, then lists them at the end", timeout: 20 do

@@ -14,7 +14,7 @@ module Quickdraw::CoverageCollector
 	EXCLUDED = %r{\A(?:test|tests|spec|specs|vendor|node_modules|tmp|\.bundle)/|\.test\.rb\z}
 
 	# Quickdraw's own files, wherever it's installed.
-	QUICKDRAW = ["#{Quickdraw::LIB}/", "#{File.expand_path('../exe', Quickdraw::LIB)}/"].freeze
+	QUICKDRAW = Quickdraw.deep_freeze(["#{Quickdraw::LIB}/", "#{File.expand_path('../exe', Quickdraw::LIB)}/"])
 
 	# The project is the directory it starts in, before config can change it.
 	def start

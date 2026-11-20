@@ -33,16 +33,25 @@ class Quickdraw::Property
 			@errors = []
 		end
 
-		def success!(_description) = nil
+		def success!(description)
+			@after&.success!(description)
+			nil
+		end
 
 		def failure!(failure)
-			@failures << failure
+			@after ? @after.failure!(failure) : @failures << failure
 			nil
 		end
 
 		def error!(error)
-			@errors << error
+			@after ? @after.error!(error) : @errors << error
 			nil
+		end
+
+		# Once its case has ended, it passes what threads the case started
+		# record on to `after`.
+		def close(after)
+			@after = after
 		end
 
 		def failure(error = nil)
@@ -304,7 +313,25 @@ class Quickdraw::Property
 			[]
 		end
 
-		save(path, [*cases, choices]) unless cases.include?(choices)
+		return if cases.include?(choices)
+
+		save(path, [*cases, choices])
+		label(path, key)
+	end
+
+	# Writes the key of the property a file or directory of cases is for, next
+	# to it at `path`.key, so `quickdraw fuzz --forget` can find a test's.
+	def self.label(path, key)
+		File.write("#{path}.key", key) unless File.exist?("#{path}.key")
+	rescue SystemCallError
+		nil
+	end
+
+	# The path of the test file a label at `path`.key names, or nil without one.
+	def self.labelled(path)
+		File.read("#{path}.key").split("\0").first
+	rescue SystemCallError
+		nil
 	end
 
 	private_class_method def self.make_directory(path)
@@ -408,6 +435,7 @@ class Quickdraw::Property
 		shrinker = Shrinker.new(run) { |choices| execute(choices) }
 		minimal = shrinker.call
 		self.class.save(@path, [minimal.choices, *unreplayed])
+		self.class.label(@path, @key)
 
 		Counterexample.new(
 			failure: minimal.failure,
@@ -421,6 +449,7 @@ class Quickdraw::Property
 	# Another run may have deleted it already.
 	private def forget
 		File.delete(@path)
+		File.delete("#{@path}.key")
 	rescue SystemCallError
 		nil
 	end

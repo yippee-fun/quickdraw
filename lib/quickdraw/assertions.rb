@@ -313,4 +313,32 @@ module Quickdraw::Assertions
 			"expected #{actual.inspect} not to be the same object as #{expected.inspect}"
 		end
 	end
+
+	def assert_nil(value)
+		assert(nil == value) { "expected #{value.inspect} to be nil" }
+	end
+
+	def refute_nil(value)
+		refute(nil == value) { "expected not to be nil" }
+	end
+
+	# Passes once the block returns something truthy, trying it again every
+	# `interval` seconds until `within` seconds have passed, for what another
+	# thread or process does, rather than sleeping for long enough.
+	def assert_eventually(within: 1, interval: 0.01)
+		raise ::ArgumentError, "assert_eventually needs a block." unless block_given?
+
+		deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + within
+		tries = 0
+
+		loop do
+			tries += 1
+			return assert(true) if yield
+			break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+			sleep interval
+		end
+
+		assert(false) { "expected the block to return something truthy within #{within}s, but it didn't in #{tries} tries" }
+	end
 end

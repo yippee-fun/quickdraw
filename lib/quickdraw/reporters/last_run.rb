@@ -35,6 +35,7 @@ class Quickdraw::Reporters::LastRun
 	def finished_file(_path) = nil
 	def shows_loading_output? = false
 	def booting = nil
+	def nothing_to_run(_path) = nil
 	def pause = nil
 	def resume = nil
 

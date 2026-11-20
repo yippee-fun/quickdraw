@@ -22,7 +22,8 @@ class PropertiesTest < Quickdraw::Test
 		assert_includes result.output, "✗ sorting.test.rb:2 Sorting › sorts"
 		counterexample = result.output[/Counterexample \(found after \d+ cases?, shrunk \d+ times?\):\n\n    (\[0, -1\]|\[1, 0\])\n\n    Shrunk from:/, 1]
 		assert counterexample
-		assert_equal Dir.children(saved).size, 1
+		# The case, and a label naming its test, for `quickdraw fuzz --forget`.
+		assert_equal Dir.children(saved).size, 2
 
 		result = project.run("-p", "1", "--no-history")
 		refute result.success?

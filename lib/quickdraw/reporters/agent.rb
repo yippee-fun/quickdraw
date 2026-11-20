@@ -50,6 +50,7 @@ class Quickdraw::Reporters::Agent
 	def finished_file(_path) = nil
 	def shows_loading_output? = false
 	def booting = nil
+	def nothing_to_run(_path) = nil
 	def pause = nil
 	def resume = nil
 
@@ -74,6 +75,7 @@ class Quickdraw::Reporters::Agent
 			"#{outcome.passed} passed",
 			("#{outcome.failed} failed" if outcome.failed > 0),
 			("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}" if outcome.flaky > 0),
+			("#{outcome.quarantined} quarantined (flaky recently, so allowed)" if outcome.quarantined > 0),
 			("#{outcome.skipped} skipped" if outcome.skipped > 0),
 			("#{outcome.pending} pending" if outcome.pending > 0),
 			("#{outcome.errored + outcome.load_errors} errored" if outcome.errored + outcome.load_errors > 0),
@@ -149,6 +151,7 @@ class Quickdraw::Reporters::Agent
 
 	private def kind(test, result)
 		return "ERROR" unless test
+		return "QUARANTINED" if result["quarantined"]
 
 		case Quickdraw::Outcome.status(result)
 		in "flaky" then "FLAKY"
@@ -251,6 +254,8 @@ class Quickdraw::Reporters::Agent
 		if result["passed_on_retry"]
 			@io.puts "  #{flaky_explanation(result)}#{" Find which with: #{bisect_command(path, test)}" if bisect?(result)}"
 		end
+
+		@io.puts "  #{QUARANTINED}" if result["quarantined"]
 
 		@io.puts "  Rerun: #{rerun_command(path, test)}"
 		@io.puts

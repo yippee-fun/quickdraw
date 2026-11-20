@@ -13,6 +13,35 @@ module Integration
 	# members, rather than methods, so pattern matching can use them.
 	Result = Data.define(:stdout, :stderr, :output, :summary, :status, :exit_status, :duration) do
 		def success? = status.success?
+
+		# The events of `--format json`, a line each, with string keys.
+		def events
+			require "json"
+			stdout.each_line.filter_map { |line| JSON.parse(line) if line.start_with?("{") }
+		end
+
+		# What a terminal would show once the run ends: each line as carriage
+		# returns and erasing to the end of the line (as a status line is
+		# redrawn) left it, without hiding and showing the cursor.
+		def screen
+			stdout.gsub(/\e\[\?25[lh]/, "").split(/\r?\n/, -1).map do |line|
+				cells = +""
+				column = 0
+
+				line.scan(/\r|\e\[K|[^\r\e]+|\e/) do |token|
+					case token
+					in "\r" then column = 0
+					in "\e[K" then cells = cells[0, column]
+					else
+						cells << (" " * (column - cells.size)) if column > cells.size
+						cells[column, token.size] = token
+						column += token.size
+					end
+				end
+
+				cells
+			end.join("\n")
+		end
 	end
 
 	# A run's verdict, then its counts, from the human summary.
@@ -54,6 +83,31 @@ module Integration
 		end
 
 		attr_reader :directory
+
+		# Runs git in the project as a fixed author, quietly, raising if it fails.
+		def git(*)
+			system(
+				"git", "-C", @directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false", *,
+				exception: true, out: File::NULL, err: File::NULL,
+			)
+		end
+
+		# Commits everything, starting a repository on main if there isn't one.
+		def commit(message = "Commit")
+			git("init", "--quiet", "--initial-branch=main") unless Dir.exist?(File.join(@directory, ".git"))
+			git("add", "--all")
+			git("commit", "--quiet", "--no-verify", "--allow-empty", "-m", message)
+		end
+
+		# Commits what's there on main, then `changes` on a branch, feature, from
+		# it, as a pull request would be. Returns the project.
+		def branch(changes)
+			commit
+			git("switch", "--quiet", "-c", "feature")
+			write(changes)
+			commit
+			self
+		end
 
 		# `files` maps paths, relative to the project, to their contents.
 		def write(files)

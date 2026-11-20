@@ -39,7 +39,7 @@ class Quickdraw::Fuzz::Fuzzer
 	# Fuzzes `property`. Nil, since what it finds is reported as it's found.
 	def call(property)
 		@property = property
-		@corpus = Quickdraw::Fuzz::Corpus.new(Quickdraw::Fuzz::Corpus.directory(property.key))
+		@corpus = Quickdraw::Fuzz::Corpus.for(property.key)
 		traced = @edges.trace
 		@channel.write([:fuzzing, property.key, traced])
 		@next_progress = @next_sync = now + INTERVAL

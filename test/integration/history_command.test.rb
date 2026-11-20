@@ -98,10 +98,10 @@ class HistoryCommandTest < Quickdraw::Test
 			RUBY
 		)
 
-		git(project, "init", "--quiet")
-		git(project, "commit", "--quiet", "--allow-empty", "--no-verify", "-m", "Break")
+		project.git("init", "--quiet")
+		project.git("commit", "--quiet", "--allow-empty", "--no-verify", "-m", "Break")
 		project.run("-p", "1", env: { "QUICKDRAW_FIXTURE_FAIL" => "1" })
-		git(project, "commit", "--quiet", "--allow-empty", "--no-verify", "-m", "Fix")
+		project.git("commit", "--quiet", "--allow-empty", "--no-verify", "-m", "Fix")
 		project.run("-p", "1")
 		result = project.run("history")
 
@@ -118,9 +118,7 @@ class HistoryCommandTest < Quickdraw::Test
 		RUBY
 		project = project("a.test.rb" => test_file)
 
-		git(project, "init", "--quiet")
-		git(project, "add", "a.test.rb")
-		git(project, "commit", "--quiet", "--no-verify", "-m", "Add a test")
+		project.commit("Add a test")
 		project.run("-p", "1", env: { "QUICKDRAW_FIXTURE_FAIL" => "1" })
 		project.write("a.test.rb" => "#{test_file}# Fixed\n")
 		project.run("-p", "1")
@@ -131,9 +129,5 @@ class HistoryCommandTest < Quickdraw::Test
 		# The same uncommitted code, passing and failing, is flaky.
 		project.run("-p", "1", env: { "QUICKDRAW_FIXTURE_FAIL" => "1" })
 		assert_includes project.run("history").stdout, "failed 1 of 3  fixed  A · a.test.rb:2"
-	end
-
-	private def git(project, *)
-		system("git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false", *, exception: true)
 	end
 end

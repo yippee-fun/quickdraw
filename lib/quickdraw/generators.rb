@@ -9,7 +9,7 @@ module Quickdraw::Generators
 	extend self
 
 	# Printable ASCII, simplest first: what strings shrink towards.
-	PRINTABLE = [*"a".."z", *"A".."Z", *"0".."9", " "].then { |simplest| [*simplest, *((32..126).map(&:chr) - simplest)] }.freeze
+	PRINTABLE = Quickdraw.deep_freeze([*"a".."z", *"A".."Z", *"0".."9", " "].then { |simplest| [*simplest, *((32..126).map(&:chr) - simplest)] })
 
 	# Every codepoint but surrogates, after the printable ones above.
 	UNICODE_SIZE = 0x110000 - 0x800
