@@ -24,7 +24,9 @@ class JobHelpersTest < Quickdraw::Test
 			assert_enqueued_with(job: QuickdrawGreetingJob, args: ["Bob"])
 		end
 
-		assert_match runner.failures.first["message"], /\ANo enqueued job found with \{job: QuickdrawGreetingJob, args: \["Bob"\]\}/
+		# Hashes inspect differently before Ruby 3.4.
+		expected = { job: QuickdrawGreetingJob, args: ["Bob"] }.inspect
+		assert_match runner.failures.first["message"], /\ANo enqueued job found with #{Regexp.escape(expected)}/
 	end
 
 	test "performs enqueued jobs" do

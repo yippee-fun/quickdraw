@@ -33,7 +33,12 @@ class CLITest < Quickdraw::Test
 		match { project.run("--watch", "--format", "junit") => { stderr: /--watch would write a JUnit document to the terminal on every run\./ } }
 	end
 
+	# Seen in TruffleRuby 40.0.0 as a NullPointerException in Backtrace.getStackTrace.
+	SAMPLING_CRASHES_TRUFFLERUBY = "Sampling a thread’s backtrace from another thread can crash TruffleRuby with an internal error"
+
 	test "--profile finds a cost that tests share", timeout: 30 do
+		skip SAMPLING_CRASHES_TRUFFLERUBY if RUBY_ENGINE == "truffleruby"
+
 		result = project("shared.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--profile")
 			def build_world = sleep(0.1)
 
@@ -54,26 +59,30 @@ class CLITest < Quickdraw::Test
 
 	test "--profile weighs time spent computing and waiting fairly", timeout: 30 do
 		skip "On JRuby, in a busy suite, the sampler can miss a computing thread entirely" if RUBY_ENGINE == "jruby"
+		skip SAMPLING_CRASHES_TRUFFLERUBY if RUBY_ENGINE == "truffleruby"
 
 		result = project("mixed.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--profile")
 			def compute
-				finish = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.3
+				finish = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
 				nil while Process.clock_gettime(Process::CLOCK_MONOTONIC) < finish
 			end
 
-			def wait = sleep(0.3)
+			def wait = sleep(0.5)
 
 			class Mixed < Quickdraw::Test
 				test("both") { compute; wait; assert true }
 			end
 		RUBY
 
+		assert(result.success?) { result.output }
 		shares = result.stdout.scan(/^ +(\d+)% .* (compute|wait)  mixed\.test\.rb:\d+$/).to_h { |share, name| [name, Integer(share)] }
 		assert_in_delta shares["compute"], 50, 20
 		assert_in_delta shares["wait"], 50, 20
 	end
 
 	test "--profile tells apart methods with the same name in different classes", timeout: 30 do
+		skip SAMPLING_CRASHES_TRUFFLERUBY if RUBY_ENGINE == "truffleruby"
+
 		result = project("setups.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--profile")
 			class Slow < Quickdraw::Test
 				def setup = sleep(0.2)
@@ -86,6 +95,7 @@ class CLITest < Quickdraw::Test
 			end
 		RUBY
 
+		assert(result.success?) { result.output }
 		assert_match result.stdout, /  setup  setups\.test\.rb:2$/
 		assert_match result.stdout, /  setup  setups\.test\.rb:7$/
 	end

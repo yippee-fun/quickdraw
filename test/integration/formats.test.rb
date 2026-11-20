@@ -68,7 +68,8 @@ class FormatsTest < Quickdraw::Test
 		RUBY
 		result = project.run("-p", "1", "--format", "agent")
 
-		assert_match result.output, /^15 × ERROR NoMethodError: undefined method 'name' for nil, such as many\.test\.rb:\d+ Many › fails \d+$/
+		# Ruby 3.3 quotes the method with a backtick.
+		assert_match result.output, /^15 × ERROR NoMethodError: undefined method [`']name' for nil, such as many\.test\.rb:\d+ Many › fails \d+$/
 		assert_equal result.output.scan(/^ERROR many\.test\.rb:\d+ Many › differs \d+: RuntimeError: cause \d+$/).size, 19
 		assert_includes result.output, "and 6 more causes, across 6 problems"
 		assert_equal project.run("last", "--list").stdout.lines.count { |line| line.match?(/^(?:FAILED|ERROR) /) }, 40

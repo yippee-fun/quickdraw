@@ -90,8 +90,8 @@ class Quickdraw::Property
 	# fewer, or else smaller at the first that differs. It works on choices
 	# rather than values, so a value shrinks however it was built: it deletes and
 	# zeroes spans, lowers each choice by binary search, lowers a length while
-	# deleting what it would have generated, and deletes runs of adjacent spans
-	# together. The block runs choices,
+	# deleting what it would have generated, deletes runs of adjacent spans
+	# together, and swaps adjacent spans into order. The block runs choices,
 	# returning their Run, or nil if they were discarded.
 	class Shrinker
 		ATTEMPTS = 2_000
@@ -123,6 +123,7 @@ class Quickdraw::Property
 				minimize_choices
 				lower_and_delete if @best.choices == before
 				delete_runs if @best.choices == before
+				sort_spans if @best.choices == before
 				break if @best.choices == before || exhausted?
 			end
 
@@ -202,6 +203,17 @@ class Quickdraw::Property
 			end
 		end
 
+		# Swaps adjacent spans whose choices are out of order, so values that must
+		# go together but aren't adjacent, such as the 1s in [1, 3, 1], come
+		# together for delete_runs. Stops at the first that's simpler.
+		private def sort_spans
+			starts = @best.spans.group_by(&:begin)
+
+			@best.spans.uniq.sort_by(&:begin).any? do |first|
+				starts[first.end]&.any? { |second| exhausted? || improve?(swap(first, second)) }
+			end
+		end
+
 		# Where runs of two or more adjacent spans from `first` end.
 		private def run_ends(first, starts)
 			ends = []
@@ -217,6 +229,11 @@ class Quickdraw::Property
 
 		private def delete(choices, span)
 			choices.take(span.begin) + choices.drop(span.end)
+		end
+
+		private def swap(first, second)
+			choices = @best.choices
+			choices.take(first.begin) + choices[second] + choices[first] + choices.drop(second.end)
 		end
 
 		private def spans

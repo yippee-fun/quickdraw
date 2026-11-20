@@ -6,7 +6,8 @@
 # frames are left out, since they're in every sample.
 #
 # A thread waiting for the GVL gets it only every timeslice, 100ms by default,
-# so --profile runs Ruby with RUBY_THREAD_TIMESLICE=1 where supported. Even so,
+# so --profile runs Ruby with RUBY_THREAD_TIMESLICE=1. Before Ruby 3.4, which
+# ignores that, the thread's lowest priority shortens its timeslice. Even so,
 # samples come far more often while a test waits than while it computes, which
 # is why they're weighted by time. Core Ruby only, since it runs in workers.
 class Quickdraw::Sampler
@@ -15,6 +16,10 @@ class Quickdraw::Sampler
 	WORKER = File.join(Quickdraw::LIB, "quickdraw/worker.rb").freeze
 	# With modifiers such as `private` before it.
 	DEFINITION = /^\s*(?:[a-z_]+\s+)*def\s+(?:self\.)?([^\s(=;]+=?)/
+	# CRuby clamps priorities to -3..3, and divides a thread's timeslice by 2
+	# for each step below zero.
+	LOWEST_PRIORITY = -3
+	SHORTEN_TIMESLICE = RUBY_ENGINE == "ruby" && RUBY_VERSION < "3.4"
 
 	def initialize(thread = Thread.current)
 		@thread = thread
@@ -27,6 +32,9 @@ class Quickdraw::Sampler
 	# Returns the block's value and the samples taken while it ran: [count,
 	# seconds sampled, { "label\0path\0line" => [inclusive seconds, self seconds] }].
 	def record
+		priority = @thread.priority
+		@thread.priority = LOWEST_PRIORITY if SHORTEN_TIMESLICE
+
 		@lock.synchronize do
 			@samples = {}
 			@count = 0
@@ -39,6 +47,8 @@ class Quickdraw::Sampler
 	rescue Exception
 		finish
 		raise
+	ensure
+		@thread.priority = priority if SHORTEN_TIMESLICE
 	end
 
 	private def finish
@@ -54,7 +64,8 @@ class Quickdraw::Sampler
 		locations = @thread.backtrace_locations or return
 
 		@lock.synchronize do
-			return unless @samples
+			# A sample begun before this test, whose stack may be from between tests.
+			return unless @samples && sampled_at >= @sampled_at
 
 			weight = sampled_at - @sampled_at
 			@sampled_at = sampled_at

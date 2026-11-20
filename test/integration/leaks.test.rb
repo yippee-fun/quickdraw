@@ -114,6 +114,8 @@ class LeaksTest < Quickdraw::Test
 							def unblock(*) = nil
 							def kernel_sleep(*) = nil
 							def io_wait(*) = nil
+							# Required from Ruby 4.1.
+							def fiber_interrupt(*) = nil
 							def close = nil
 						end
 

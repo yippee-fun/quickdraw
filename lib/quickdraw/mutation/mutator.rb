@@ -628,6 +628,7 @@ class Quickdraw::Mutation::Mutator
 	private def replace(location, replacement, within:, to:)
 		before = @source.byteslice(within, location.start_offset - within)
 		after = @source.byteslice(location.end_offset, to - location.end_offset)
-		"#{before}#{replacement}#{after}"
+		# Interpolating ASCII-only strings gives UTF-8 on some Rubies.
+		"#{before}#{replacement}#{after}".force_encoding(@source.encoding)
 	end
 end

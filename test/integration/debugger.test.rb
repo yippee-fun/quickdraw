@@ -89,6 +89,8 @@ class DebuggerTest < Quickdraw::Test
 	end
 
 	test "gives the terminal to one binding.irb at a time, in a parallel run", timeout: 40 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
 		result = debug("-p", "2")
 
 		passed(result)
