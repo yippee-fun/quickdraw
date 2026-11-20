@@ -12,11 +12,13 @@ module Quickdraw::Commands
 	autoload :Flaky, "quickdraw/commands/flaky"
 	autoload :Bisect, "quickdraw/commands/bisect"
 	autoload :Mutate, "quickdraw/commands/mutate"
+	autoload :Browser, "quickdraw/commands/browser"
 
 	# Name, constant, arguments and summary, in the order --help lists them.
 	LIST = [
 		["init", :Init, "", "Create config/quickdraw.rb and an example test"],
 		["doctor", :Doctor, "", "Check that this machine and project are ready to run tests"],
+		["browser", :Browser, " install", "Install the browser, and any driver, that browser tests need"],
 		["history", :History, "", "Recent runs, and the slowest and flakiest tests"],
 		["flaky", :Flaky, " [--runs N] …", "Run tests many times in different orders to find flaky ones"],
 		["bisect", :Bisect, " PATH:LINE", "Find the tests a failing test depends on running before it"],

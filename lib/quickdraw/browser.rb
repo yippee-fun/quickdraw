@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
+require "tmpdir"
+
 # Browser tests, with Playwright. `config.browser` (see Configuration#browser)
-# runs them in a group of their own, so other tests never load Playwright. Each
-# worker in the group launches a browser and serves the app with Puma, and each
-# test gets a page in a fresh browser context, like a private window.
+# runs them in a group of their own. Each worker in the group starts a Node
+# process that runs Playwright's JavaScript API (see Bridge), which launches a
+# browser, and serves the app with Puma, and each test gets a page in a fresh
+# browser context, like a private window.
 #
 #   class SignupTest < Quickdraw::Test
 #     include Quickdraw::Browser
@@ -17,49 +20,61 @@
 #   end
 #
 # This file is loaded wherever config calls `config.browser`, so only what runs
-# in the browser group may use Playwright or Puma.
+# in the browser group may start Node or load Puma.
 module Quickdraw::Browser
 	autoload :Server, "quickdraw/browser/server"
 	autoload :Recorder, "quickdraw/browser/recorder"
+	autoload :Executables, "quickdraw/browser/executables"
+	autoload :Bridge, "quickdraw/browser/bridge"
+	autoload :Remote, "quickdraw/browser/remote"
 
 	ARTIFACTS = File.join(Quickdraw::ROOT, ".quickdraw", "browser")
 
-	# Seconds, since the driver never has to be downloaded first (see default_driver).
-	DRIVER_TIMEOUT = 20
-
-	# A test's browser context and page, and what the page logged.
-	Tab = Data.define(:context, :page, :console)
+	# What Playwright raised, such as when an action timed out.
+	class Error < StandardError; end
+	class TimeoutError < Error; end
 
 	# Raised in each browser test when the worker's browser couldn't start.
 	class Unavailable < StandardError; end
 
+	# Raised when the browser group boots without Puma, which isn't one of
+	# Quickdraw's dependencies, since only browser tests need it.
+	class MissingGem < StandardError; end
+
 	def self.configure(config, patterns, gemfile:, app:, **settings)
+		@settings = { **settings, gemfile:, app: !app.nil? }
 		config.group(:browser, *patterns, gemfile:) { prepare(app:, **settings) }
 		config.after_forking { start if @prepared }
 	end
 
+	# The options config gave config.browser, and whether it gave an app, for
+	# commands. Nil if config doesn't call config.browser.
+	def self.settings = @settings
+
+	# Why browser tests can't serve the app, and how to fix it, as two sentences.
+	MISSING_PUMA = ["config.browser needs puma, to serve the app, which isn’t installed.", "Add it to the Gemfile’s test group."].freeze
+
 	# In the browser group's loader, once config has booted, so the app has too.
-	def self.prepare(app:, browser: "chromium", headless: true, timeout: 5, port: 0, driver: nil, launch: {}, context: {})
+	def self.prepare(app:, browser: "chromium", headless: true, timeout: 5, port: 0, launch: {}, context: {})
 		browser = browser.to_s
 		raise ArgumentError, "config.browser’s browser must be chromium, firefox or webkit, not #{browser}." unless browser in "chromium" | "firefox" | "webkit"
 
-		require "playwright"
-		require "shellwords"
-
 		if app
-			require "puma"
+			begin
+				require "puma"
+			rescue LoadError
+				raise MissingGem, MISSING_PUMA.join(" ")
+			end
+
 			# Before the app boots. Puma would default it to development.
 			ENV["RACK_ENV"] ||= "test"
 			@app = app.call
 		end
 
 		@browser_name = browser
-		@headless = headless
 		@timeout = timeout
 		@port = port
-		@driver = driver || ENV["PLAYWRIGHT_CLI_EXECUTABLE_PATH"].then { |path| path unless path.nil? || path.empty? } || default_driver
-		@launch_options = launch
-		@context_options = context
+		@options = { browser:, headless:, timeout: timeout * 1000, launch: Remote.argument(launch), context: Remote.argument(context) }
 		@prepared = true
 
 		# Only this run's failures.
@@ -72,197 +87,124 @@ module Quickdraw::Browser
 	# The worker's app server, or nil without an app.
 	def self.server = @server
 
-	# In each of the group's workers. The browser launches in the background, so
-	# the worker loads test files meanwhile. A failure is raised by each test
-	# that opens a page.
+	# In each of the group's workers. Node launches the browser and opens the
+	# first page while the worker loads test files. Here rather than in a test,
+	# so Node isn't a test's leak. A failure is raised by each test that opens a page.
 	def self.start
-		# playwright-ruby-client decodes the driver's messages in the default
-		# external encoding, and hangs on non-ASCII ones in the C locale.
-		Encoding.default_external = Encoding::UTF_8
-
 		@pid = Process.pid
 		@server = Server.new(@app, port: @port.zero? ? 0 : @port + Integer(ENV.fetch("QUICKDRAW_WORKER"))) if @app
+		@playwright = Executables.playwright
+		raise Unavailable, "Playwright isn’t installed. Run `#{Quickdraw::Reporters.command} browser install`, or add playwright-core to the project’s package.json." unless @playwright
 
-		# Here rather than in a test, so the driver process isn't a test's leak.
-		# Bounded, since the worker isn't ready, or watched, until it's done.
-		creating = in_background { Playwright.create(playwright_cli_executable_path: @driver) }
-
-		@execution = begin
-			# Raises what the thread raised.
-			raise Unavailable, "Playwright’s driver, `#{@driver}`, didn’t start within #{DRIVER_TIMEOUT}s." unless creating.join(DRIVER_TIMEOUT)
-
-			creating.value
-		rescue Playwright::Error, SystemCallError => error
-			raise unavailable(error)
-		end
-
-		@spare = in_background { open_tab }
+		@log = File.join(Dir.tmpdir, "quickdraw-playwright-#{Process.pid}.log")
+		@bridge = Bridge.new(node: Executables.node, playwright: @playwright, settings: { **@options, baseURL: @server&.url }, log: @log)
 		at_exit { stop if Process.pid == @pid }
+	rescue Errno::ENOENT
+		@failure = Unavailable.new("Browser tests run Playwright on Node, and Quickdraw couldn’t run `#{Executables.node}`. Install Node, or set QUICKDRAW_NODE to it.")
 	rescue => error
 		@failure = error
 	end
 
-	# The driver closes the browser when its input closes. Puma's threads end with
-	# the worker, so a request that never finishes can't hold it up.
 	def self.stop
-		@execution&.stop
+		@bridge&.stop
+		File.delete(@log) if @log && File.exist?(@log)
 	end
 
-	# A new tab for a test. The next test's opens meanwhile, since opening a
-	# page is most of a browser test's overhead.
+	# A new page for a test. Node opens the next test's meanwhile, since
+	# opening one is most of a browser test's overhead.
 	def self.open
 		raise "This test file isn’t in the browser group, so it can’t open a page. Add it to config.browser’s patterns." unless @prepared
 		raise @failure if @failure
 		raise @server.stuck if @server&.stuck
 
 		started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-		tab = @spare.value
-		@spare = in_background { open_tab }
+		ready
+		page = Remote.wrap(@bridge, @bridge.call("open"))
 		Quickdraw::Counters.add("pages", Process.clock_gettime(Process::CLOCK_MONOTONIC) - started)
-		tab
+		page
 	end
 
-	# Saves a screenshot, the HTML and the console log of the tab's page, named
+	def self.close(page)
+		@bridge.call("close", page: page.__handle__)
+	end
+
+	# Waits, in Node, for `kind` (see bridge.mjs's assertions) of `page`. Returns
+	# nil if it passes, or why it failed.
+	def self.expect(page, kind, within: nil, selector: nil, text: nil, count: nil, timeout: @timeout)
+		@bridge.call("assert", kind:, page: page.__handle__, within: locator(within), selector: locator(selector), text: Remote.argument(text), count:, timeout: timeout * 1000)
+	end
+
+	# Saves a screenshot, the HTML and the console log of the page, named
 	# after `name` in ARTIFACTS, and returns their paths as lines to show.
-	def self.save(tab, name)
+	def self.save(page, name)
 		base = File.join(ARTIFACTS, "#{name.gsub(/[^\w.-]+/, '-')[0, 100].delete_suffix('-')}-#{Quickdraw.stable_hash(name).to_s(36)[0, 6]}")
-		saved = []
 
-		begin
-			make_directory(ARTIFACTS)
-			tab.page.screenshot(path: "#{base}.png", fullPage: true, timeout: @timeout * 1000)
-			saved << "Screenshot: #{relative("#{base}.png")}"
-			File.write("#{base}.html", tab.page.content)
-			saved << "HTML: #{relative("#{base}.html")}"
-
-			unless tab.console.empty?
-				File.write("#{base}.log", tab.console.join("\n"))
-				saved << "Console: #{relative("#{base}.log")}"
-			end
-		rescue Playwright::Error, SystemCallError => error
-			saved << "Quickdraw couldn’t save the page: #{error.message.lines.first&.chomp}"
-		end
-
-		saved.join("\n")
+		@bridge.call("save", page: page.__handle__, base:, timeout: @timeout * 1000).map do |kind, detail|
+			(kind == "Error") ? "Quickdraw couldn’t save the page: #{detail}" : "#{kind}: #{detail.delete_prefix("#{Quickdraw::ROOT}/")}"
+		end.join("\n")
+	rescue Error => error
+		"Quickdraw couldn’t save the page: #{error.message.lines.first&.chomp}"
 	end
 
-	private_class_method def self.open_tab
-		@browser ||= launch
-		context = @browser.new_context(baseURL: @server&.url, **@context_options)
-		context.set_default_timeout(@timeout * 1000)
-		page = context.new_page
-		console = []
-		page.on("console", -> (message) { console << "#{message.type}: #{message.text}" })
-		page.on("pageerror", -> (error) { console << "uncaught: #{error.message}" })
-		Tab.new(context:, page:, console:)
+	# Raises, once Node has tried, why the browser didn't launch.
+	private_class_method def self.ready
+		@ready ||= @bridge.call("ready")
+	rescue Error => error
+		install = "Run `#{Quickdraw::Reporters.command} browser install #{@browser_name}` to install it." if error.message.include?("Executable doesn't exist")
+		@failure = Unavailable.new(["Quickdraw couldn’t launch #{@browser_name} with Playwright #{Executables.playwright_version(@playwright)} (#{@playwright}): #{error.message.lines.first.strip}", install].compact.join(" "))
+		raise @failure
 	end
 
-	private_class_method def self.launch
-		@execution.playwright.public_send(@browser_name).launch(headless: @headless, **@launch_options)
-	rescue Playwright::Error => error
-		raise unavailable(error)
-	end
-
-	private_class_method def self.unavailable(error)
-		message = "Quickdraw couldn’t start #{@browser_name} with Playwright’s driver, `#{@driver}`: #{error.message.strip}"
-		compatible = Playwright::COMPATIBLE_PLAYWRIGHT_VERSION
-		install = "Install it with `npm install playwright@#{compatible}`, or set PLAYWRIGHT_CLI_EXECUTABLE_PATH to another driver."
-
-		case driver_version
-		in nil
-			message += ". The driver didn’t run. #{install}"
-		in String => version if version.split(".").first(2) != compatible.split(".").first(2)
-			message += ". playwright-ruby-client #{Playwright::VERSION} needs Playwright #{compatible}, but the driver is #{version}. #{install}"
-		else
-			nil
-		end
-
-		Unavailable.new(message)
-	end
-
-	private_class_method def self.driver_version
-		IO.popen("#{@driver} --version", err: File::NULL, &:read)[/\d+\.\d+\.\d+\S*/]
-	rescue SystemCallError
-		nil
-	end
-
-	# The project's own Playwright, if it has one, which starts faster than npx.
-	# Otherwise the version playwright-ruby-client needs, since others may not
-	# work, if npx already has it: downloading it, or even asking the registry
-	# about it, can hang every worker, so --no and --offline make npx fail at
-	# once instead. After --, arguments such as --version reach Playwright.
-	private_class_method def self.default_driver
-		local = File.expand_path("node_modules/.bin/playwright")
-		# A command, which playwright-ruby-client runs with a shell.
-		File.executable?(local) ? Shellwords.escape(local) : "npx --no --offline -- playwright@#{Playwright::COMPATIBLE_PLAYWRIGHT_VERSION}"
-	end
-
-	private_class_method def self.in_background(&block)
-		Thread.new do
-			Thread.current.name = "quickdraw-browser"
-			# Raised again by Thread#value.
-			Thread.current.report_on_exception = false
-			block.call
+	private_class_method def self.locator(target)
+		case target
+		in nil | String then target
+		in Remote then target.__locator__
 		end
 	end
-
-	private_class_method def self.make_directory(path)
-		return if Dir.exist?(path)
-
-		make_directory(File.dirname(path))
-		Dir.mkdir(path)
-	rescue Errno::EEXIST
-		nil
-	end
-
-	private_class_method def self.relative(path) = path.delete_prefix("#{Quickdraw::ROOT}/")
 
 	def initialize(...)
 		super
 		@runner = Recorder.new(@runner) { browser_artifacts }
 	end
 
-	# The test's page, opened in a fresh browser context when it's first called,
-	# and closed after the test.
+	# The test's page, opened in a fresh browser context when it's first
+	# called, and closed after the test. See Remote for its methods.
 	def page
-		unless @browser_tab
-			@browser_tab = Quickdraw::Browser.open
-			defer { close_browser_tab }
+		unless @browser_page
+			@browser_page = Quickdraw::Browser.open
+			defer { close_browser_page }
 		end
 
-		@browser_tab.page
+		@browser_page
 	end
 
 	# Goes to `url`, which can be relative to the app's.
-	def visit(url) = page.goto(url)
+	def visit(url)
+		page.goto(url)
+		nil
+	end
 
 	# Waits for the page, or the first element `within` matches, to contain
-	# `text`, a String or Regexp. `within` is a selector or Playwright locator.
+	# `text`, a String or Regexp. `within` is a selector or a locator.
 	def assert_text(text, within: "body", timeout: Quickdraw::Browser.timeout)
-		wait_for_assertion(locate(within).first, timeout) { |it| it.to_contain_text(text) }
+		verdict Quickdraw::Browser.expect(page, "text", within:, text:, timeout:)
 	end
 
 	# Waits for the page, or the first element `within` matches, not to contain `text`.
 	def refute_text(text, within: "body", timeout: Quickdraw::Browser.timeout)
-		wait_for_assertion(locate(within).first, timeout) { |it| it.not_to_contain_text(text) }
+		verdict Quickdraw::Browser.expect(page, "noText", within:, text:, timeout:)
 	end
 
 	# Waits for a visible element to match `selector`, a CSS or Playwright
 	# selector or a locator, and contain `text` if given; or with `count`, for
 	# exactly that many.
 	def assert_selector(selector, text: nil, count: nil, timeout: Quickdraw::Browser.timeout)
-		locator = locate(selector).filter(hasText: text, visible: true)
-
-		if count
-			wait_for_assertion(locator, timeout) { |it| it.to_have_count(count) }
-		else
-			wait_for_assertion(locator.first, timeout, &:to_be_visible)
-		end
+		verdict Quickdraw::Browser.expect(page, "selector", selector:, text:, count:, timeout:)
 	end
 
 	# Waits for no visible element to match `selector` (with `text`, if given).
 	def refute_selector(selector, text: nil, timeout: Quickdraw::Browser.timeout)
-		wait_for_assertion(locate(selector).filter(hasText: text, visible: true), timeout) { |it| it.to_have_count(0) }
+		verdict Quickdraw::Browser.expect(page, "noSelector", selector:, text:, timeout:)
 	end
 
 	# Sleeping makes browser tests slow, or flaky when it's too short, so it's
@@ -274,24 +216,18 @@ module Quickdraw::Browser
 		super.tap { Quickdraw::Counters.add("sleeps", Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) }
 	end
 
-	# Retried in the browser, by Playwright, until it passes or times out.
-	private def wait_for_assertion(locator, timeout)
-		yield locator._assertions(timeout * 1000, false, nil)
-		success!
-	rescue Playwright::AssertionError => error
-		failure! { error.message.strip }
-	end
-
-	private def locate(target)
-		case target
-		in String then page.locator(target)
-		in Playwright::Locator then target
+	# A waiting assertion's result: nil if it passed, or why it failed.
+	private def verdict(failure)
+		if failure
+			failure! { failure }
+		else
+			success!
 		end
 	end
 
 	# Before the test's transaction rolls back, so the page's requests can't
 	# outlast it. Errors the app raised serving them are raised here.
-	private def close_browser_tab
+	private def close_browser_page
 		server = Quickdraw::Browser.server
 
 		case $!
@@ -302,9 +238,9 @@ module Quickdraw::Browser
 		end
 
 		begin
-			@browser_tab.context.close
+			Quickdraw::Browser.close(@browser_page)
 		ensure
-			@browser_tab = nil
+			@browser_page = nil
 			server&.finish(Quickdraw::Browser.timeout)
 		end
 	end
@@ -312,9 +248,9 @@ module Quickdraw::Browser
 	# Saved once, when the test first fails or errors, while its page is open.
 	private def browser_artifacts
 		return @browser_artifacts if @browser_artifacts
-		return unless @browser_tab
+		return unless @browser_page
 
 		path, line = @block.source_location
-		@browser_artifacts = Quickdraw::Browser.save(@browser_tab, "#{path.delete_prefix("#{Quickdraw::ROOT}/").delete_suffix('.test.rb')}-#{line}-#{@description}")
+		@browser_artifacts = Quickdraw::Browser.save(@browser_page, "#{path.delete_prefix("#{Quickdraw::ROOT}/").delete_suffix('.test.rb')}-#{line}-#{@description}")
 	end
 end

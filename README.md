@@ -252,7 +252,7 @@ They're Rails' own, and their assertions count as the test's. Time travels back,
 
 ## Browser testing
 
-Browser tests use [Playwright](https://playwright.dev), through the `playwright-ruby-client` gem, which needs to be in your bundle, with Puma to serve your app. `config.browser` runs the files matching its patterns in a group of their own, so other tests never load Playwright. The block returns the app they test:
+Browser tests use [Playwright](https://playwright.dev) with Chromium, Firefox or WebKit. Each worker runs Playwright's JavaScript API in a Node process of its own, so you need Node, but no Playwright gem; Puma, which serves your app, needs to be in your bundle. `config.browser` runs the files matching its patterns in a group of their own, so other tests never start a browser. The block returns the app they test:
 
 ```ruby
 Quickdraw.configure do |config|
@@ -261,6 +261,8 @@ Quickdraw.configure do |config|
 end
 ```
 
+`qt browser install` installs Playwright and config's browser (or the ones you name: `qt browser install firefox webkit`), and `qt doctor` checks they're there. Tests never download anything.
+
 ```ruby
 class SignupTest < Quickdraw::Test
   include Quickdraw::Browser
@@ -268,22 +270,26 @@ class SignupTest < Quickdraw::Test
   test "signs up" do
     visit "/signup"
     page.get_by_label("Email").fill("ada@example.com")
+    page.get_by_label("I agree").check
     page.get_by_role("button", name: "Sign up").click
     assert_text "Welcome, Ada"
   end
 end
 ```
 
-- **Pages:** `page` is a Playwright page in a fresh browser context, like a private window, closed after the test. Each worker launches its own browser, and opens the next test's page while a test runs. `visit` takes paths relative to the app.
+- **Pages:** `page` is a page in a fresh browser context, like a private window, closed after the test. Each worker launches its own browser, and opens the next tests' pages while a test runs. `visit` takes paths relative to the app.
+- **Playwright's API, in Ruby:** `page` has all of Playwright's methods, in snake case, with options as keywords and `?` for `is…`: `page.locator("li").filter(has_text: /ada/i).first.visible?` is `isVisible()`, and `page.keyboard.press("Enter")` works too. Locators are built in Ruby and sent with the call that needs an answer, so a line like `page.get_by_role("button", name: "Go").click` is one round trip. Objects that aren't JSON, such as element handles, come back as objects with the same methods. `evaluate` takes JavaScript as a string, which can be a function given an argument: `page.evaluate("(name) => 'Hi, ' + name", "Ada")`. Timeouts there are in milliseconds, as in Playwright.
 - **The app:** each worker serves it with Puma, in the worker's threads. With `config.rails`, the page sees the records a test creates, and they're rolled back after it. What the app raises while serving the page is raised in the test.
-- **Waiting assertions:** `assert_text` and `refute_text` (a String or Regexp, `within:` an element), and `assert_selector` and `refute_selector` (with `text:` or `count:`) wait, in the browser, for the page to match. A browser test that calls `sleep` gets a warning, and the summary counts them.
+- **Waiting assertions:** `assert_text` and `refute_text` (a String or Regexp, `within:` a selector or locator), and `assert_selector` and `refute_selector` (with `text:` or `count:`) wait, in Node, for the page to match. A browser test that calls `sleep` gets a warning, and the summary counts them.
 - **Failures:** a failed or errored test's screenshot, HTML and console log are saved in `.quickdraw/browser/`, and their paths are shown with it.
-- **Options:** `browser: "firefox"` or `"webkit"`, `headless: false`, `timeout:` in seconds for actions and assertions (5 by default), `port:` for a fixed port (plus the worker's number) rather than any free one, `launch:` and `context:` options for Playwright, and `driver:`, the Playwright command, which must be the version the gem needs. By default it's `PLAYWRIGHT_CLI_EXECUTABLE_PATH`, or `node_modules/.bin/playwright` if there is one, or `npx playwright@VERSION`. Install its browsers with `npx playwright@VERSION install chromium`.
+- **Options:** `browser: "firefox"` or `"webkit"`, `headless: false`, `timeout:` in seconds for actions and assertions (5 by default), `port:` for a fixed port (plus the worker's number) rather than any free one, and `launch:` and `context:` options for Playwright's `launch` and `newContext`.
+- **Where Playwright comes from:** the project's own `node_modules/playwright-core` or `node_modules/playwright` if there is one, else the one `qt browser install` put in your cache directory (or `QUICKDRAW_BROWSERS_PATH`, such as a directory CI caches). `QUICKDRAW_PLAYWRIGHT` names another package, and `QUICKDRAW_NODE` another Node. Browsers go where Playwright keeps them (`PLAYWRIGHT_BROWSERS_PATH`).
 
 ## Commands
 
 - `qt init` sets a project up, with config and an example test.
-- `qt doctor` checks that the machine and project are ready, and how long config takes to boot.
+- `qt doctor` checks that the machine and project are ready, including for browser tests, and how long config takes to boot.
+- `qt browser install` installs what `config.browser`'s tests need (see Browser testing).
 - `qt counterpart lib/user.rb` prints a source file's test, or a test's source file.
 - `qt mutate` finds code the tests run but don't check (see Mutation testing).
 - `qt completions zsh` prints shell completions, for bash, zsh or fish.
