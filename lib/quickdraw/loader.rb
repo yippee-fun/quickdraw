@@ -233,6 +233,7 @@ class Quickdraw::Loader
 	# Configuration#reloader), or :stale if it has to boot again.
 	private def refresh(paths)
 		return :stale unless @boot_report.first == :booted
+		return :stale if paths.any? { |path| loaded_under?(path) }
 
 		loaded = paths.select { |path| loaded?(path) }
 		return :fresh if loaded.empty?
@@ -253,21 +254,24 @@ class Quickdraw::Loader
 	end
 
 	# Whether booting loaded `path`, or the autoloader's idea of it is out of
-	# date, since it's been added or deleted. A path that isn't a file may be a
-	# directory moved away or deleted, which stands for everything in it (see
-	# FileWatcher).
+	# date, since it's been added or deleted.
 	private def loaded?(path)
 		path = File.realpath(path) if File.exist?(path)
 		return true if $LOADED_FEATURES.include?(path)
 
-		unless File.file?(path)
-			directory = "#{path}/"
-			return true if $LOADED_FEATURES.any? { |feature| feature.start_with?(directory) }
-			return true if @autoloadable.each_key.any? { |file| file.start_with?(directory) }
-		end
-
 		autoloadable = path.end_with?(".rb") && autoload_dirs.any? { |dir| path.start_with?("#{dir}/") }
 		autoloadable && File.exist?(path) != @autoloadable.key?(path)
+	end
+
+	# Whether `path` is a directory, perhaps moved away or deleted, holding
+	# something booting loaded or the autoloader knows. FileWatcher reports a
+	# directory when it can't say which files in it changed, which only booting
+	# again is sure to cover.
+	private def loaded_under?(path)
+		return false if File.file?(path)
+
+		directory = "#{File.exist?(path) ? File.realpath(path) : path}/"
+		$LOADED_FEATURES.any? { |feature| feature.start_with?(directory) } || @autoloadable.each_key.any? { |file| file.start_with?(directory) }
 	end
 
 	private def autoloadable_files

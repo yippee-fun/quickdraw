@@ -66,21 +66,23 @@ class FileWatcherTest < Quickdraw::Test
 			assert_equal changes(watcher, ["src/c.rb"]) { write(directory, "src/c.rb") }, ["src/c.rb"]
 		end
 
-		test "ignores Quickdraw's own files, big directories and the paths it's given, #{how}", timeout: 20 do
+		test "ignores Quickdraw's own files, big directories, scratch files and the paths it's given, #{how}", timeout: 20 do
 			directory = tmpdir
 			write(directory, "node_modules/a.js")
 			watcher, = start(directory, ignored: ["report.xml"], poll:)
 
-			changed = changes(watcher, ["a.rb", "lib/tmp/a.rb"]) do
-				[".quickdraw/history.sqlite3", ".git/HEAD", "node_modules/a.js", "app/node_modules/a.js", "tmp/a.rb", "log/test.log", "vendor/a.rb", "coverage/index.html", "report.xml"].each do |path|
-					write(directory, path)
-				end
+			directories = %w[.quickdraw/history.sqlite3 .git/HEAD node_modules/a.js app/node_modules/a.js tmp/a.rb log/test.log vendor/a.rb coverage/index.html .bundle/config]
+			scratch = %w[lib/.a.rb.swp lib/.a.rb.swx lib/4913 lib/a.rb~ lib/.#a.rb lib/#a.rb# lib/.DS_Store scratch.tmp lib/a.rb.kate-swp lib/.a.rb.12.new lib/sedAb12cd lib/.goutputstream-ABC123 lib/a.rb___jb_old___]
+			ignored = [*directories, *scratch, "report.xml"]
 
+			changed = changes(watcher, ["a.rb", "lib/tmp/a.rb", "lib/sedatives"]) do
+				ignored.each { |path| write(directory, path) }
 				write(directory, "lib/tmp/a.rb")
+				write(directory, "lib/sedatives")
 				write(directory, "a.rb")
 			end
 
-			assert_equal changed, ["a.rb", "lib/tmp/a.rb"]
+			assert_equal changed, ["a.rb", "lib/sedatives", "lib/tmp/a.rb"]
 		end
 	end
 

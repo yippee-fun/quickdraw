@@ -100,9 +100,14 @@ class WatchTest < Quickdraw::Test
 		assert_equal boots(project), 3
 	end
 
+	# Even with a reloader, which is given changed files, not directories.
 	test "boots again when a directory holding files config loaded moves", timeout: 40 do
 		project = project(
-			"config/quickdraw.rb" => "#{BOOT_COUNTER}Dir[File.join(__dir__, '../lib/**/*.rb')].each { |path| require path }\n",
+			"config/quickdraw.rb" => <<~RUBY,
+				#{BOOT_COUNTER}
+				Dir[File.join(__dir__, "../lib/**/*.rb")].each { |path| require path }
+				Quickdraw.configure { |config| config.reloader { |paths| paths.grep(/\\.rb\\z/).each { |path| load path }; true } }
+			RUBY
 			"lib/support/helper.rb" => "HELPER = 1\n",
 			"test/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert_equal HELPER, 1 }; end\n",
 		)
