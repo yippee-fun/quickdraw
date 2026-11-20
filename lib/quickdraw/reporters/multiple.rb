@@ -6,6 +6,7 @@ class Quickdraw::Reporters::Multiple
 		@reporters = reporters
 	end
 
+	def booting = @reporters.each(&:booting)
 	def start(...) = @reporters.each { |reporter| reporter.start(...) }
 	def result(...) = @reporters.each { |reporter| reporter.result(...) }
 	def load_failed(...) = @reporters.each { |reporter| reporter.load_failed(...) }

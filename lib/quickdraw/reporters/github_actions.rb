@@ -33,6 +33,7 @@ class Quickdraw::Reporters::GitHubActions
 
 	def finished_file(_path) = nil
 	def shows_loading_output? = false
+	def booting = nil
 	def pause = nil
 	def resume = nil
 

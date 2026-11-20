@@ -49,6 +49,7 @@ class Quickdraw::Reporters::Agent
 
 	def finished_file(_path) = nil
 	def shows_loading_output? = false
+	def booting = nil
 	def pause = nil
 	def resume = nil
 
@@ -248,7 +249,7 @@ class Quickdraw::Reporters::Agent
 		end
 
 		if result["passed_on_retry"]
-			@io.puts "  #{flaky_explanation(result)}#{" Find which with: #{bisect_command(path, test)}" if result['in_history']}"
+			@io.puts "  #{flaky_explanation(result)}#{" Find which with: #{bisect_command(path, test)}" if bisect?(result)}"
 		end
 
 		@io.puts "  Rerun: #{rerun_command(path, test)}"

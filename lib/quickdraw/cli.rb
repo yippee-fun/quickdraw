@@ -114,7 +114,22 @@ class Quickdraw::CLI
 			usage_error "Only one format can write to the terminal.", "Give the others a file, as in --format json:report.json."
 		end
 
-		paths = options[:outputs].filter_map(&:last)
+		if (flakes_path = options[:flakes_path])
+			flakes_path = options[:flakes_path] = File.expand_path(flakes_path)
+			usage_error "#{flakes_path} is a directory, so flakes can’t be written to it." if File.directory?(flakes_path)
+
+			begin
+				require "fileutils"
+				FileUtils.mkdir_p(File.dirname(flakes_path))
+			rescue SystemCallError => error
+				usage_error "Can’t write to #{flakes_path} (#{error.message})."
+			end
+
+			writable = File.writable?(File.dirname(flakes_path)) && (!File.exist?(flakes_path) || File.writable?(flakes_path))
+			usage_error "Can’t write to #{flakes_path}." unless writable
+		end
+
+		paths = [*options[:outputs].filter_map(&:last), *flakes_path]
 		if (duplicate = paths.find { |path| paths.count(path) > 1 })
 			usage_error "More than one format would write to #{duplicate}."
 		end
@@ -147,6 +162,8 @@ class Quickdraw::CLI
 		end
 
 		usage_error "--base says what --changed compares with, so it needs --changed." if options[:base] && !options[:changed]
+
+		usage_error "--flakes is for a single run, so it can’t be used with --watch." if options[:flakes_path] && options[:watch]
 
 		if options[:changed]
 			usage_error "--changed chooses the test files, so it can’t be used with paths." if @args.any?
@@ -253,7 +270,7 @@ class Quickdraw::CLI
 
 			parser.on(
 				"--retry N", Integer,
-				"Retry each failure up to N times in a fresh worker (default 1, 0 to turn off). A test that passes on retry is flaky, which still fails the run",
+				"Retry each failure once in the worker it failed in, then up to N times in a fresh worker (default 1, 0 to turn off). A test that passes on retry is flaky, which still fails the run",
 			) do |it|
 				usage_error "--retry needs 0 or more, not #{it}." if it.negative?
 				options[:retries] = it
@@ -261,6 +278,10 @@ class Quickdraw::CLI
 
 			parser.on("--allow-flaky", "Pass the run when every failure passed on retry") do
 				options[:allow_flaky] = true
+			end
+
+			parser.on("--flakes FILE", "Write the tests that passed on retry, with each attempt, to FILE as JSON") do |it|
+				options[:flakes_path] = it
 			end
 
 			parser.on("-s N", "--seed N", Integer, "Order tests and seed rand with N (or set SEED)") do |it|
@@ -583,6 +604,7 @@ class Quickdraw::CLI
 			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
+			flakes_path: options[:flakes_path],
 			repeatable: !options[:changed],
 			warm_loaders: options[:warm_loaders],
 			timeline: options[:timeline],
@@ -603,7 +625,7 @@ class Quickdraw::CLI
 			io = path ? File.open(path, "w") : $stdout
 
 			case format
-			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings])
+			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live: options[:capture])
 			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace], kept: (-> { last_run.saved? } if last_run))
 			in "json" then Quickdraw::Reporters::JSON.new(io:)
 			in "junit" then Quickdraw::Reporters::JUnit.new(io:)

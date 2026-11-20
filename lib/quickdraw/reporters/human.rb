@@ -1,10 +1,15 @@
 # frozen_string_literal: true
 
 # For people, in a terminal or a CI log: a line for each test file as it
-# finishes, followed by its problems in full, then a summary. Nothing is
-# redrawn, so the output scrolls, and reads the same anywhere.
+# finishes, then each problem in full, then a summary. The output scrolls,
+# and reads the same anywhere. When `live`, a status line with a spinner
+# sits under the file lines while the run goes, and is gone at the end.
 class Quickdraw::Reporters::Human
 	include Quickdraw::Reporters::Formatting
+
+	SPINNER = %w[⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏].freeze
+	# Seconds between the spinner's frames.
+	SPIN_INTERVAL = 0.08
 
 	# Below this much total test time, shares and hints are mostly noise.
 	HINT_THRESHOLD = 1.0
@@ -29,17 +34,23 @@ class Quickdraw::Reporters::Human
 		def initialize = super(0, 0.0, Hash.new(0))
 	end
 
-	def initialize(io: $stdout, backtrace: false, timings: false)
+	def initialize(io: $stdout, backtrace: false, timings: false, live: false)
 		@io = io
 		@backtrace = backtrace
 		@show_timings = timings
 		@timings = Quickdraw::Timings.new
 		@profile = Quickdraw::Profile.new
 		@color = io.tty? && !ENV.key?("NO_COLOR")
+		@live = live && io.tty? && ENV["TERM"] != "dumb"
+		# Held while writing, so the spinner's thread doesn't write in between.
+		@lock = Mutex.new
 		@problems = []
-		# Each file's problems, printed beneath its line once it finishes.
-		@file_problems = Hash.new { |hash, path| hash[path] = [] }
 		@tallies = Hash.new { |hash, path| hash[path] = FileTally.new }
+		@files = nil
+		@files_done = 0
+		@tests_done = 0
+		@failing = 0
+		@flaky = 0
 		@set_aside = []
 		@leaks = []
 		# The worst that happened in each file with a problem.
@@ -49,11 +60,31 @@ class Quickdraw::Reporters::Human
 		@held = []
 	end
 
+	# Before config boots, which can take a while, so the spinner shows it's going.
+	def booting
+		return unless @live
+
+		@started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+		@frame = 0
+		@width = terminal_width
+		@ticks = Thread::Queue.new
+
+		@spinner = Thread.new do
+			until @ticks.pop(timeout: SPIN_INTERVAL)
+				@lock.synchronize do
+					@frame += 1
+					draw_status
+				end
+			end
+		end
+	end
+
 	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
 		@worker_choice = worker_choice
 		@processes = processes
 		@seed = seed
 		@estimate = estimate
+		@files = paths.size
 		@path_width = [paths.map(&:size).max || 0, PATH_WIDTH].min
 	end
 
@@ -65,14 +96,17 @@ class Quickdraw::Reporters::Human
 		tally.tests += 1
 		tally.duration += result["duration"].to_f
 		tally.statuses[status] += 1
+		@tests_done += 1
 
 		case status
 		in "failed" | "errored"
 			@file_statuses[path] = "failed"
-			problem(path, test, result)
+			@problems << [path, test, result]
+			@failing += 1
 		in "flaky"
 			@file_statuses[path] ||= "flaky"
-			problem(path, test, result)
+			@problems << [path, test, result]
+			@flaky += 1
 		in "skipped" | "pending" then @set_aside << [path, test, result["skipped"]]
 		in "passed" then nil
 		end
@@ -81,20 +115,15 @@ class Quickdraw::Reporters::Human
 	end
 
 	def finished_file(path)
+		@files_done += 1
 		printing { print_file(path) }
 	end
 
 	def load_failed(path, error)
-		result = { "errors" => [error], "failures" => [] }
 		@file_statuses[path] = "failed to load"
-		@problems << [path, nil, result]
-
-		printing do
-			@io.puts "#{red('✗')} #{path_column(path)}  #{red('could not be loaded')}"
-			print_problem(path, nil, result)
-			@io.puts
-			@spaced = true
-		end
+		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
+		@files_done += 1
+		printing { @io.puts "#{red('✗')} #{path_column(path)}  #{red('could not be loaded')}" }
 	end
 
 	def shows_loading_output? = true
@@ -104,29 +133,34 @@ class Quickdraw::Reporters::Human
 		printing do
 			@io.print output
 			@io.puts unless output.end_with?("\n")
-			@spaced = false
 		end
 	end
 
 	# While a test is in a debugger, which has the terminal, until #resume.
 	def pause
-		@paused = true
+		@lock.synchronize do
+			clear_status
+			@paused = true
+		end
 	end
 
 	def resume
-		@paused = false
-		held, @held = @held, []
-		held.each(&:call)
-		@io.flush
+		@lock.synchronize do
+			@paused = false
+			held, @held = @held, []
+			held.each(&:call)
+			draw_status
+			@io.flush
+		end
 	end
 
 	def finish(outcome)
 		# Held if Ctrl-C came as a debugger was given the terminal.
 		resume if @paused
+		stop_status
 
-		# Files that didn't finish, after Ctrl-C or --fail-fast, still show their problems.
-		@file_problems.each { |path, problems| print_problems(path, problems) }
-		@file_problems.clear
+		# Each in full, after the file lines, which stay short.
+		@problems.each { |path, test, result| print_problem(path, test, result) }
 
 		if @show_timings
 			print_slowest
@@ -143,7 +177,7 @@ class Quickdraw::Reporters::Human
 	# The verdict and the counts, then each problem, then how to rerun them,
 	# then anything else worth knowing, a line each.
 	private def print_summary(outcome)
-		@io.puts unless @spaced
+		@io.puts
 		@io.puts "#{verdict(outcome)}  #{counts(outcome)}"
 
 		if @problems.any?
@@ -271,17 +305,6 @@ class Quickdraw::Reporters::Human
 		].compact
 
 		@io.puts "#{mark} #{path_column(path)}  #{details.join(dim(' · '))}"
-		@spaced = false
-		print_problems(path, @file_problems.delete(path) || [])
-	end
-
-	# With a blank line after, to set them apart from the next file's line.
-	private def print_problems(path, problems)
-		return if problems.empty?
-
-		problems.each { |test, result| print_problem(path, test, result) }
-		@io.puts
-		@spaced = true
 	end
 
 	# The directory dimmed, padded so details line up for paths that fit.
@@ -290,17 +313,59 @@ class Quickdraw::Reporters::Human
 		"#{dim("#{directory}#{slash}")}#{name}#{' ' * [@path_width - path.size, 0].max}"
 	end
 
-	# Now, or once a debugger is done with the terminal.
+	# Now, above the status line, or once a debugger is done with the terminal.
 	private def printing(&print)
-		return @held << print if @paused
+		@lock.synchronize do
+			next @held << print if @paused
 
-		print.call
+			clear_status
+			print.call
+			draw_status
+			@io.flush
+		end
+	end
+
+	# The spinner, then how far the run has got. Shortened to fit the terminal,
+	# since a line that wraps can't be cleared. The cursor goes back to the
+	# start of the line, so what config or a loader prints writes over it.
+	private def draw_status
+		return unless @spinner && !@paused
+
+		elapsed = format("%.1fs", Process.clock_gettime(Process::CLOCK_MONOTONIC) - @started_at)
+		progress = @files ? ["#{@files_done}/#{@files} files", pluralize(@tests_done, "test")] : ["Booting"]
+		problems = [(red("#{@failing} failed") if @failing > 0), (yellow("#{@flaky} flaky") if @flaky > 0)].compact
+		parts = [*progress, *problems, dim(elapsed)]
+		room = @width - 3
+		parts.delete_at(1) while parts.size > 2 && plain(parts.join(" · ")).size > room
+		parts = [] if plain(parts.join(" · ")).size > room
+		@io.print "\r\e[K#{[cyan(SPINNER[@frame % SPINNER.size]), (parts.join(dim(' · ')) if parts.any?)].compact.join(' ')}\r"
+		@status_shown = true
+	end
+
+	private def clear_status
+		return unless @status_shown
+
+		@io.print "\r\e[K"
+		@status_shown = false
+	end
+
+	private def stop_status
+		return unless @spinner
+
+		@ticks.push(:stop)
+		@spinner.join
+		@spinner = nil
+		@lock.synchronize { clear_status }
 		@io.flush
 	end
 
-	private def problem(path, test, result)
-		@problems << [path, test, result]
-		@file_problems[path] << [test, result]
+	# From stty rather than io/console, which group loaders, forked from this
+	# process, would pass on to tests.
+	private def terminal_width
+		columns = IO.popen(["stty", "size"], in: @io, err: File::NULL, &:read).split.last.to_i
+		columns.positive? ? columns : 80
+	rescue SystemCallError
+		80
 	end
 
 	# The tests' total time against the last run of the same tests, when it's a
@@ -541,7 +606,7 @@ class Quickdraw::Reporters::Human
 		if result["passed_on_retry"]
 			@io.puts
 			@io.puts "  #{yellow(flaky_explanation(result))}"
-			@io.puts "  #{dim("⌕ #{bisect_command(path, test)}")}" if result["in_history"]
+			@io.puts "  #{dim("⌕ #{bisect_command(path, test)}")}" if bisect?(result)
 		end
 
 		@io.puts

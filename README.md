@@ -141,7 +141,7 @@ qt --watch                 # run again when files change
 
 ## Output
 
-The output suits whoever is running the tests. For people, each test file gets a line as it finishes, with its count, time and any problems, which follow in full. Nothing is redrawn, so it reads the same in a terminal as in a CI log. The summary at the end leads with PASSED or FAILED and the counts, lists each problem on a line, says how to rerun them, and notes skips and anything slow in a line each. `--timings` adds the slowest tests and files, where test time goes, and how busy the workers were.
+The output suits whoever is running the tests. For people, each test file gets a line as it finishes, with its count, time and how many problems it had. Once every file has finished, each problem follows in full. In a terminal, a status line with a spinner sits under the file lines while config boots and tests run, with how many files and tests have finished, and it's gone at the end, so the output reads the same in a terminal as in a CI log. The summary at the end leads with PASSED or FAILED and the counts, lists each problem on a line, says how to rerun them, and notes skips and anything slow in a line each. `--timings` adds the slowest tests and files, where test time goes, and how busy the workers were.
 
 ```
 ✓ test/calculator.test.rb   3 tests · 220.0μs · 1 pending
@@ -208,7 +208,20 @@ Leaks are listed as warnings after the run. `--leaks fail` makes them errors, an
 
 Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That's how it orders slow files first, tunes the worker count, and knows what failed. `--no-history` turns it off.
 
-- A test that fails is retried once in a fresh worker, one that has loaded no other test files. If it passes there, it's reported as flaky: it failed because of a test that ran before it, or it's flaky by nature. Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
+- A test that fails is retried, first in the worker it failed in, then in a fresh worker, one that has loaded no other test files. If a retry passes, it's reported as flaky, and where it passed says what kind:
+  - passing again in the same worker means it fails some of the time on its own, from timing, randomness or the network;
+  - failing again there but passing in a fresh worker means it likely depends on a test that ran before it, which `qt bisect` can find.
+
+  Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times in fresh workers, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
+- **Reporting flakes**, from CI, say. `config.on_flaky` is called with each flaky test once the tests have finished, in the process that booted your config, so your app and its error reporting are loaded:
+
+  ```ruby
+  config.on_flaky do |flake|
+    Sentry.capture_message("Flaky test: #{flake.name}", fingerprint: ["flaky-test", flake.key], extra: flake.to_h)
+  end
+  ```
+
+  A flake has a `key` that stays the same from run to run, for grouping; its `path`, `line` and `name`; its `kind` (`:nondeterministic`, `:order_dependent`, or `:unknown` if its worker crashed); each of its `attempts`, with where it ran, its status, duration, failures and errors; the run's `seed` and a `rerun` command; and the `commit`, `branch` and CI build's `ci_url` (on GitHub Actions, Buildkite, GitLab or CircleCI). `--flakes FILE` writes the same as JSON, for a pipeline that isn't in Ruby.
 - `qt history` lists recent runs, the slowest tests, and flaky tests: those that both passed and failed on the same code.
 - `qt flaky --runs 20` runs the tests 20 times in different orders and lists the ones that sometimes fail.
 - `qt bisect test/user.test.rb:12` takes the last run where that test failed and replays the tests that ran before it in the same worker, in halves, to find which one it depends on.

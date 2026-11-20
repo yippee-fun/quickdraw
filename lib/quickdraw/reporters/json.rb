@@ -34,6 +34,8 @@ class Quickdraw::Reporters::JSON
 			"output" => result["output"]&.then { |output| plain(output) },
 			"leaks" => result["leaks"],
 			"passed_on_retry" => result["passed_on_retry"],
+			"flake" => result["flake"],
+			"attempts" => result["attempts"]&.map { |attempt| attempt.slice("in", "status", "duration") },
 		)
 	end
 
@@ -43,6 +45,7 @@ class Quickdraw::Reporters::JSON
 
 	def finished_file(_path) = nil
 	def shows_loading_output? = false
+	def booting = nil
 	def pause = nil
 	def resume = nil
 

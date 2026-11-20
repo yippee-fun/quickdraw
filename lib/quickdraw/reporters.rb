@@ -48,6 +48,11 @@ module Quickdraw::Reporters
 		ENV.key?("BUNDLE_GEMFILE") ? "bundle exec #{program}" : program
 	end
 
+	# Quoted for a POSIX shell when it contains anything but safe characters.
+	def self.shell_quote(argument)
+		%r{\A[\w./:@%+=-]+\z}.match?(argument) ? argument : "'#{argument.gsub("'", %q('\\\''))}'"
+	end
+
 	module Formatting
 		ANSI = /\e\[[\d;]*m/
 
@@ -89,10 +94,7 @@ module Quickdraw::Reporters
 			[match[:path], Integer(match[:line], 10)] if match
 		end
 
-		# Quoted for a POSIX shell when it contains anything but safe characters.
-		private def shell_quote(argument)
-			%r{\A[\w./:@%+=-]+\z}.match?(argument) ? argument : "'#{argument.gsub("'", %q('\\\''))}'"
-		end
+		private def shell_quote(argument) = Quickdraw::Reporters.shell_quote(argument)
 
 		private def pluralize(count, noun)
 			"#{count} #{noun}#{'s' unless count == 1}"
@@ -126,8 +128,27 @@ module Quickdraw::Reporters
 
 		# For a test that failed, then passed when retried.
 		private def flaky_explanation(result)
-			retries = result.fetch("passed_on_retry")
-			"Passed when retried in a fresh worker#{" (retry #{retries})" if retries > 1}, so it’s flaky or depends on tests that ran before it."
+			# A run kept by an older Quickdraw has no attempts.
+			attempts = result["attempts"] || []
+			passed_in = attempts.last&.fetch("in") || "fresh worker"
+			fresh = attempts.count { |attempt| attempt["in"] == "fresh worker" }
+			retry_number = " (fresh worker #{fresh})" if fresh > 1
+
+			case [result["flake"], passed_in]
+			in ["nondeterministic", "same worker"]
+				"Passed when run again in the same worker, so it fails some of the time on its own."
+			in ["nondeterministic", _]
+				"Failed again in a fresh worker, then passed in another#{retry_number}, so it fails some of the time on its own."
+			in ["order_dependent", _]
+				"Failed again in the same worker, then passed in a fresh one#{retry_number}, so it likely depends on tests that ran before it."
+			else
+				"Passed when retried in a fresh worker#{retry_number}, so it’s flaky or depends on tests that ran before it."
+			end
+		end
+
+		# Whether bisecting could find what a flaky test depends on.
+		private def bisect?(result)
+			result["in_history"] && result["flake"] != "nondeterministic"
 		end
 
 		private def bisect_command(path, test)

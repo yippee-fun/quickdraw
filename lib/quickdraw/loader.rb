@@ -295,6 +295,23 @@ class Quickdraw::Loader
 			Integer(count).clamp(0, @channels.size).times { |index| start(index, index, test_files) }
 		in ["fork", channel, slot]
 			start(Integer(channel), Integer(slot), test_files)
+		in ["flakes", size]
+			report_flakes(@control.read(Integer(size)))
+		end
+	end
+
+	# Passes each of a run's flakes (see Flake.report) to config's on_flaky
+	# callbacks. One that raises is shown, and doesn't stop the others.
+	private def report_flakes(json)
+		require "json"
+		data = JSON.parse(json)
+		flakes = data.fetch("flakes").map { |entry| Quickdraw::Flake.from(entry, data) }
+
+		Quickdraw::Config.flaky_callbacks.product(flakes) do |callback, flake|
+			callback.call(flake)
+		rescue StandardError, ScriptError => error
+			frames = error.backtrace&.first(5)&.map { |frame| "\n  #{frame}" }&.join
+			warn "config.on_flaky raised #{error.class}: #{error.message}, reporting #{flake.path}:#{flake.line}#{frames}"
 		end
 	end
 

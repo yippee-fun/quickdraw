@@ -14,13 +14,25 @@ class Quickdraw::Configuration
 		@before_forking_callbacks = []
 		@after_forking_callbacks = []
 		@around_test_callbacks = []
+		@flaky_callbacks = []
 		@groups = []
 		@timeout = 300
 	end
 
 	attr_reader :before_forking_callbacks
 	attr_reader :after_forking_callbacks
+	attr_reader :flaky_callbacks
 	attr_reader :groups
+
+	# Called with each test that failed, then passed when retried (a Flake),
+	# once the run's tests have finished, in the process that booted config:
+	# `config.on_flaky { |flake| Sentry.capture_message("Flaky: #{flake.name}", fingerprint: [flake.key]) }`.
+	# Not in watch mode.
+	def on_flaky(&block)
+		raise ArgumentError, "on_flaky needs a block." unless block
+
+		@flaky_callbacks << block
+	end
 
 	# Wraps every test, with its setup and teardown, in the block, which calls
 	# `run` to run it: `config.around_test { |test, run| transaction { run.call } }`.

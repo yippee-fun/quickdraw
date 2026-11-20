@@ -14,14 +14,16 @@ class Quickdraw::Coordinator
 	# Channels kept for replacing workers that crash.
 	SPARE_CHANNELS = 4
 
-	# Retries in a run, each in a fresh worker. More failures than this suggest
-	# broken code rather than flaky tests, and each needs a channel.
+	# Failed tests retried in a run. More failures than this suggest broken code
+	# rather than flaky tests, and each retry needs channels.
 	RETRY_LIMIT = 10
 
-	# A failed test waiting to be retried. Its first result is held until a retry
-	# passes or none are left. `placement` is [process, slot, sequence] from the
-	# run that failed, which bisect replays.
-	Retry = Struct.new(:file, :index, :result, :placement, :attempts, :refreshing)
+	# A failed test waiting to be retried: first in the worker it failed in
+	# (`stage` :same), then in fresh ones (:fresh). Its first result is held
+	# until a retry passes or none are left. `placement` is [process, slot,
+	# sequence] from the run that failed, which bisect replays. `attempts` are
+	# the retries so far (see Flake.attempt).
+	Retry = Struct.new(:file, :index, :result, :placement, :attempts, :refreshing, :stage)
 
 	# How often to check for workers that died without closing their pipes, or
 	# whose tests are stuck where the watchdog can't stop them, in seconds.
@@ -179,6 +181,14 @@ class Quickdraw::Coordinator
 			false
 		end
 
+		# A run's flakes as JSON (see Flake.report), for config's on_flaky callbacks.
+		def send_flakes(json)
+			command("flakes #{json.bytesize}") && @control.write(json)
+		rescue Errno::EPIPE
+			@control.close
+			@control = nil
+		end
+
 		# Once closed, the loader starts no more workers, and exits once its workers have.
 		def close
 			@control&.close
@@ -224,6 +234,7 @@ class Quickdraw::Coordinator
 			@timeout = nil
 			@fresh = true
 			@retrying = nil
+			@queued_retries = []
 			@last_message_at = now
 		end
 
@@ -240,6 +251,9 @@ class Quickdraw::Coordinator
 
 		# The Retry it's loading a file for, or running.
 		attr_accessor :retrying
+
+		# Retries of tests that failed in it, to run in it once its batch ends.
+		attr_reader :queued_retries
 
 		# [seconds, thread backtraces] once the worker reports a test timed out.
 		attr_accessor :timeout
@@ -286,11 +300,12 @@ class Quickdraw::Coordinator
 	# to run, so it isn't compared with the last. In watch mode, `warm_loaders`
 	# are loaders that stay booted between runs. With `timeline`, it records
 	# how workers spent the run (see Timeline). With `elastic`, a count that
-	# wasn't given grows while tests leave CPU idle (see Elastic).
+	# wasn't given grows while tests leave CPU idle (see Elastic). Flaky tests
+	# go to config's on_flaky callbacks, and to `flakes_path` as JSON.
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: false, leaks: nil, retries: 0, allow_flaky: false, warm_loaders: nil, timeline: false, elastic: false
+		capture: false, leaks: nil, retries: 0, allow_flaky: false, flakes_path: nil, warm_loaders: nil, timeline: false, elastic: false
 	)
 		@timeline = Quickdraw::Timeline.new if timeline
 		@elastic_allowed = elastic
@@ -298,6 +313,8 @@ class Quickdraw::Coordinator
 		@repeatable = repeatable
 		@retries = retries
 		@pending_retries = []
+		@flakes = []
+		@flakes_path = flakes_path
 		@retries_started = 0
 		# Workers waiting for the terminal, and the one in a debugger.
 		@debug_queue = []
@@ -341,6 +358,7 @@ class Quickdraw::Coordinator
 
 	def call
 		started_at = Time.now
+		@reporter.booting
 		@forking = Process.respond_to?(:fork)
 		# A retry needs a fresh worker, which needs fork.
 		@retries = 0 unless @forking
@@ -433,6 +451,8 @@ class Quickdraw::Coordinator
 			add_workers if @elastic&.due?
 		end
 
+		report_flakes
+
 		# No more workers will start, so loaders can exit once their workers have.
 		@loaders.each_value(&:close)
 
@@ -508,6 +528,7 @@ class Quickdraw::Coordinator
 		@abandoned << worker.pid if worker.pid
 		# The worker shows what's left of it as it exits, unless it's killed first.
 		@abandoned_output_paths << worker.output_path if worker.output_path
+		requeue_retries(worker)
 
 		if (attempt = worker.retrying)
 			@pending_retries << attempt
@@ -889,10 +910,13 @@ class Quickdraw::Coordinator
 			@pending_retries.any? { |attempt| @group_of[attempt.file.display_path] == group }
 	end
 
-	# Each retry needs a channel for the fresh worker it runs in, and another for
-	# the worker that replaces it.
+	# Each retry in a fresh worker needs a channel for that worker, and another
+	# for the worker that replaces it. Each test's retry in the worker it
+	# failed in needs one for that worker's replacement.
 	private def spare_channels
-		@fail_fast ? SPARE_CHANNELS : SPARE_CHANNELS + (RETRY_LIMIT * @retries * 2)
+		return SPARE_CHANNELS if @fail_fast || @retries == 0
+
+		SPARE_CHANNELS + (RETRY_LIMIT * ((@retries * 2) + 1))
 	end
 
 	# Whether the loader can start a worker for each one leaving it, plus one.
@@ -1006,7 +1030,7 @@ class Quickdraw::Coordinator
 				worker.retrying = nil
 				# Whatever the file did before it raised is still there.
 				worker.fresh = false
-				retried(attempt, nil)
+				retried(attempt, { "failures" => [], "errors" => [error], "duration" => nil })
 			elsif !@files.key?(path)
 				load_failed(path, error)
 			end
@@ -1073,7 +1097,7 @@ class Quickdraw::Coordinator
 			retried(attempt, result)
 			# History doesn't record retries, so tests that ran after one couldn't
 			# be bisected.
-			retire(worker)
+			retire(worker) if worker.queued_retries.empty?
 			return
 		end
 
@@ -1081,14 +1105,23 @@ class Quickdraw::Coordinator
 		@elastic&.record(result)
 
 		if retry?(result)
-			@pending_retries << Retry.new(file:, index:, result:, placement: placement(worker), attempts: 0, refreshing: false)
+			attempt = Retry.new(file:, index:, result:, placement: placement(worker), attempts: [], refreshing: false, stage: :same)
+
+			# What a test leaked is still there in its worker, so it wouldn't leak it again.
+			if result["errors"].any? { |error| error["name"] == "Quickdraw::Leak" }
+				attempt.stage = :fresh
+				@pending_retries << attempt
+			else
+				worker.queued_retries << attempt
+			end
 		else
 			report(file, index, result, placement(worker))
 		end
 	end
 
-	# Failures are retried in a fresh worker, unless the run is stopping at the
-	# first problem, or so many have failed that the code is probably broken.
+	# Failures are retried, first in the same worker, then in fresh ones,
+	# unless the run is stopping at the first problem, or so many have failed
+	# that the code is probably broken.
 	private def retry?(result)
 		@retries > 0 && !@fail_fast && failed?(result) && (@retries_started += 1) <= RETRY_LIMIT
 	end
@@ -1097,19 +1130,49 @@ class Quickdraw::Coordinator
 		result["failures"].any? || result["errors"].any?
 	end
 
-	# A retry's result, or nil if its file failed to load. The first result is
-	# reported, marked as flaky if a retry passed.
+	# A retry's result. The first result is reported, marked as flaky if a
+	# retry passed, with every attempt.
 	private def retried(attempt, result)
-		attempt.attempts += 1
+		attempt.attempts << Quickdraw::Flake.attempt(result, (attempt.stage == :same) ? "same worker" : "fresh worker")
 
-		if result && Quickdraw::Outcome.status(result) == "passed"
-			report(attempt.file, attempt.index, attempt.result.merge("passed_on_retry" => attempt.attempts, "in_history" => !@history.nil?), attempt.placement)
-		elsif attempt.attempts < @retries && !@stopping
+		if Quickdraw::Outcome.status(result) == "passed"
+			report(attempt.file, attempt.index, attempt.result.merge(
+				"passed_on_retry" => attempt.attempts.size,
+				"flake" => flake_kind(attempt.attempts),
+				"attempts" => attempts(attempt),
+				"in_history" => !@history.nil?,
+			), attempt.placement)
+		elsif attempt.attempts.count { |rerun| rerun["in"] == "fresh worker" } < @retries && !@stopping
+			attempt.stage = :fresh
 			attempt.refreshing = false
 			@pending_retries << attempt
 		else
 			report_failure(attempt)
 		end
+	end
+
+	# What a test's retries, the last of which passed, suggest (see Flake).
+	private def flake_kind(retries)
+		*failed, _passed = retries
+
+		if failed.empty? then (retries.last["in"] == "same worker") ? "nondeterministic" : "unknown"
+		elsif failed.any? { |rerun| rerun["in"] == "fresh worker" } then "nondeterministic"
+		else "order_dependent"
+		end
+	end
+
+	private def attempts(attempt)
+		[Quickdraw::Flake.attempt(attempt.result, "first run"), *attempt.attempts]
+	end
+
+	# A worker's retries that can't run in it any more, for fresh workers.
+	private def requeue_retries(worker)
+		worker.queued_retries.each do |attempt|
+			attempt.stage = :fresh
+			@pending_retries << attempt
+		end
+
+		worker.queued_retries.clear
 	end
 
 	# Replaces the worker in its slot, if there's a channel for another.
@@ -1118,8 +1181,27 @@ class Quickdraw::Coordinator
 		move(worker, worker.loader) if spare_for?(worker.loader)
 	end
 
+	# Writes the run's flakes to `flakes_path`, and has the loader for tests in
+	# no group pass them to config's on_flaky callbacks before it exits. Not
+	# in watch mode, whose loaders stay booted.
+	private def report_flakes
+		return if @warm_loaders
+		return unless @flakes_path || @flakes.any?
+
+		require "json"
+		json = JSON.generate(Quickdraw::Flake.report(Quickdraw::Flake.context(@seed), @flakes))
+
+		if @flakes_path
+			temporary = "#{@flakes_path}.#{Process.pid}.tmp"
+			File.write(temporary, json)
+			File.rename(temporary, @flakes_path)
+		end
+
+		@loaders[nil]&.send_flakes(json) if @flakes.any?
+	end
+
 	private def report_failure(attempt)
-		report(attempt.file, attempt.index, attempt.result, attempt.placement)
+		report(attempt.file, attempt.index, attempt.result.merge("attempts" => attempts(attempt)), attempt.placement)
 	end
 
 	# Where a test ran, for history: [process, slot, sequence].
@@ -1140,6 +1222,11 @@ class Quickdraw::Coordinator
 	private def report(file, index, result, (process, slot, sequence))
 		file.reported!
 		@outcome.record(result)
+		if result["passed_on_retry"] && !@warm_loaders
+			# As history keys tests, so tests with the same name in a file have different keys.
+			key = file.keys&.fetch(index) || Quickdraw::History.keys(file.display_path, file.tests).fetch(index)
+			@flakes << Quickdraw::Flake.entry(file.display_path, file.tests[index], result, key:)
+		end
 		@reporter.result(file.display_path, file.tests[index], result)
 		# Its last final result, after any retries.
 		@reporter.finished_file(file.display_path) if file.reported == file.size
@@ -1196,11 +1283,15 @@ class Quickdraw::Coordinator
 			}
 		end
 
+		requeue_retries(worker)
+
 		if (attempt = worker.retrying)
 			# Final, since the loader's exit status now shows a failure. Shown with
 			# the first result, so the run's failure is explained.
-			errors = [*attempt.result["errors"], crash.merge("message" => "When retried in a fresh worker: #{crash['message']}")]
-			report(attempt.file, attempt.index, attempt.result.merge("errors" => errors), attempt.placement)
+			place = (attempt.stage == :same) ? "same worker" : "fresh worker"
+			attempt.attempts << Quickdraw::Flake.attempt({ "failures" => [], "errors" => [crash], "duration" => nil }, place)
+			errors = [*attempt.result["errors"], crash.merge("message" => "When retried in a #{place}: #{crash['message']}")]
+			report(attempt.file, attempt.index, attempt.result.merge("errors" => errors, "attempts" => attempts(attempt)), attempt.placement)
 		elsif (path = worker.loading)
 			# What it printed before crashing, which may say why.
 			@reporter.printed(output) if output && @capture == :loading
@@ -1241,7 +1332,10 @@ class Quickdraw::Coordinator
 		end
 
 		idle.each do |worker|
-			if worker.retrying
+			if (attempt = worker.queued_retries.shift)
+				worker.retrying = attempt
+				run_retry(worker)
+			elsif worker.retrying
 				run_retry(worker)
 			elsif worker.fresh && (attempt = take_retry(worker.group))
 				worker.retrying = attempt

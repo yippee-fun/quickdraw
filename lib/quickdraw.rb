@@ -42,6 +42,7 @@ module Quickdraw
 	autoload :Platform, "quickdraw/platform"
 	autoload :Reporters, "quickdraw/reporters"
 	autoload :Outcome, "quickdraw/outcome"
+	autoload :Flake, "quickdraw/flake"
 	autoload :Timings, "quickdraw/timings"
 	autoload :Timeline, "quickdraw/timeline"
 	autoload :Counters, "quickdraw/counters"

@@ -164,15 +164,38 @@ class CLITest < Quickdraw::Test
 		match { result => { summary: /\A0 tests · 0 assertions · 1 not run/ } }
 	end
 
-	test "on a terminal, prints a line for each file, lined up, and redraws nothing", timeout: 20 do
+	# What's left on a terminal once each status line is cleared.
+	def screen(output) = output.gsub(/[^\r\n]*\r+\e\[K/, "")
+
+	test "on a terminal, prints a line for each file, lined up, under a status line that's gone at the end", timeout: 20 do
 		result = project(
+			"config/quickdraw.rb" => "sleep 0.3\n",
 			"a.test.rb" => "class A < Quickdraw::Test; 3.times { |i| test(i.to_s) { sleep 0.2; assert true } }; end\n",
 			"models/b.test.rb" => "class B < Quickdraw::Test; test('b') { assert true }; end\n",
 		).run("-p", "1", tty: [20, 80])
 
-		assert_match result.stdout, /^✓ a\.test\.rb         3 tests · /
-		assert_match result.stdout, %r{^✓ models/b\.test\.rb  1 test · }
-		refute_includes result.stdout, "\e["
+		assert_match result.stdout, /\r\e\[K\S Booting · \d+\.\ds/
+		assert_match result.stdout, %r{\r\e\[K\S [012]/2 files · \d+ tests? · \d+\.\ds}
+		screen = screen(result.stdout)
+		assert_match screen, /^✓ a\.test\.rb         3 tests · /
+		assert_match screen, %r{^✓ models/b\.test\.rb  1 test · }
+		refute_includes screen, "\e["
+	end
+
+	test "doesn't show a status line where it can't be cleared, or with --no-capture", timeout: 20 do
+		project = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { sleep 0.2; assert true }; end\n")
+
+		refute_includes project.run("-p", "1").stdout, "\e[K"
+		refute_includes project.run("-p", "1", "--no-capture", tty: [20, 80]).stdout, "\e[K"
+		refute_includes project.run("-p", "1", env: { "TERM" => "dumb" }, tty: [20, 80]).stdout, "\e[K"
+	end
+
+	test "shortens the status line to fit a narrow terminal, down to the spinner alone", timeout: 20 do
+		project = project("config/quickdraw.rb" => "sleep 0.3\n", "a.test.rb" => "class A < Quickdraw::Test; test('a') { sleep 0.2; assert true }; end\n")
+
+		frames = project.run("-p", "1", tty: [20, 12]).stdout.scan(/\r\e\[K([^\r\n]+)\r(?!\n)/).flatten
+		assert frames.any?
+		assert(frames.all? { |frame| frame.size <= 9 }) { frames.inspect }
 	end
 
 	test "on a terminal, prints what loading a file prints whole, once", timeout: 20 do
@@ -181,21 +204,20 @@ class CLITest < Quickdraw::Test
 			"b.test.rb" => "puts 'loading b'\nwarn 'warning from b'\nclass B < Quickdraw::Test; test('b') { assert true }; end\n",
 		)
 
-		output = project.run("-p", "1", tty: [20, 80]).stdout
+		output = screen(project.run("-p", "1", tty: [20, 80]).stdout)
 
 		assert_equal output.scan("loading b").size, 1
 		assert_equal output.scan("warning from b").size, 1
 		assert_match output, /^loading b\r\nwarning from b\r\n/
 	end
 
-	test "reports a problem once its file finishes, then lists them all at the end", timeout: 20 do
+	test "shows each problem in full after every file's line, then lists them at the end", timeout: 20 do
 		result = project(
 			"fails.test.rb" => "class A < Quickdraw::Test; test('fails') { assert false }; end\n",
-			"slow.test.rb" => "class B < Quickdraw::Test; test('slow') { sleep 0.5; puts 'slow finished'; assert true }; end\n",
-		).run("-p", "2", "--no-history", "--no-capture")
+			"slow.test.rb" => "class B < Quickdraw::Test; test('slow') { sleep 0.5; assert true }; end\n",
+		).run("-p", "2", "--no-history")
 
-		failure = result.stdout.index("FAIL fails  A · fails.test.rb:1")
-		assert_operator failure, :<, result.stdout.index("slow finished")
+		assert_match result.stdout, /\A✗ fails\.test\.rb  1 test · .*\n✓ slow\.test\.rb   1 test · .*\n\nFAIL fails  A · fails\.test\.rb:1\n/
 		assert_match result.stdout, /^FAILED  .*\n\n  ✗ fails\.test\.rb:1 A › fails\n/
 	end
 end
