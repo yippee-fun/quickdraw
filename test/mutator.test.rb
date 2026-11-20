@@ -224,6 +224,141 @@ class MutatorTest < Quickdraw::Test
 		assert_equal removal.after, "\t\tnil"
 	end
 
+	test "keeps an expression a change spans lines of whole, and the lines after it where they were" do
+		source = <<~'RUBY'
+			class Example
+				def call(a, flag)
+					return {
+						a: 1,
+					} if flag
+					x = [
+						a, 1
+					] - 2
+					log(<<~TEXT)
+						#{[
+							a,
+						]}
+					TEXT
+					a
+						.fetch(x)
+					a.map {
+						it
+					}[0]
+				end
+			end
+		RUBY
+
+		changed = mutants(source).to_h { |mutant| [mutant.description, mutant] }
+		statements = -> (mutant) { Prism.parse(mutant.source).value.statements.body.first.body.body }
+
+		assert_equal changed.values_at("{ a: 1, } → {}", "[ a, 1 ] → []", "[ a, ] → []", "fetch → []").map { |mutant| [mutant.after.strip, statements.(mutant).map(&:start_line)] }, [
+			["return {} if flag", [2, 5, 8, 13, 15]],
+			["x = [] - 2", [2, 5, 8, 13, 15]],
+			["\#{[]}", [2, 5, 8, 13, 15]],
+			["a[x]", [2, 5, 8, 13, 15]],
+		]
+
+		# Not `a.map [0]`, which a line continuation would make, so the lines after it move.
+		assert_equal changed.fetch("removed the block").after.strip, "a.map[0]"
+		match { statements.(changed.fetch("removed the block")).last => Prism::CallNode[name: :[], receiver: Prism::CallNode[name: :map]] }
+	end
+
+	test "knows a modifier if's statement runs on its condition's line, whichever lines it spans" do
+		source = <<~RUBY
+			class A
+				def call(a, b)
+					log(
+						a + 1
+					) if b
+					log(
+						a - 1
+					) unless b
+					log(
+						a * 2
+					) if true
+					log(
+						a / 2
+					) if (b)
+				end
+			end
+		RUBY
+
+		covering = mutants(source).to_h { |mutant| [mutant.description, mutant.covering_line] }
+
+		# Ruby compiles a literal condition away, so its statement runs its first
+		# line, as one in parentheses does when it holds.
+		assert_equal covering.values_at("+ → -", "- → +", "* → /", "/ → *"), [5, 8, 9, 12]
+		assert_equal mutants(source).filter_map { |mutant| mutant.covering_line if mutant.description == "removed the statement" }, [5, 8, 9]
+	end
+
+	test "removes an element or argument with the comma after it, keeping a trailing comma's line to itself" do
+		source = <<~RUBY
+			class Example
+				def call(a, b)
+					log([
+						a,
+						b, # quickdraw:equivalent -- b is logged elsewhere
+					])
+					log([a, b, 1])
+					a.join(
+						",",
+					)
+					a.join(",",)
+					a.merge(
+						b: 1,
+						c: 2
+					)
+				end
+			end
+		RUBY
+
+		kept, equivalent = Quickdraw::Mutation::Marks.new("lib/example.rb", source).partition(mutants(source))
+		removals = -> (list) { list.filter_map { |mutant| [mutant.description, mutant.line, mutant.last_line, mutant.after.strip] if mutant.description.start_with?("removed ") && mutant.description != "removed the statement" } }
+
+		assert_equal removals.(kept), [
+			["removed a", 4, 4, ""],
+			["removed a", 7, 7, "log([b, 1])"],
+			["removed b", 7, 7, "log([a, 1])"],
+			["removed 1", 7, 7, "log([a, b])"],
+			["removed an argument", 9, 9, ""],
+			["removed an argument", 11, 11, "a.join()"],
+			["removed an argument", 13, 13, ""],
+			["removed an argument", 14, 14, ""],
+		]
+		assert_equal removals.(equivalent.map(&:first)), [["removed b", 5, 5, "# quickdraw:equivalent -- b is logged elsewhere"]]
+	end
+
+	test "applies the refinements a file activates before a method" do
+		source = <<~RUBY
+			using Before
+			module Outer
+				using ::Inside:: # across lines
+					Across
+				using namespace::Dynamic
+				class Example
+					def call = 1
+				end
+			end
+			using After
+		RUBY
+
+		# Not one that names a module through a local, which only its file has.
+		assert_equal mutants(source).map { |mutant| mutant.subject.usings }.uniq, [[[0, "Before"], [1, "::Inside::Across"]]]
+	end
+
+	test "doesn't stop at a list in a heredoc an endless method returns" do
+		source = <<~'RUBY'
+			class Example
+				def call(a, b) = <<~TEXT
+					#{[a, b]}
+				TEXT
+			end
+		RUBY
+
+		# Nor mutates it, since the heredoc's body is after the method's end.
+		assert_equal mutants(source), []
+	end
+
 	test "gives methods on the same line their own subjects" do
 		subjects = mutants("class A; def b = 1; def c = 2; end\n").map(&:subject).uniq
 
@@ -390,15 +525,48 @@ class MutatorTest < Quickdraw::Test
 					value ||= 1
 					fresh ||= 2
 					options&.fetch(:key)
+					while options.any?
+						first ||= options.shift
+						options.each { |option| inner ||= option }
+					end
+					for option in (all ||= options)
+						last ||= option
+					end
+					begin
+						connection ||= connect
+						connection.ping
+					rescue
+						retry
+					ensure
+						closed ||= close
+					end
+					begin
+						only ||= connect
+					rescue
+						retry
+					end
+					begin
+						once ||= connect
+						once.ping
+					rescue
+						begin
+							reconnect
+						rescue
+							retry
+						end
+					end
+					[first, last, connection, all, closed, only, once]
 				end
 			end
 		RUBY
 
-		descriptions = mutants(source).map { |mutant| [mutant.description, mutant.after.strip] }
+		swaps = mutants(source).filter_map { |mutant| mutant.after.strip if mutant.description == "||= → =" }
 
-		assert_includes descriptions, ["||= → =", "value = 1"]
-		refute_includes descriptions, ["||= → =", "fresh = 2"]
-		refute descriptions.any? { |description, _| description == "fetch → []" }
+		# Not in a block, whose locals start again each time it runs, nor in
+		# what a `for` loops over, or an `ensure`, which run once, nor where a
+		# retry only follows its failing, or retries something else.
+		assert_equal swaps, ["value = 1", "first = options.shift", "last = option", "connection = connect"]
+		refute mutants(source).any? { |mutant| mutant.description == "fetch → []" }
 	end
 
 	test "drops calls, blocks and safe navigation, and swaps methods" do

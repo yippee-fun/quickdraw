@@ -841,4 +841,88 @@ class MutateTest < Quickdraw::Test
 		project.write("lib/other.rb" => "module Other\n\tdef self.double(n) = n + n\nend\n")
 		assert_match mutate.(), /All 11 mutants unchanged/
 	end
+
+	test "applies mutants with the refinements their file activates", timeout: 30 do
+		result = project(
+			"lib/greeting.rb" => <<~RUBY,
+				module Shout
+					refine(String) { def shout = "\#{upcase}!" }
+				end
+
+				module Quiet
+					refine(String) { def quiet = downcase }
+				end
+
+				using Shout
+
+				class Greeting
+					using Quiet
+
+					def call(name)
+						"\#{name.shout} \#{name.quiet}" if name
+					end
+				end
+			RUBY
+			"test/greeting.test.rb" => <<~RUBY,
+				require_relative "../lib/greeting"
+
+				class GreetingTest < Quickdraw::Test
+					test("greets, without refining code evaluated elsewhere") do
+					assert_equal Greeting.new.call("Hi"), "HI! hi"
+					assert_nil TOPLEVEL_BINDING.eval("'x'.shout rescue nil")
+				end
+				end
+			RUBY
+		).run("mutate", "lib/greeting.rb", "--format", "agent")
+
+		match { result => { stdout: %r{^SURVIVED \S+ lib/greeting\.rb:15 Greeting#call: condition → true } } }
+	end
+
+	test "says --unique-kills runs every test against each mutant, as --matrix does", timeout: 20 do
+		help = project.run("mutate", "--help").stdout
+
+		assert_includes help.gsub(/\s+/, " "), "Runs every test against each mutant, as --matrix does"
+		refute_includes help, "Implies --matrix"
+	end
+
+	test "--unique-kills reports the mutants it couldn't run to judge the tests a diff changes", timeout: 60 do
+		project = unique_kills_project
+		project.write("test/pricing.test.rb" => <<~RUBY)
+			#{UNIQUE_BASE}
+			Shop::Pricing.class_eval { def tax(total) = total / 5 }
+
+			class MorePricingTest < Quickdraw::Test
+				test("kills its worker when mutated") { Process.kill(:KILL, Process.ppid) unless Shop::Pricing.new.discount(200) == 20 }
+			end
+		RUBY
+		project.commit
+
+		result = project.run("mutate", "--base", "main", "--unique-kills", "--processes", "1", "--format", "agent")
+
+		assert_equal result.exit_status, 1
+		assert_includes result.stdout, "Couldn’t find Shop::Pricing#tax (lib/pricing.rb:13) once tests had loaded, so 4 mutants didn’t run."
+		assert_includes result.stdout, "10 mutants didn’t finish, since the worker running them exited."
+
+		report = JSON.parse(project.run("mutate", "--base", "main", "--unique-kills", "--processes", "1", "--format", "json").stdout, symbolize_names: true)
+		match { report => { mutants: 0, errors: 0, missing: 0, unique_kills: { errors: 10, missing: 4 } } }
+	end
+
+	test "--unique-kills says which mutants not every test ran against", timeout: 60 do
+		project = unique_kills_project
+		project.write("test/pricing.test.rb" => <<~RUBY)
+			#{UNIQUE_BASE}
+			class MorePricingTest < Quickdraw::Test
+				test("exits when a discount changes") { exit!(1) unless Shop::Pricing.new.discount(300) == 30; assert true }
+			end
+		RUBY
+		project.commit
+
+		result = project.run("mutate", "--base", "main", "--unique-kills", "--format", "agent")
+
+		assert_match result.stdout, /^Not every test ran against \d+ mutants?, since a test crashed, hung or didn’t load, so (its|their) tests can’t be counted as the only one to kill (it|them)\.$/
+		refute_includes result.stdout, "blind"
+
+		report = JSON.parse(project.run("mutate", "--base", "main", "--unique-kills", "--format", "json").stdout, symbolize_names: true)
+		assert_operator report[:unique_kills][:incomplete], :>, 0
+	end
 end

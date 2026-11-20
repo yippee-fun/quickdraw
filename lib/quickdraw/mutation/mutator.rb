@@ -63,6 +63,11 @@ class Quickdraw::Mutation::Mutator
 	# Methods that raise without a block.
 	BLOCK_REQUIRED = [:lambda, :proc, :tap, :then, :yield_self, :synchronize, :define_method, :instance_eval, :instance_exec, :class_eval, :class_exec, :module_eval, :module_exec, :catch].freeze
 
+	# What separates the elements of a list, from the end of one: a comma, or
+	# spaces in a list of words, such as %w[a b].
+	COMMA = /\A\s*,[ \t]*/
+	SPACE = /\A[ \t]+/
+
 	def initialize(path, source, relative_path: path)
 		@path = path
 		@source = source
@@ -78,6 +83,7 @@ class Quickdraw::Mutation::Mutator
 		# As its magic comment says, so mutants parse and evaluate without it.
 		@source = @source.dup.force_encoding(result.source.encoding)
 		@line_starts = result.source.offsets
+		@traced_lines = nil
 		@frozen_string_literal = result.magic_comments.any? do |comment|
 			comment.key.tr("-", "_").casecmp?("frozen_string_literal") && comment.value.casecmp?("true")
 		end
@@ -88,34 +94,49 @@ class Quickdraw::Mutation::Mutator
 		@removed = {}.compare_by_identity
 		@interpolated = {}.compare_by_identity
 		@mutants = []
-		scope(result.value.statements, [])
+		scope(result.value.statements, [], [])
 
 		lines ? @mutants.select { |mutant| lines.any? { |line| line.between?(mutant.line, mutant.last_line) } } : @mutants
 	end
 
-	private def scope(body, nesting)
+	# `usings` are the refinements activated before `body`, as [depth, constant]
+	# where depth is how many of `nesting` are around the `using`.
+	private def scope(body, nesting, usings)
 		return unless Prism::StatementsNode === body
 
 		body.body.each do |node|
 			case node
-			in Prism::ClassNode then scope(node.body, [*lexical(nesting), ["class", node.constant_path.slice]])
-			in Prism::ModuleNode then scope(node.body, [*lexical(nesting), ["module", node.constant_path.slice]])
-			in Prism::SingletonClassNode[expression: Prism::SelfNode] then scope(node.body, [*nesting, ["class", "<< self"]])
-			in Prism::ConstantWriteNode | Prism::ConstantPathWriteNode then defined_class(node, nesting)
+			in Prism::CallNode[receiver: nil, name: :using, arguments: Prism::ArgumentsNode[arguments: [refinement]], block: nil] if (path = constant_path(refinement))
+				usings = [*usings, [nesting.size, path]]
+			in Prism::ClassNode then scope(node.body, [*lexical(nesting), ["class", node.constant_path.slice]], usings)
+			in Prism::ModuleNode then scope(node.body, [*lexical(nesting), ["module", node.constant_path.slice]], usings)
+			in Prism::SingletonClassNode[expression: Prism::SelfNode] then scope(node.body, [*nesting, ["class", "<< self"]], usings)
+			in Prism::ConstantWriteNode | Prism::ConstantPathWriteNode then defined_class(node, nesting, usings)
 			# ActiveSupport::Concern's, which defines its methods in the module's
 			# ClassMethods. Other DSLs by that name may define them elsewhere.
 			in Prism::CallNode[receiver: nil | Prism::SelfNode, name: :class_methods, arguments: nil, block: Prism::BlockNode[body: block_body]] if (nesting.last in ["module", _]) && concern?(body)
-				scope(block_body, [*nesting, ["class_eval", "ClassMethods"]])
-			in Prism::DefNode then definition(node, nesting)
+				scope(block_body, [*nesting, ["class_eval", "ClassMethods"]], usings)
+			in Prism::DefNode then definition(node, nesting, usings)
 			in Prism::CallNode[
 				receiver: nil,
 				name: :private | :protected | :public | :module_function | :private_class_method | :public_class_method,
 				arguments: Prism::ArgumentsNode[arguments: [Prism::DefNode => method]],
 				block: nil,
 			]
-				definition(method, nesting)
+				definition(method, nesting, usings)
 			else nil
 			end
+		end
+	end
+
+	# The constant `node` names, as `A::B`, or nil if it isn't only constants,
+	# as `namespace::B` isn't.
+	private def constant_path(node)
+		case node
+		in Prism::ConstantReadNode then node.name.to_s
+		in Prism::ConstantPathNode[parent: nil] then "::#{node.name}"
+		in Prism::ConstantPathNode[parent:] then (path = constant_path(parent)) && "#{path}::#{node.name}"
+		else nil
 		end
 	end
 
@@ -132,7 +153,7 @@ class Quickdraw::Mutation::Mutator
 
 	# A class made by `Data.define` or `Struct.new` with a block, named by the
 	# constant it's assigned to, as in `Point = Data.define(:x, :y) do … end`.
-	private def defined_class(node, nesting)
+	private def defined_class(node, nesting, usings)
 		return unless node.value in Prism::CallNode[
 			receiver: Prism::ConstantReadNode | Prism::ConstantPathNode[parent: nil] => receiver,
 			name:,
@@ -146,7 +167,7 @@ class Quickdraw::Mutation::Mutator
 		in Prism::ConstantPathWriteNode then node.target.slice
 		end
 
-		scope(body, [*lexical(nesting), ["class_eval", constant]])
+		scope(body, [*lexical(nesting), ["class_eval", constant]], usings)
 	end
 
 	# Where a constant defined here goes: not in a block's class, since a block
@@ -157,7 +178,7 @@ class Quickdraw::Mutation::Mutator
 		nesting
 	end
 
-	private def definition(node, nesting)
+	private def definition(node, nesting, usings)
 		singleton = case node.receiver
 		in nil then false
 		in Prism::SelfNode then true
@@ -172,7 +193,7 @@ class Quickdraw::Mutation::Mutator
 		@local_calls = local_calls(node)
 		# With the column, since two methods can share a line.
 		id = "#{@relative_path}:#{line}:#{node.location.start_column}"
-		@subject = Quickdraw::Mutation::Subject.new(id:, path: @path, line:, nesting:, name: node.name, singleton:)
+		@subject = Quickdraw::Mutation::Subject.new(id:, path: @path, line:, nesting:, usings:, name: node.name, singleton:)
 		@seen = {}
 		@heredocs = heredocs(node.body)
 		replace_body(node.body)
@@ -202,6 +223,13 @@ class Quickdraw::Mutation::Mutator
 			add(node.operator_loc, replacement, "#{node.operator} → #{replacement}", statement_line)
 			add(node.location, node.left.slice, "a #{node.operator} b → a", statement_line)
 			add(node.location, node.right.slice, "a #{node.operator} b → b", statement_line)
+		in Prism::IfNode | Prism::UnlessNode if modifier?(node)
+			condition(node, statement_line)
+			# Its statement may run no line of its own, as in `foo(⏎a⏎) if b`.
+			statement = node.statements.body.fetch(0)
+			visit(node.predicate, statement_line)
+			visit(statement, traced?(first_line(statement)) ? first_line(statement) : statement_line)
+			return
 		in Prism::IfNode | Prism::UnlessNode
 			condition(node, statement_line)
 		in Prism::WhileNode | Prism::UntilNode
@@ -253,9 +281,10 @@ class Quickdraw::Mutation::Mutator
 			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
 		in Prism::RegularExpressionNode | Prism::InterpolatedRegularExpressionNode
 			add(node.location, "/(?!)/", "regexp → never matches", statement_line)
-		in Prism::ArrayNode[opening_loc: Prism::Location, elements: [_, *] => elements]
+		in Prism::ArrayNode[opening_loc: Prism::Location => opening, elements: [_, *] => elements]
 			add(node.location, "[]", "#{abbreviate(node.slice)} → []", statement_line)
-			remove_each(elements, statement_line) if elements.size > 1
+			separator = opening.slice.start_with?("%") ? SPACE : COMMA
+			remove_each(elements, statement_line, separator:) if elements.size > 1
 		in Prism::HashNode[elements: [_, *] => elements]
 			add(node.location, "{}", "#{abbreviate(node.slice)} → {}", statement_line)
 			remove_each(elements, statement_line) if elements.size > 1
@@ -323,15 +352,16 @@ class Quickdraw::Mutation::Mutator
 	private def fetch_to_index(node, line)
 		return unless node in {
 			name: :fetch,
-			receiver: Prism::Node,
-			call_operator_loc: Prism::Location => operator,
+			receiver: Prism::Node => receiver,
+			call_operator_loc: Prism::Location,
 			arguments: Prism::ArgumentsNode[arguments: [Prism::Node => key]],
 			block: nil,
 		}
 
 		return if node.safe_navigation? || (key in Prism::SplatNode | Prism::KeywordHashNode)
 
-		add(span(operator.start_offset, node.location.end_offset), "[#{key.slice}]", "fetch → []", line)
+		# From the receiver, as `.fetch` may start the next line.
+		add(span(receiver.location.end_offset, node.location.end_offset), "[#{key.slice}]", "fetch → []", line)
 	end
 
 	# Each argument, keyword argument and block argument that's removable?,
@@ -354,7 +384,7 @@ class Quickdraw::Mutation::Mutator
 			location = if arguments.size == 1 && !node.opening_loc
 				span(node.message_loc.end_offset, arguments.first.location.end_offset)
 			else
-				cut(arguments, index)
+				cut(arguments, index, closed: !node.opening_loc.nil?)
 			end
 
 			add(location, "", "removed an argument", line)
@@ -461,15 +491,46 @@ class Quickdraw::Mutation::Mutator
 		add(statements.location, "nil", description, first_line(statements.body.first))
 	end
 
-	# The first line of `node` that runs: inside a `begin` or parentheses, and
-	# the first `when` of a `case` without a subject, whose own lines don't.
+	# The first line of `node` that runs: inside a `begin` or parentheses, the
+	# condition of a modifier `if` or `unless` unless Ruby compiles it away (as
+	# `if true`), and the first `when` of a `case` without a subject, whose own
+	# lines don't.
 	private def first_line(node)
 		case node
 		in Prism::BeginNode[statements: Prism::StatementsNode[body: [first, *]]] then first_line(first)
 		in Prism::ParenthesesNode[body: Prism::StatementsNode[body: [first, *]]] then first_line(first)
+		in Prism::IfNode | Prism::UnlessNode if modifier?(node) && traced?(first_line(node.predicate)) then first_line(node.predicate)
 		in Prism::CaseNode[predicate: nil, conditions: [first, *]] then first.location.start_line
 		else node.location.start_line
 		end
+	end
+
+	# An `if` or `unless` after the statement it runs, as in `a if b`.
+	private def modifier?(node)
+		node in Prism::IfNode[if_keyword_loc: Prism::Location, end_keyword_loc: nil] | Prism::UnlessNode[end_keyword_loc: nil]
+	end
+
+	# Whether Ruby fires a line event on `line`, as compiled, which is how a
+	# test is seen to run it.
+	private def traced?(line)
+		@traced_lines ||= begin
+			verbose = $VERBOSE
+			# Without the warnings loading the file gives anyway.
+			$VERBOSE = nil
+			lines = {}
+			pending = [RubyVM::InstructionSequence.compile(@source, @path, @path)]
+
+			while (iseq = pending.pop)
+				iseq.trace_points.each { |traced, event| lines[traced] = true if event == :line }
+				iseq.each_child { |child| pending << child }
+			end
+
+			lines
+		ensure
+			$VERBOSE = verbose
+		end
+
+		@traced_lines.key?(line)
 	end
 
 	private def jump(node, line)
@@ -478,11 +539,51 @@ class Quickdraw::Mutation::Mutator
 		add(span(node.keyword_loc.end_offset, node.arguments.location.end_offset), "", "removed the #{node.keyword_loc.slice} value", line)
 	end
 
-	# Not a local variable first assigned here, which is nil before.
+	# Not a local variable first assigned here, which is nil before, unless
+	# it can run again.
 	private def or_write(node, line)
-		return if (node in Prism::LocalVariableOrWriteNode[depth: 0]) && !assigned_before?(node.name, node.location.start_offset, @method)
+		return if (node in Prism::LocalVariableOrWriteNode[depth: 0]) && !assigned_before?(node.name, node.location.start_offset, @method) && !repeats?(node)
 
 		add(node.operator_loc, "=", "||= → =", line)
+	end
+
+	# Whether `node` can run again in the block or method it's in, keeping its
+	# local variables: in a loop's condition or body (not a `for`'s
+	# collection), in a `rescue` that can retry, or in its `begin` before a
+	# later statement that can raise.
+	private def repeats?(node)
+		ancestors = ancestors(node, @method) or raise ArgumentError, "#{node.inspect} isn’t in the method"
+		scope = ancestors.rindex { |ancestor| ancestor in Prism::BlockNode | Prism::LambdaNode } || 0
+		[*ancestors.drop(scope), node, nil].each_cons(3).any? do |ancestor, child, grandchild|
+			case ancestor
+			in Prism::WhileNode | Prism::UntilNode then true
+			in Prism::ForNode then child.equal?(ancestor.statements)
+			in Prism::BeginNode[statements:, rescue_clause: Prism::RescueNode => rescue_clause] if retries?(rescue_clause)
+				child.equal?(rescue_clause) || (child.equal?(statements) && !grandchild.equal?(statements.body.last))
+			else false
+			end
+		end
+	end
+
+	# The nodes around `target` in `node`, outermost first, or nil if it isn't in `node`.
+	private def ancestors(target, node)
+		return [] if node.equal?(target)
+
+		node.compact_child_nodes.each do |child|
+			ancestors = ancestors(target, child) and return [node, *ancestors]
+		end
+
+		nil
+	end
+
+	# Not a retry in a `begin`'s own `rescue`, which retries that `begin`.
+	private def retries?(node)
+		case node
+		in Prism::RetryNode then true
+		in Prism::BeginNode[rescue_clause: Prism::RescueNode => rescue_clause]
+			node.compact_child_nodes.any? { |child| !child.equal?(rescue_clause) && retries?(child) }
+		else node.compact_child_nodes.any? { |child| retries?(child) }
+		end
 	end
 
 	# Whether `name` is a parameter or assigned before `offset` in `node`.
@@ -503,8 +604,8 @@ class Quickdraw::Mutation::Mutator
 		[*parameters.requireds, *parameters.optionals, parameters.rest, *parameters.posts, *parameters.keywords, parameters.keyword_rest].compact
 	end
 
-	private def remove_each(nodes, line)
-		nodes.each_with_index { |node, index| add(cut(nodes, index), "", "removed #{abbreviate(node.slice)}", line) }
+	private def remove_each(nodes, line, separator: COMMA)
+		nodes.each_with_index { |node, index| add(cut(nodes, index, closed: true, separator:), "", "removed #{abbreviate(node.slice)}", line) }
 	end
 
 	# Code on one line and short enough for a description, so it can say
@@ -542,9 +643,7 @@ class Quickdraw::Mutation::Mutator
 		# Leaving a heredoc's body behind, which then runs as code.
 		return if @heredocs.any? { |heredoc| location.start_offset <= heredoc.start_offset && heredoc.start_offset < location.end_offset && location.end_offset < heredoc.end_offset }
 
-		# With the lines it replaces, so the code after it keeps its line numbers.
-		padding = "\n" * [location.slice.count("\n") - replacement.count("\n"), 0].max
-		source = replace(location, "#{replacement}#{padding}", within: @method.location.start_offset, to: @method.location.end_offset)
+		source = mutate(location, replacement)
 		return if @seen.key?(source)
 
 		@seen[source] = true
@@ -574,13 +673,45 @@ class Quickdraw::Mutation::Mutator
 		)
 	end
 
-	# Where to cut `nodes[index]` from a comma-separated list, with a comma beside it.
-	private def cut(nodes, index)
-		location = nodes.fetch(index).location
+	# The method with `replacement` at `location`, and a line continuation for
+	# each line it replaces, after or before it, so the code after it keeps its
+	# line numbers. Without them if they'd change a token, as `foo\` then
+	# `[0]` on the next line is `foo [0]`, not `foo[0]`.
+	private def mutate(location, replacement)
+		within = @method.location.start_offset
+		to = @method.location.end_offset
+		source = replace(location, replacement, within:, to:)
+		lines = location.slice.count("\n") - replacement.count("\n")
+		return source unless lines > 0
 
-		if nodes.size == 1 then location
-		elsif index < nodes.size - 1 then span(location.start_offset, nodes[index + 1].location.start_offset)
-		else span(nodes[index - 1].location.end_offset, location.end_offset)
+		continuations = "\\\n" * lines
+		tokens = tokens(source)
+
+		["#{replacement}#{continuations}", "#{continuations}#{replacement}"].each do |padded|
+			candidate = replace(location, padded, within:, to:)
+			return candidate if tokens(candidate) == tokens
+		end
+
+		source
+	end
+
+	private def tokens(source)
+		Prism.lex(source, encoding: @source.encoding).value.map { |token, _state| [token.type, token.value] }
+	end
+
+	# Where to cut `nodes[index]` from a list: with the separator after it, or
+	# else the one before it if the node before is on its line, or the list
+	# has no closing bracket to leave a trailing comma before.
+	private def cut(nodes, index, closed:, separator: COMMA)
+		location = nodes.fetch(index).location
+		# Not before it, as the end of an endless method whose heredoc holds the list is.
+		after = nodes[index + 1]&.location&.start_offset || [@method.location.end_offset, location.end_offset].max
+		following = @source.byteslice(location.end_offset, after - location.end_offset).b[separator]
+		previous = nodes[index - 1].location if index > 0
+
+		if following then span(location.start_offset, location.end_offset + following.bytesize)
+		elsif previous && (previous.end_line == location.start_line || !closed) then span(previous.end_offset, location.end_offset)
+		else location
 		end
 	end
 

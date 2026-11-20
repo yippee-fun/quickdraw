@@ -20,14 +20,14 @@ Quickdraw::Mutation::Mutant = Data.define(:id, :subject, :line, :last_line, :cov
 		end
 
 		function = module_function?(owner, original)
-		opening = subject.nesting.map do |keyword, scope|
+		opening = subject.nesting.map.with_index(1) do |(keyword, scope), depth|
 			case keyword
-			in "class_eval" then "#{scope}.class_eval do; "
-			in "class" | "module" then "#{keyword} #{scope}; "
+			in "class_eval" then "#{scope}.class_eval do; #{usings(depth)}"
+			in "class" | "module" then "#{keyword} #{scope}; #{usings(depth)}"
 			end
 		end
 
-		wrapped = "#{opening.join}#{source}\n#{'end; ' * subject.nesting.size}"
+		wrapped = "#{usings(0)}#{opening.join}#{source}\n#{'end; ' * subject.nesting.size}"
 		# On the definition's line, so backtraces and __LINE__ are as they were.
 		first_line = subject.line
 
@@ -37,9 +37,17 @@ Quickdraw::Mutation::Mutant = Data.define(:id, :subject, :line, :last_line, :cov
 		end
 
 		# In the source's encoding, which an ASCII-only method loses when wrapped.
-		TOPLEVEL_BINDING.eval(wrapped.force_encoding(source.encoding), subject.path, first_line)
+		# As a file of its own, so its refinements don't reach code the tests
+		# evaluate at the top level.
+		RubyVM::InstructionSequence.compile(wrapped.force_encoding(source.encoding), subject.path, subject.path, first_line).eval
 		owner.__send__(visibility, name) unless visibility == :public
 		owner.__send__(:module_function, name) if function
+	end
+
+	# The original's refinements activated at `depth` of its nesting, as they
+	# were, since a refinement only applies in the code after its `using`.
+	private def usings(depth)
+		subject.usings.filter_map { |at, refinement| "using #{refinement}; " if at == depth }.join
 	end
 
 	# Whether `module_function` copied the method to its module, which then
