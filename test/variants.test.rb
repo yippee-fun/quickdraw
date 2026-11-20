@@ -2,6 +2,8 @@
 
 class VariantsTest < Quickdraw::Test
 	test "config.browser with browsers: has a group for each, with the browser as its variant" do
+		skip "Variants need fork" unless Process.respond_to?(:fork)
+
 		config = Quickdraw::Configuration.new
 		config.browser("test/system/**/*.test.rb", browsers: [:chromium, :webkit]) { :app }
 
@@ -19,6 +21,8 @@ class VariantsTest < Quickdraw::Test
 	end
 
 	test "config.browser takes browser: or browsers:, each a browser once" do
+		skip "Variants need fork" unless Process.respond_to?(:fork)
+
 		error = assert_raises(ArgumentError) { Quickdraw::Configuration.new.browser("test/**/*.test.rb", browser: :chromium, browsers: [:webkit]) }
 		assert_equal error.message, "config.browser takes browser: or browsers:, not both."
 
