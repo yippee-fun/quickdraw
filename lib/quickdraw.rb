@@ -77,7 +77,7 @@ module Quickdraw
 
 	# A test as a file defines it. `block` is nil for a pending test, which is
 	# why the line is kept separately.
-	Definition = Data.define(:test_class, :description, :block, :timeout, :line)
+	Definition = Data.define(:test_class, :description, :block, :timeout, :line, :mutation)
 
 	# Raised in a worker on Ctrl-C. Not an Interrupt or StandardError, so tests
 	# can't rescue it by accident; their teardown and deferred blocks still run.

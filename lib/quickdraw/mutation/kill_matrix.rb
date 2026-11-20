@@ -46,6 +46,14 @@ class Quickdraw::Mutation::KillMatrix
 		sorted(entries)
 	end
 
+	# Of `tests` (Baselines), those that aren't the only test to kill some
+	# mutant, in a row where every test ran.
+	def without_unique_kill(tests)
+		unique = {}
+		@killers.each { |id, killers| unique[killers.first] = true if killers.one? && @complete[id] }
+		tests.reject { |test| unique.key?([test.path, test.index]) }
+	end
+
 	# Mutants whose rows didn't finish, since a test crashed, hung or didn't load.
 	def incomplete = @complete.count { |_id, complete| !complete }
 

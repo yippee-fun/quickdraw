@@ -2,6 +2,8 @@
 
 require_relative "../support/integration"
 
+require "json"
+
 class MutateTest < Quickdraw::Test
 	include Integration
 
@@ -129,7 +131,6 @@ class MutateTest < Quickdraw::Test
 		assert_match human.stdout, %r{^SURVIVED > → >=  Shop::Pricing#discount · lib/pricing\.rb:6 · \h{12}\n\n    - if total > 100\n    \+ if total >= 100\n}
 		match { human => { stdout: /^FAILED 63.6% mutation score · 7 killed · 4 survived$/ } }
 
-		require "json"
 		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json").stdout, symbolize_names: true)
 
 		match do
@@ -378,7 +379,6 @@ class MutateTest < Quickdraw::Test
 		agent = project.run("mutate", "lib/pricing.rb", "--format", "agent")
 		match { agent => { exit_status: 1, stdout: %r{^Couldn’t find Shop::Pricing#discount \(lib/pricing.rb:5\) once tests had loaded, so 11 mutants didn’t run\.$} } }
 
-		require "json"
 		json = project.run("mutate", "lib/pricing.rb", "--format", "json")
 		assert_equal json.exit_status, 1
 		match { JSON.parse(json.stdout, symbolize_names: true) => { missing: 11, missing_methods: [{ path: "lib/pricing.rb", line: 5, method: "Shop::Pricing#discount" }] } }
@@ -473,7 +473,6 @@ class MutateTest < Quickdraw::Test
 		human = project.run("mutate", "lib/pricing.rb", "--format", "human", "--matrix")
 		assert_match human.stdout, %r{^Blind tests ran against mutants and killed none\n  test/pricing\.test\.rb:8 PricingTest › runs small orders  ran against \d+ mutants$}
 
-		require "json"
 		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json", "--matrix").stdout)
 		assert_equal report["matrix"]["blind"].map { |test| test["line"] }, [8]
 		assert_equal report["matrix"]["redundant"].map { |test| test["line"] }, [4, 5]
@@ -496,7 +495,6 @@ class MutateTest < Quickdraw::Test
 		plain = project.run("mutate", "lib/pricing.rb", "--format", "agent")
 		matrix = project.run("mutate", "lib/pricing.rb", "--matrix", "--format", "json")
 
-		require "json"
 		report = JSON.parse(matrix.stdout)
 		assert_equal "#{report['killed']} of #{report['killed'] + report['survived']}", plain.stdout[/MUTATION SCORE: \S+ \((\d+ of \d+)/, 1]
 		assert_operator report["matrix"]["incomplete"], :>, 0
@@ -509,5 +507,192 @@ class MutateTest < Quickdraw::Test
 
 		project.run("mutate", "lib/constants.rb", "--format", "agent")
 		assert_equal project.run("mutate", "--show", "all").stdout, ""
+	end
+
+	def git(project, *)
+		system("git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false", *, exception: true, out: File::NULL, err: File::NULL)
+	end
+
+	test "--base mutates what changed since the branch left REF, committed or not, and not what REF gained since", timeout: 40 do
+		project = project("lib/pricing.rb" => PRICING, "lib/other.rb" => "module Other\n\tdef self.double(n) = n * 2\nend\n", "test/pricing.test.rb" => STRONG, ".gitignore" => ".quickdraw/\n")
+		commit(project)
+		git(project, "branch", "-M", "main")
+		git(project, "switch", "--quiet", "-c", "feature")
+		project.write("lib/pricing.rb" => PRICING.sub("\tend\nend\n", "\n\t\tdef tax(total) = total / 5\n\tend\nend\n"), "test/pricing.test.rb" => STRONG.sub("\nend\n", "\n\ttest(\"taxes\") { assert_equal Shop::Pricing.new.tax(50), 10 }\nend\n"))
+		commit(project)
+		git(project, "switch", "--quiet", "main")
+		project.write("lib/other.rb" => "module Other\n\tdef self.double(n) = n * 3\nend\n")
+		commit(project)
+		git(project, "switch", "--quiet", "feature")
+
+		assert_includes project.run("mutate", "--format", "agent").stdout, "Nothing to mutate in the lines changed since the last commit."
+
+		mutants = -> (*arguments, **options) { JSON.parse(project.run("mutate", *arguments, "--format", "json", **options).stdout, symbolize_names: true)[:mutants] }
+		committed = mutants.("--base", "main")
+		assert_operator committed, :>, 0
+		assert_operator mutants.("lib/pricing.rb"), :>, committed
+
+		project.write("lib/other.rb" => "module Other\n\tdef self.double(n) = n * 4\nend\n")
+		assert_operator mutants.("--base", "main"), :>, committed
+
+		git(project, "update-ref", "refs/remotes/origin/main", "main")
+		assert_equal mutants.(env: { "GITHUB_BASE_REF" => "main" }), mutants.("--base", "main")
+		assert_includes project.run("mutate", "--format", "agent", env: { "GITHUB_BASE_REF" => "nope" }).stderr, "Git can’t find"
+	end
+
+	test "--base explains when it can't be used", timeout: 20 do
+		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => STRONG, ".gitignore" => ".quickdraw/\n")
+		commit(project)
+
+		match { project.run("mutate", "--base", "nope") => { stderr: /\AGit can’t find/, exit_status: 2 } }
+		match { project.run("mutate", "--base", "HEAD", "lib/pricing.rb") => { stderr: /--base mutates the lines changed since a ref, so it can’t be used with files/, exit_status: 2 } }
+		match { project.run("mutate", "--base") => { stderr: /--base needs a git ref/, exit_status: 2 } }
+	end
+
+	test "a mutant marked equivalent is left out and counted, with its reason, and the others keep their ids", timeout: 30 do
+		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => WEAK)
+		before = project.run("mutate", "lib/pricing.rb", "--format", "agent")
+		ids = before.stdout.scan(%r{^SURVIVED (\h{12}) lib/pricing.rb:6 Shop::Pricing#discount: (.+?) \(}).to_h { |id, description| [description, id] }
+		assert_includes ids, "> → >="
+
+		marked = PRICING.sub("if total > 100", "if total > 100 # quickdraw:equivalent > → >= -- the discount at 100 is 10 either way")
+		project.write("lib/pricing.rb" => marked)
+		result = project.run("mutate", "lib/pricing.rb", "--format", "agent")
+
+		refute_includes result.stdout, "> → >="
+		assert_equal result.stdout.scan(%r{^SURVIVED (\h{12}) lib/pricing.rb:6 Shop::Pricing#discount: (.+?) \(}).to_h { |id, description| [description, id] }, ids.except("> → >=")
+		assert_includes result.stdout, "MUTATION SCORE: 70% (7 of 10 killed, 3 survived, 1 marked equivalent)"
+		refute_includes result.stderr, "marks"
+
+		human = project.run("mutate", "lib/pricing.rb", "--format", "human")
+		assert_includes human.stdout, "1 marked equivalent"
+
+		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json").stdout, symbolize_names: true)
+		match { report => { ignored: [{ id: /\A\h{12}\z/, path: "lib/pricing.rb", line: 6, method: "Shop::Pricing#discount", description: "> → >=", reason: "the discount at 100 is 10 either way" }] } }
+	end
+
+	test "warns about equivalence marks without a reason, or that match no mutant", timeout: 30 do
+		marked = PRICING.sub("if total > 100", "if total > 100 # quickdraw:equivalent > → >=").sub("total / 10", "total / 10 # quickdraw:equivalent nonsense -- nothing to see")
+		project = project("lib/pricing.rb" => marked, "test/pricing.test.rb" => WEAK)
+
+		result = project.run("mutate", "lib/pricing.rb", "--format", "agent")
+
+		assert_includes result.stderr, "lib/pricing.rb:6 marks a mutant equivalent without saying why. Add a reason after --."
+		assert_includes result.stderr, "lib/pricing.rb:7 marks “nonsense” equivalent, but no mutant there matches."
+		assert_includes result.stdout, "1 marked equivalent"
+
+		report = JSON.parse(project.run("mutate", "lib/pricing.rb", "--format", "json").stdout, symbolize_names: true)
+		match { report => { ignored: [{ reason: "no reason given" }] } }
+	end
+
+	UNIQUE_BASE = <<~RUBY
+		require_relative "../lib/pricing"
+
+		class PricingTest < Quickdraw::Test
+			test("discounts big orders") { assert_equal Shop::Pricing.new.discount(200), 20 }
+			test("doesn't discount 100") { assert_equal Shop::Pricing.new.discount(100), 0 }
+			test("discounts from just over 100") { assert_equal Shop::Pricing.new.discount(101), 10 }
+		end
+	RUBY
+
+	UNIQUE_FEATURE = <<~RUBY
+		#{UNIQUE_BASE}
+		class MorePricingTest < Quickdraw::Test
+			test("discounts other big orders") { assert_equal Shop::Pricing.new.discount(300), 30 }
+			test("taxes") { assert_equal Shop::Pricing.new.tax(50), 10 }
+			test("renders", mutation: false) { assert true }
+		end
+	RUBY
+
+	def unique_kills_project
+		project = project("lib/pricing.rb" => PRICING.sub("\tend\nend\n", "\n\t\tdef tax(total) = total / 5\n\tend\nend\n"), "test/pricing.test.rb" => UNIQUE_BASE, ".gitignore" => ".quickdraw/\n")
+		commit(project)
+		git(project, "branch", "-M", "main")
+		git(project, "switch", "--quiet", "-c", "feature")
+		project.write("test/pricing.test.rb" => UNIQUE_FEATURE)
+		commit(project)
+		project
+	end
+
+	test "--unique-kills fails the tests a diff adds that kill no mutant another test doesn't", timeout: 60 do
+		project = unique_kills_project
+
+		result = project.run("mutate", "--base", "main", "--unique-kills", "--format", "agent")
+
+		assert_equal result.exit_status, 1
+		assert_equal result.stdout.scan(/^NOT UNIQUE: .*/).size, 1
+		match { result => { stdout: %r{^NOT UNIQUE: test/pricing\.test\.rb:10 MorePricingTest › discounts other big orders kills no mutant another test doesn't\. } } }
+		refute_includes result.stdout, "BLIND"
+		refute_includes result.stdout, "REDUNDANT"
+		refute_includes result.stdout, "UNIQUE KILLS:"
+		match { result => { stdout: /^NO MUTANTS ON CHANGED LINES\. \d+ mutants to judge the tests this changes in / } }
+
+		report = JSON.parse(project.run("mutate", "--base", "main", "--unique-kills", "--format", "json").stdout, symbolize_names: true)
+		match { report => { mutants: 0, killed: 0, survived: 0, unique_kills: { tests: [*], not_unique: [{ name: "MorePricingTest › discounts other big orders" }] } } }
+		assert_equal report[:unique_kills][:tests].to_h { |test| [test[:name], test[:exempt]] }, { "MorePricingTest › discounts other big orders" => false, "MorePricingTest › taxes" => false, "MorePricingTest › renders" => true }
+
+		human = project.run("mutate", "--base", "main", "--unique-kills", "--format", "human")
+		assert_includes human.stdout, "Tests that kill no mutant of their own"
+		refute_includes human.stdout, "Blind tests"
+		assert_includes project.run("mutate", "--base", "main", "--unique-kills", "--matrix", "--format", "agent").stdout, "REDUNDANT: test/pricing.test.rb:10"
+	end
+
+	test "--unique-kills passes when every test the diff changes kills a mutant of its own", timeout: 60 do
+		project = unique_kills_project
+		project.write("test/pricing.test.rb" => UNIQUE_FEATURE.sub("discount(300), 30", "discount(150), 15").sub("\ttest(\"discounts other big orders\") { assert_equal Shop::Pricing.new.discount(150), 15 }\n", ""))
+		commit(project)
+
+		result = project.run("mutate", "--base", "main", "--unique-kills", "--format", "agent")
+
+		assert result.success?
+		assert_includes result.stdout, "UNIQUE KILLS: The test this changes kills a mutant no other test does."
+	end
+
+	def branch(files, changes)
+		project = project(**files, ".gitignore" => ".quickdraw/\n")
+		yield project if block_given?
+		commit(project)
+		git(project, "branch", "-M", "main")
+		git(project, "switch", "--quiet", "-c", "feature")
+		project.write(changes)
+		commit(project)
+		project
+	end
+
+	test "--unique-kills judges a test changed only by deleting a line from it, and not its neighbours", timeout: 60 do
+		before = <<~RUBY
+			require_relative "../lib/pricing"
+
+			class PricingTest < Quickdraw::Test
+				test("discounts big orders") do
+					assert_equal Shop::Pricing.new.discount(200), 20
+					assert_equal Shop::Pricing.new.discount(101), 10
+				end
+
+				test("doesn't discount 100") { assert_equal Shop::Pricing.new.discount(100), 0 }
+			end
+		RUBY
+
+		project = branch({ "lib/pricing.rb" => PRICING, "test/pricing.test.rb" => before }, { "test/pricing.test.rb" => before.sub(/^.*discount\(101\).*\n/, "") })
+		report = JSON.parse(project.run("mutate", "--base", "main", "--unique-kills", "--format", "json").stdout, symbolize_names: true)
+
+		assert_equal report[:unique_kills][:tests].map { |test| test[:name] }, ["PricingTest › discounts big orders"]
+	end
+
+	test "--unique-kills fails a test the diff adds that runs nothing it can mutate", timeout: 60 do
+		project = branch({ "lib/pricing.rb" => PRICING, "test/pricing.test.rb" => STRONG }, { "test/greeting.test.rb" => "class GreetingTest < Quickdraw::Test\n\ttest(\"greets\") { assert_equal \"hi\", \"hi\" }\nend\n" })
+		result = project.run("mutate", "--base", "main", "--unique-kills", "--format", "agent")
+
+		assert_equal result.exit_status, 1
+		assert_match result.stdout, %r{^NOT UNIQUE: test/greeting\.test\.rb:2 GreetingTest › greets }
+	end
+
+	test "--unique-kills judges a test file the coverage map hasn't seen by its counterpart", timeout: 60 do
+		files = { "lib/pricing.rb" => PRICING, "test/smoke.test.rb" => "require_relative \"../lib/pricing\"\n\nclass SmokeTest < Quickdraw::Test\n\ttest(\"runs\") { assert Shop::Pricing.new.discount(5) }\nend\n" }
+		project = branch(files, { "test/pricing.test.rb" => STRONG }) { |main| assert main.run("--coverage").success? }
+
+		result = project.run("mutate", "--base", "main", "--unique-kills", "--format", "agent")
+
+		match { result => { stdout: /^NO MUTANTS ON CHANGED LINES\. \d+ mutants to judge the tests this changes in / } }
 	end
 end

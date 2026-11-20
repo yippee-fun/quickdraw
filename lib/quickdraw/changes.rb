@@ -1,25 +1,30 @@
 # frozen_string_literal: true
 
-# What's changed since the last commit, staged or not, including untracked
-# files, which are new in full. Paths are relative to this directory, as
-# coverage is, in a repository with more than one project. Before the first
-# commit, everything is untracked. Both methods return nil outside git.
+# What's changed since the last commit, or since a `base` ref branched (such
+# as a pull request's), staged or not, including untracked files, which are
+# new in full. Paths are relative to this directory, as coverage is, in a
+# repository with more than one project. Before the first commit, everything
+# is untracked. Both methods return nil outside git, and raise
+# UnknownBase for a base git can't find.
 module Quickdraw::Changes
 	extend self
+
+	UnknownBase = Class.new(StandardError)
 
 	# Without Quickdraw's own run history and reports, in case .quickdraw/ isn't ignored.
 	# A rename counts as the old path deleted and the new one added, since
 	# tests may still use the old one.
-	def files
+	def files(base: nil)
 		untracked = git("ls-files", "--others", "--exclude-standard", "-z") or return
-		changed = git("diff", "HEAD", "--relative", "--name-only", "--no-renames", "-z") || staged || ""
+		changed = git("diff", since(base), "--relative", "--name-only", "--no-renames", "-z") || staged || ""
 		(changed.split("\0") + untracked.split("\0")).uniq.reject { |path| path.start_with?(".quickdraw/") }
 	end
 
-	# { path => changed line numbers } for Ruby files.
-	def lines
+	# { path => changed line numbers } for Ruby files. With `deletions`, lines
+	# deleted after line n, and no others, count as n + 0.5.
+	def lines(base: nil, deletions: false)
 		untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", "*.rb") or return
-		diff = git("diff", "HEAD", "--relative", "--unified=0", "--no-color", "--no-ext-diff", "--", "*.rb")
+		diff = git("diff", since(base), "--relative", "--unified=0", "--no-color", "--no-ext-diff", "--", "*.rb")
 		# Before the first commit, staged files are new in full.
 		untracked = "#{untracked}#{staged('*.rb')}" unless diff
 		diff ||= ""
@@ -37,7 +42,9 @@ module Quickdraw::Changes
 			in /\A@@ -\S+ \+(?<start>\d+)(?:,(?<count>\d+))? @@/ if path
 				start = Integer($~[:start], 10)
 				count = $~[:count] ? Integer($~[:count], 10) : 1
-				(changes[path] ||= []).concat((start...(start + count)).to_a)
+				lines = (start...(start + count)).to_a
+				lines << (start + 0.5) if deletions && count == 0
+				(changes[path] ||= []).concat(lines)
 			else nil
 			end
 		end
@@ -50,6 +57,14 @@ module Quickdraw::Changes
 		end
 
 		changes
+	end
+
+	# The commit to diff the working tree with: HEAD, or where HEAD branched
+	# from `base`, so what changed on `base` since doesn't count.
+	private def since(base)
+		return "HEAD" unless base
+
+		git("merge-base", base, "HEAD")&.strip or raise UnknownBase, "Git can’t find #{base}, or a commit it shares with HEAD. In CI, fetch it first, as in `git fetch origin #{base.delete_prefix('origin/')}`."
 	end
 
 	# Files staged before the first commit, when there's nothing to diff with.

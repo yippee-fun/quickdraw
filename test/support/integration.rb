@@ -83,6 +83,7 @@ module Integration
 				"QUICKDRAW_WORKER" => nil,
 				"TEST_ENV_NUMBER" => nil,
 				"GITHUB_ACTIONS" => nil,
+				"GITHUB_BASE_REF" => nil,
 				"GITHUB_STEP_SUMMARY" => nil,
 				"POSIXLY_CORRECT" => nil,
 				# Bundler resolves the Gemfile in every process, which takes about

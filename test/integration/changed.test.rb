@@ -137,6 +137,33 @@ class ChangedTest < Quickdraw::Test
 		match { project.run("-p", "1", "--changed", "--no-history", "--format", "agent") => { stdout: /PASSED: 1 test, 1 passed/ } }
 	end
 
+	test "--base runs the tests for what changed since the branch left REF, committed or not", timeout: 30 do
+		project = project_with_history
+		git = ["git", "-C", project.directory, "-c", "user.name=Quickdraw", "-c", "user.email=quickdraw@example.com", "-c", "commit.gpgsign=false"]
+		system(*git, "branch", "-M", "main", exception: true)
+		system(*git, "switch", "--quiet", "-c", "feature", exception: true)
+		project.write("lib/adder.rb" => "module Adder\n\tdef self.add(a, b) = b + a\nend\n")
+		commit(project)
+		system(*git, "switch", "--quiet", "main", exception: true)
+		project.write("lib/shout.rb" => "module Shout\n\tdef self.call(text) = text.upcase.strip\nend\n")
+		commit(project)
+		system(*git, "switch", "--quiet", "feature", exception: true)
+
+		match { project.run("-p", "1", "--changed", "--format", "agent") => { stderr: /Nothing has changed/ } }
+		match { project.run("-p", "1", "--changed", "--base", "main", "--format", "agent") => { stdout: /PASSED: 1 test, 1 passed/ } }
+
+		project.write("lib/yell.rb" => "module Yell; end\n", "test/adder.test.rb" => "require_relative '../lib/adder'\nclass AdderTest < Quickdraw::Test; test('adds') { assert_equal Adder.add(1, 2), 3 }; test('adds more') { assert_equal Adder.add(2, 2), 4 }; end\n")
+		match { project.run("-p", "1", "--changed", "--base", "main", "--format", "agent") => { stdout: /PASSED: 2 tests, 2 passed/ } }
+	end
+
+	test "--base explains when it can't be used", timeout: 20 do
+		project = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n")
+		commit(project)
+
+		match { project.run("--base", "main") => { stderr: /--base says what --changed compares with, so it needs --changed\./, exit_status: 2 } }
+		match { project.run("--changed", "--base", "nope") => { stderr: /Git can’t find/, exit_status: 2 } }
+	end
+
 	test "explains when --changed can't be used", timeout: 20 do
 		project = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n")
 

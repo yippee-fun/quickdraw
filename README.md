@@ -128,6 +128,7 @@ qt test/user.test.rb:12    # the test at line 12
 qt -n /admin/i -x slow     # tests whose names match /admin/i, but not "slow"
 qt --failed                # what failed last time
 qt --changed               # tests affected by uncommitted changes
+qt --changed --base main   # or by everything since this branched from main
 qt --watch                 # run again when files change
 ```
 
@@ -228,6 +229,7 @@ Coverage says which code your tests run, not whether they check it. `qt mutate` 
 
 ```sh
 qt mutate                      # the lines changed since the last commit
+qt mutate --base origin/main   # the lines changed since this branched from main
 qt mutate lib/cart.rb          # a file, or a directory
 qt mutate lib/cart.rb:12-20    # some of its lines
 ```
@@ -254,6 +256,47 @@ Mutation score 90% · 18 killed · 2 survived
 - **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs.
 - **Survivors** have ids that stay the same while their method's code does, since they don't include line numbers. For agents, each survivor is one line with its id, and `qt mutate --show ID` shows its change and the tests that ran it (`--show all` lists them all again).
 - **Which tests do the work:** `--matrix` runs every test that reaches each change, rather than stopping at the first failure, and lists **blind** tests, which ran changed code and noticed none of the changes, so they run code without checking it, and **redundant** tests, which only noticed changes another test noticed too. Since each change only runs the tests that reached its line, a blind test really did run the changed code. Redundancy is judged one test at a time, so remove redundant tests one at a time. It takes longer, since every test runs, but doesn't change the score.
+- **Equivalent changes:** some changes can't make a difference, such as `>` to `>=` where the two are never equal. Mark one with a comment on its line, naming the change as the output does and saying why, and it's left out of the score and listed as marked equivalent. A mark without a name covers every change on its line. Quickdraw warns about a mark with no reason, or one that matches no change.
+
+  ```ruby
+  return a if a > b # quickdraw:equivalent > → >= -- when they're equal, either is the larger
+  ```
+
+### On pull requests
+
+Mutation testing a whole suite is slow, but a pull request only needs its own changes tested. On CI, `qt mutate` with `--base` mutates just the lines the pull request changes, and runs just the tests that run them, which the coverage map from a `qt --coverage` run on the main branch says.
+
+`--unique-kills` also checks the tests the pull request adds or changes: each must be the only test to notice some change, so every test earns its place. To judge them, it also runs the changes they reach outside the pull request's lines, which don't count towards the score. A test that checks something that can't be changed this way, such as a log line or a rendered page, can opt out with `test("renders the receipt", mutation: false) { … }`.
+
+```yaml
+# .github/workflows/mutation.yml
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # for the commit the pull request shares with main
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+      - uses: actions/cache@v4
+        with:
+          path: .quickdraw/history.sqlite3
+          key: quickdraw-${{ github.sha }}
+          restore-keys: quickdraw-
+      - if: github.event_name == 'push'
+        run: bundle exec qt --coverage
+      - if: github.event_name == 'pull_request'
+        run: bundle exec qt mutate --base origin/${{ github.base_ref }} --unique-kills
+```
+
+On a pull request in GitHub Actions, `--base` defaults to the branch it merges into, so `qt mutate --unique-kills` alone does the same.
 
 ## Profiling
 

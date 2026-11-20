@@ -8,8 +8,9 @@
 # from the same state, a mutant never outlives its tests, and no file changes.
 class Quickdraw::Mutation::Runner
 	# A test's result unmutated. `duration` is in seconds, and `lines` is what
-	# it ran of each subject, as { subject id => [lines] }.
-	Baseline = Data.define(:path, :index, :name, :line, :status, :duration, :lines)
+	# it ran of each subject, as { subject id => [lines] }. `exempt` is whether
+	# it's marked `mutation: false`.
+	Baseline = Data.define(:path, :index, :name, :line, :status, :duration, :lines, :exempt)
 
 	# What a mutant runs: `tests` (Baselines) in order, until one fails, for up to `seconds`.
 	Job = Data.define(:mutant, :tests, :seconds)
@@ -60,6 +61,7 @@ class Quickdraw::Mutation::Runner
 						status: Quickdraw::Outcome.status(result),
 						duration: result["duration"] / 1_000_000_000.0,
 						lines: result["lines"],
+						exempt: test["mutation"] == false,
 					)
 				end
 			end

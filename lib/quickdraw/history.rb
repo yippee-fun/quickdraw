@@ -557,6 +557,18 @@ class Quickdraw::History
 		raise Error, error.message
 	end
 
+	# { test path => source files it ran in its last coverage run }, for
+	# those of `test_paths` the map has.
+	def sources_covered_by(test_paths)
+		pairs = test_paths.each_slice(BATCH_SIZE).flat_map do |paths|
+			@db.execute("SELECT DISTINCT test_path, source_path FROM coverage_map WHERE test_path IN (#{(['?'] * paths.size).join(', ')})", utf8(paths))
+		end
+
+		pairs.group_by(&:first).transform_values { |rows| rows.map(&:last) }
+	rescue SQLite3::Exception => error
+		raise Error, error.message
+	end
+
 	# Each test's results in the `quickdraw flaky` scan's runs after the run
 	# with the id `after`, with the run's seed.
 	def outcomes(scan:, after:)

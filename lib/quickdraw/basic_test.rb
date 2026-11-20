@@ -14,10 +14,12 @@ class Quickdraw::BasicTest
 
 	# Defines a test. Without a block, the test is pending: listed as still to
 	# write, but not a failure. `timeout` is in seconds, overriding
-	# Quickdraw::Config.timeout for this test.
-	def self.test(description = nil, timeout: nil, &block)
+	# Quickdraw::Config.timeout for this test. `mutation: false` exempts it
+	# from `quickdraw mutate --unique-kills`, for a test of code that can't be
+	# mutated, such as a template or configuration.
+	def self.test(description = nil, timeout: nil, mutation: true, &block)
 		line = block ? block.source_location[1] : caller_locations(1, 1).first.lineno
-		Quickdraw.register(Quickdraw::Definition.new(test_class: self, description:, block:, timeout:, line:))
+		Quickdraw.register(Quickdraw::Definition.new(test_class: self, description:, block:, timeout:, line:, mutation:))
 	end
 
 	# Groups tests under a description, which prefixes their names. The group is

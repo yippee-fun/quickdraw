@@ -146,6 +146,8 @@ class Quickdraw::CLI
 			usage_error "--leaks takes #{LEAK_MODES[...-1].join(', ')} or #{LEAK_MODES.last}, not #{options[:leaks].inspect}.", ("Did you mean #{suggestion}?" if suggestion)
 		end
 
+		usage_error "--base says what --changed compares with, so it needs --changed." if options[:base] && !options[:changed]
+
 		if options[:changed]
 			usage_error "--changed chooses the test files, so it can’t be used with paths." if @args.any?
 			usage_error "--changed can’t be used with --watch, which runs the tests for each change." if options[:watch]
@@ -239,6 +241,10 @@ class Quickdraw::CLI
 
 			parser.on("--changed", "Only the test files that run code changed since the last commit (mapped by --coverage runs)") do
 				options[:changed] = true
+			end
+
+			parser.on("--base REF", "With --changed, what changed since this branched from REF, as in a pull request") do |ref|
+				options[:base] = ref
 			end
 
 			parser.on("--fail-fast", "Stop starting tests after the first failure or error") do
@@ -504,7 +510,7 @@ class Quickdraw::CLI
 		system("taskpolicy", "-b", "-p", Process.pid.to_s) if options[:efficiency]
 
 		files = test_files(options[:patterns])
-		files = changed_test_files(files, history: options[:history]) if options[:changed]
+		files = changed_test_files(files, history: options[:history], base: options[:base]) if options[:changed]
 		only_keys = nil
 		whole_files = {}
 
@@ -620,8 +626,12 @@ class Quickdraw::CLI
 	# whose tests ran a changed source file in the last --coverage run of them.
 	# Without that map, the changed source files' counterparts. Explanations go
 	# to stderr, so they can't corrupt a JSON stream.
-	private def changed_test_files(files, history:)
-		changes = Quickdraw::Changes.files or usage_error("--changed needs a git repository, to see what’s changed.")
+	private def changed_test_files(files, history:, base:)
+		changes = begin
+			Quickdraw::Changes.files(base:) or usage_error("--changed needs a git repository, to see what’s changed.")
+		rescue Quickdraw::Changes::UnknownBase => error
+			usage_error(error.message)
+		end
 		test_paths = files.to_h { |path| [path.delete_prefix("./"), path] }
 
 		# Config, the Gemfile and test helpers, which coverage doesn't map.

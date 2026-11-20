@@ -55,10 +55,13 @@ class Quickdraw::Commands::Mutate
 		@format = options[:format] || (Quickdraw::Reporters.agent? ? "agent" : "human")
 		@threshold = options[:threshold]
 		@seed = options[:seed]
+		@unique_kills = options[:unique_kills]
 		@matrix = options[:matrix]
+		# Which tests are the only ones to kill a mutant is for the matrix to say.
+		@tracks_kills = @matrix || @unique_kills
 
 		# Prism, sqlite3 and etc load in a throwaway process, so they can't reach workers.
-		plan = Quickdraw.isolate { prepare(options[:targets]) }
+		plan = Quickdraw.isolate { prepare(options[:targets], options[:base], unique_kills: @unique_kills) }
 
 		if String === plan
 			warn plan
@@ -66,8 +69,14 @@ class Quickdraw::Commands::Mutate
 		end
 
 		plan[:warnings].each { |message| warn message }
-		mutants = plan[:mutants].each_with_index.map { |mutant, index| mutant.with(id: index) }
-		@keys = keys(mutants)
+		# Ids for the ignored too, so marking one doesn't change its neighbours'.
+		all = [*plan[:mutants], *plan[:ignored].map(&:first), *plan[:reach]].each_with_index.map { |mutant, index| mutant.with(id: index) }
+		mutants = all.first(plan[:mutants].size)
+		@ignored = all[plan[:mutants].size, plan[:ignored].size].zip(plan[:ignored].map(&:last))
+		@reach = all.last(plan[:reach].size)
+		@changed_tests = plan[:changed_tests]
+		@reach_ids = {}
+		@keys = keys(all)
 		@outcomes = []
 		@rows = []
 		@uncovered = []
@@ -75,18 +84,21 @@ class Quickdraw::Commands::Mutate
 		@broken = []
 		@jobs = []
 
-		if mutants.empty?
-			return finish("Nothing to mutate#{' in the lines changed since the last commit' if options[:targets].empty?}.", mutants, 0)
+		# Changed tests still have to kill something of their own, if only to fail.
+		if mutants.empty? && @reach.empty? && @changed_tests.empty?
+			where = " in the lines changed since #{options[:base] ? "this branched from #{options[:base]}" : 'the last commit'}" if options[:targets].empty?
+			equivalent = ", besides #{pluralize(@ignored.size, 'mutant')} marked equivalent" if @ignored.any?
+			return finish("Nothing to mutate#{where}#{equivalent}.", mutants, 0)
 		end
 
 		warn hint unless plan[:mapped]
 
-		if plan[:test_files].empty?
+		if plan[:test_files].empty? && mutants.any?
 			@uncovered = mutants
 			return finish("No tests run #{list(mutants.map { |mutant| relative(mutant.subject.path) }.uniq)}, so there’s nothing to kill their mutants.", mutants, 1)
 		end
 
-		run(mutants, plan[:test_files], processes: options[:processes] || plan[:processes].clamp(1, mutants.size))
+		run(mutants, plan[:test_files], processes: options[:processes] || plan[:processes].clamp(1, [mutants.size + @reach.size, 1].max))
 	end
 
 	# Without running anything. JSON is still a report, with the message on stderr.
@@ -105,7 +117,7 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def run(mutants, test_files, processes:)
-		runner = Quickdraw::Mutation::Runner.new(test_files.map { |path| File.expand_path(path) }, processes:, seed: @seed, matrix: @matrix)
+		runner = Quickdraw::Mutation::Runner.new(test_files.map { |path| File.expand_path(path) }, processes:, seed: @seed, matrix: @tracks_kills)
 
 		begin
 			mutate(runner, mutants, test_files)
@@ -131,7 +143,7 @@ class Quickdraw::Commands::Mutate
 
 		warn "Skipping #{list(grouped)}, which #{grouped.one? ? 'is' : 'are'} in a group, and mutate doesn’t run groups yet." if grouped.any?
 
-		subjects = mutants.map(&:subject).uniq(&:id)
+		subjects = [*mutants, *@reach].map(&:subject).uniq(&:id)
 		baselines, @broken = runner.baseline(test_files.map { |path| File.expand_path(path) }, subjects)
 		warn "#{list(@broken.map { |path| relative(path) })} failed to load, crashed or timed out, so #{@broken.one? ? 'its' : 'their'} tests don’t count." if @broken.any?
 
@@ -148,7 +160,7 @@ class Quickdraw::Commands::Mutate
 			baseline.lines.each { |id, lines| lines.each { |line| covering[[id, line]] << baseline } }
 		end
 
-		@missing = subjects.reject { |subject| runner.traced.key?(subject.id) }
+		@missing = mutants.map(&:subject).uniq(&:id).reject { |subject| runner.traced.key?(subject.id) }
 
 		mutants.each do |mutant|
 			next unless runner.traced.key?(mutant.subject.id)
@@ -156,27 +168,53 @@ class Quickdraw::Commands::Mutate
 			tests = covering.fetch([mutant.subject.id, mutant.covering_line], nil)
 			next @uncovered << mutant unless tests
 
-			tests = tests.sort_by(&:duration)
-			@jobs << Quickdraw::Mutation::Runner::Job.new(mutant:, tests:, seconds: (tests.sum(&:duration) * TIMEOUT_FACTOR) + TIMEOUT_MARGIN)
+			@jobs << job(mutant, tests)
+		end
+
+		if @unique_kills
+			@unique_tests = changed_tests(baselines.select { |baseline| baseline.status == "passed" })
+			changed = @unique_tests.to_h { |test| [[test.path, test.index], true] }
+
+			# Only those a test this changes runs, to judge it by.
+			@reach.each do |mutant|
+				tests = covering.fetch([mutant.subject.id, mutant.covering_line], nil) if runner.traced.key?(mutant.subject.id)
+				next unless tests&.any? { |test| changed.key?([test.path, test.index]) }
+
+				@reach_ids[mutant.id] = true
+				@jobs << job(mutant, tests)
+			end
 		end
 
 		runner.call(@jobs) do |job, outcome, row|
 			@outcomes << [job, outcome]
-			@rows << [job, row] if @matrix
+			@rows << [job, row] if @tracks_kills
 			progress
 		end
 	end
 
+	private def job(mutant, tests)
+		tests = tests.sort_by(&:duration)
+		Quickdraw::Mutation::Runner::Job.new(mutant:, tests:, seconds: (tests.sum(&:duration) * TIMEOUT_FACTOR) + TIMEOUT_MARGIN)
+	end
+
+	# The tests (Baselines) this adds or changes.
+	private def changed_tests(baselines)
+		baselines.select { |test| @changed_tests[relative(test.path)]&.include?(test.line) }
+	end
+
 	private def report(mutants)
 		@io.print "\r\e[K" if progress?
-		@killed, rest = @outcomes.partition { |_job, (status, *)| KILLED.include?(status) }
+		# Mutants run only to judge the tests this changes don't count.
+		outcomes = @outcomes.reject { |job, _outcome| @reach_ids.key?(job.mutant.id) }
+		@killed, rest = outcomes.partition { |_job, (status, *)| KILLED.include?(status) }
 		@survived, @errors = rest.partition { |_job, (status, *)| status == "survived" }
 		@survived.sort_by! { |job, _outcome| [job.mutant.subject.path, job.mutant.line, job.mutant.id] }
 		tested = @killed.size + @survived.size
 		@score = (100.0 * @killed.size / tested if tested > 0)
 		@duration = now - @started_at
 		@mutants = mutants
-		@kill_matrix = Quickdraw::Mutation::KillMatrix.new(@rows) if @matrix
+		@kill_matrix = Quickdraw::Mutation::KillMatrix.new(@rows) if @tracks_kills
+		@not_unique = @kill_matrix.without_unique_kill(@unique_tests.reject(&:exempt)) if @unique_kills && @unique_tests
 
 		save_survivors
 
@@ -193,6 +231,7 @@ class Quickdraw::Commands::Mutate
 	private def exit_status
 		if @interrupted then 130
 		elsif @score && @score < @threshold then 1
+		elsif @not_unique&.any? then 1
 		elsif @errors.any? || @broken.any? || @missing.any? then 1
 		else 0
 		end
@@ -211,18 +250,28 @@ class Quickdraw::Commands::Mutate
 			@io.puts
 		end
 
-		problems.each { |problem| @io.puts "#{yellow('!')} #{problem}" }
-		print_kill_matrix if @kill_matrix
+		if problems.any?
+			problems.each { |problem| @io.puts "#{yellow('!')} #{problem}" }
+			@io.puts
+		end
+
+		# Each section ends with a blank line, so the verdict needs one only after nothing.
+		sections = [@survived.any?, problems.any?]
+		sections << print_kill_matrix if @matrix
+		sections << print_unique_kills if @not_unique
 
 		counts = if @score
 			["#{format_score(@score)} mutation score", "#{@killed.size} killed", (red("#{@survived.size} survived") if @survived.any?)]
+		elsif @mutants.empty?
+			["No mutants on changed lines"]
 		else
 			["No mutants ran"]
 		end
 
 		counts << yellow("#{@uncovered.size} on lines no test runs") if @uncovered.any?
+		counts << dim("#{@ignored.size} marked equivalent") if @ignored.any?
 		badge, background = (exit_status == 0) ? ["PASSED", 42] : ["FAILED", 41]
-		@io.puts if problems.any? || @survived.empty?
+		@io.puts if sections.none?
 		@io.puts "#{label(badge, background)} #{counts.compact.join(dim(' · '))}"
 		@io.puts "#{beside_label(badge)}#{dim(rate)}"
 	end
@@ -239,14 +288,26 @@ class Quickdraw::Commands::Mutate
 
 		problems.each { |problem| @io.puts problem }
 
-		if @kill_matrix
+		if @matrix
 			matrix_entries(@kill_matrix.blind).each { |entry| @io.puts "BLIND: #{relative(entry.test.path)}:#{entry.test.line} #{entry.test.name} ran against #{pluralize(entry.count, 'mutant')} and killed none" }
 			matrix_entries(@kill_matrix.redundant).each { |entry| @io.puts "REDUNDANT: #{relative(entry.test.path)}:#{entry.test.line} #{entry.test.name}. Another test also killed each mutant it killed (#{entry.count})" }
 		end
 		@io.puts "NOT COVERED: #{pluralize(@uncovered.size, 'mutant')} on lines no test runs: #{uncovered_lines}" if @uncovered.any?
 
+		if @not_unique
+			@not_unique.first(SHOWN_MATRIX_TESTS).each do |test|
+				@io.puts "NOT UNIQUE: #{relative(test.path)}:#{test.line} #{test.name} kills no mutant another test doesn't. Make it check something no other test does, remove it, or mark it `mutation: false` if what it tests can't be mutated."
+			end
+
+			@io.puts "and #{pluralize(@not_unique.size - SHOWN_MATRIX_TESTS, 'more test')}" if @not_unique.size > SHOWN_MATRIX_TESTS
+			judged = @unique_tests.count { |test| !test.exempt }
+			@io.puts "UNIQUE KILLS: #{(judged == 1) ? 'The test' : "Each of the #{judged} tests"} this changes kills a mutant no other test does." if @not_unique.empty? && judged > 0
+		end
+
 		if @score
-			@io.puts "MUTATION SCORE: #{format_score(@score)} (#{@killed.size} of #{@killed.size + @survived.size} killed#{", #{@survived.size} survived" if @survived.any?}). #{rate}"
+			@io.puts "MUTATION SCORE: #{format_score(@score)} (#{@killed.size} of #{@killed.size + @survived.size} killed#{", #{@survived.size} survived" if @survived.any?}#{", #{@ignored.size} marked equivalent" if @ignored.any?}). #{rate}"
+		elsif @mutants.empty?
+			@io.puts "NO MUTANTS ON CHANGED LINES. #{rate}"
 		else
 			@io.puts "NO MUTANTS RAN. #{rate}"
 		end
@@ -268,6 +329,9 @@ class Quickdraw::Commands::Mutate
 			"timed_out" => @killed.count { |_job, (status, *)| status == "timeout" },
 			"survived" => @survived.size,
 			"uncovered" => @uncovered.size,
+			"ignored" => @ignored.map do |mutant, reason|
+				{ "id" => @keys.fetch(mutant.id), "path" => relative(mutant.subject.path), "line" => mutant.line, "method" => mutant.subject.label, "description" => mutant.description, "reason" => reason }
+			end,
 			"errors" => @errors.size,
 			"missing" => missing_mutants,
 			"duration" => @duration.round(3),
@@ -288,18 +352,20 @@ class Quickdraw::Commands::Mutate
 			end,
 			"uncovered_lines" => @uncovered.group_by { |mutant| relative(mutant.subject.path) }.transform_values { |list| list.map(&:line).uniq.sort },
 			"missing_methods" => @missing.map { |subject| { "path" => relative(subject.path), "line" => subject.line, "method" => subject.label } },
-			**({ "matrix" => matrix_json } if @kill_matrix),
+			**({ "matrix" => matrix_json } if @matrix),
+			**({ "unique_kills" => unique_kills_json } if @not_unique),
 		})
 	end
 
-	# Tests that ran mutants and killed none, then tests whose kills others made too.
+	# Tests that ran mutants and killed none, then tests whose kills others
+	# made too. Whether it printed anything.
 	private def print_kill_matrix
-		[
+		sections = [
 			["Blind tests", "ran against mutants and killed none", @kill_matrix.blind, "ran against"],
 			["Redundant tests", "every mutant they killed, another test killed too, so each could go, one at a time", @kill_matrix.redundant, "killed"],
-		].each do |title, explanation, entries, counted|
-			next if entries.empty?
+		].reject { |_title, _explanation, entries, _counted| entries.empty? }
 
+		sections.each do |title, explanation, entries, counted|
 			@io.puts "#{bold(title)} #{dim(explanation)}"
 			matrix_entries(entries).each do |entry|
 				@io.puts "  #{relative(entry.test.path)}:#{entry.test.line} #{entry.test.name}  #{dim("#{counted} #{pluralize(entry.count, 'mutant')}")}"
@@ -308,13 +374,47 @@ class Quickdraw::Commands::Mutate
 			@io.puts
 		end
 
-		if (incomplete = @kill_matrix.incomplete) > 0
+		incomplete = @kill_matrix.incomplete
+		if incomplete > 0
 			@io.puts "#{yellow('!')} Not every test ran against #{pluralize(incomplete, 'mutant')}, since a test crashed, hung or didn’t load, so #{(incomplete == 1) ? 'its tests' : 'their tests'} can’t be blind or redundant."
 			@io.puts
 		end
+
+		sections.any? || incomplete > 0
 	end
 
 	private def matrix_entries(entries) = entries.first(SHOWN_MATRIX_TESTS)
+
+	# The tests this adds or changes that aren't the only one to kill a
+	# mutant. Whether it printed anything.
+	private def print_unique_kills
+		judged = @unique_tests.count { |test| !test.exempt }
+		return false if judged == 0
+
+		if @not_unique.empty?
+			@io.puts "#{green('✓')} #{(judged == 1) ? 'The test' : "Each of the #{judged} tests"} this changes kills a mutant no other test does."
+			@io.puts
+			return true
+		end
+
+		@io.puts "#{bold('Tests that kill no mutant of their own')} #{dim('each test this changes must kill a mutant no other test does')}"
+
+		@not_unique.first(SHOWN_MATRIX_TESTS).each do |test|
+			@io.puts "  #{relative(test.path)}:#{test.line} #{test.name}"
+		end
+
+		@io.puts "  #{dim("and #{@not_unique.size - SHOWN_MATRIX_TESTS} more")}" if @not_unique.size > SHOWN_MATRIX_TESTS
+		@io.puts "  #{dim('Make each check something no other test does, remove it, or mark it `mutation: false` if what it tests can’t be mutated.')}"
+		@io.puts
+		true
+	end
+
+	private def unique_kills_json
+		{
+			"tests" => @unique_tests.map { |test| { "path" => relative(test.path), "line" => test.line, "name" => test.name, "exempt" => test.exempt } },
+			"not_unique" => @not_unique.map { |test| { "path" => relative(test.path), "line" => test.line, "name" => test.name } },
+		}
+	end
 
 	private def matrix_json
 		{
@@ -337,7 +437,8 @@ class Quickdraw::Commands::Mutate
 		seen = Hash.new(0)
 
 		mutants.to_h do |mutant|
-			identity = [relative(mutant.subject.path), mutant.subject.label, mutant.description, mutant.after.strip, mutant.line - mutant.subject.line]
+			# Without marks, so marking one doesn't change its neighbours' ids.
+			identity = [relative(mutant.subject.path), mutant.subject.label, mutant.description, mutant.after.gsub(EQUIVALENT_MARK, "").strip, mutant.line - mutant.subject.line]
 			seen[identity] += 1
 			[mutant.id, Quickdraw.stable_hash([*identity, seen[identity]].join("\0")).to_s(16).rjust(16, "0")[0, 12]]
 		end
@@ -472,7 +573,14 @@ class Quickdraw::Commands::Mutate
 
 	private def rate
 		ran = @outcomes.size
-		"#{pluralize(ran, 'mutant')} in #{format('%.2f', @duration)}s#{format(' (%.0f/s)', ran / @duration) if ran > 0}"
+		judging = @outcomes.count { |job, _outcome| @reach_ids.key?(job.mutant.id) }
+		judged = case judging
+		in 0 then ""
+		in ^ran then " to judge the tests this changes"
+		else " (#{judging} to judge the tests this changes)"
+		end
+
+		"#{pluralize(ran, 'mutant')}#{judged} in #{format('%.2f', @duration)}s#{format(' (%.0f/s)', ran / @duration) if ran > 0}"
 	end
 
 	private def format_score(score)
@@ -491,29 +599,153 @@ class Quickdraw::Commands::Mutate
 		"No --coverage run has mapped which tests run which files, so running the mutated files’ tests by name. Run `#{Quickdraw::Reporters.command} --coverage` to map them."
 	end
 
-	# In a throwaway process. The mutants of the targets, the test files that
-	# run them, and the default worker count; or a String if they can't be found.
-	private def prepare(targets)
-		sources = targets.empty? ? changed_sources : given_sources(targets)
+	# In a throwaway process. The mutants of the targets, those marked
+	# equivalent with why, the test files that run them, and the default
+	# worker count; or a String if they can't be found.
+	#
+	# With `unique_kills`, also the test files' lines this changes, and every
+	# other mutant (reach) of the source files those test files run, so the
+	# tests this adds or changes can be judged against all the code they run.
+	private def prepare(targets, base, unique_kills:)
+		sources = targets.empty? ? changed_sources(base) : given_sources(targets)
 		return sources if String === sources
 
 		warnings = []
+		ignored = []
+		mutants = sources.flat_map { |path, lines| mutants_of(path, lines, warnings, ignored) }
+		changed_tests = {}
+		reach = []
 
-		mutants = sources.flat_map do |path, lines|
-			Quickdraw::Mutation::Mutator.new(File.expand_path(path), File.read(path, encoding: Encoding::UTF_8), relative_path: path).call(lines:)
-		rescue SyntaxError => error
-			warnings << "Couldn’t parse #{path}: #{error.message}"
-			[]
+		if unique_kills
+			begin
+				changed = Quickdraw::Changes.lines(base:, deletions: true) || {}
+			rescue Quickdraw::Changes::UnknownBase => error
+				return error.message
+			end
+
+			changed.each do |path, lines|
+				next unless path.end_with?(Quickdraw::Commands::Counterpart::TEST_SUFFIX) && File.file?(path)
+
+				tests = changed_test_lines(path, lines)
+				changed_tests[path] = tests if tests.any?
+			end
+
+			mutated = mutants.to_h { |mutant| [identity(mutant), true] }
+
+			reach = sources_run_by(changed_tests.keys).flat_map do |path|
+				mutants_of(path, nil, [], []).reject { |mutant| mutated.key?(identity(mutant)) }
+			end
 		end
 
-		test_files, mapped = covering_test_files(mutants.map { |mutant| relative(mutant.subject.path) }.uniq)
-		{ mutants:, test_files:, mapped:, warnings:, processes: Quickdraw::Platform.non_blocking_cores }
+		test_files, mapped = covering_test_files([*mutants, *reach].map { |mutant| relative(mutant.subject.path) }.uniq)
+		{ mutants:, ignored:, reach:, changed_tests:, test_files: (test_files + changed_tests.keys).uniq, mapped:, warnings:, processes: Quickdraw::Platform.non_blocking_cores }
+	end
+
+	# The mutants of `path` that change `lines` (or any line, if nil), without
+	# those marked equivalent, which go in `ignored` with why. Problems with
+	# the marks go in `warnings`.
+	private def mutants_of(path, lines, warnings, ignored)
+		source = File.read(path, encoding: Encoding::UTF_8)
+		mutants = Quickdraw::Mutation::Mutator.new(File.expand_path(path), source, relative_path: path).call(lines:)
+		marks = equivalents(source)
+		used = {}
+
+		kept = mutants.reject do |mutant|
+			next false unless (mark = equivalent(mutant, marks))
+
+			used[mark] = true
+			ignored << [mutant, mark.last || "no reason given"]
+		end
+
+		marks.each do |line, line_marks|
+			next unless lines.nil? || lines.include?(line)
+
+			line_marks.each do |description, reason|
+				warnings << "#{path}:#{line} marks a mutant equivalent without saying why. Add a reason after --." if reason.nil?
+				warnings << "#{path}:#{line} marks #{description ? "“#{description}”" : 'mutants'} equivalent, but no mutant there matches." unless used.key?([line, description, reason])
+			end
+		end
+
+		kept
+	rescue SyntaxError => error
+		warnings << "Couldn’t parse #{path}: #{error.message}"
+		[]
+	end
+
+	private def identity(mutant)
+		[mutant.subject.path, mutant.line, mutant.last_line, mutant.description, mutant.after]
+	end
+
+	# The project's source files that `test_paths` run, from the coverage
+	# map, or else, for a test file it hasn't mapped (one this adds, say),
+	# its counterpart by name.
+	private def sources_run_by(test_paths)
+		return [] if test_paths.empty?
+
+		covered = begin
+			history = Quickdraw::History.new(Quickdraw::CLI::HISTORY_PATH, read_only: true) if Quickdraw::History.exist?(Quickdraw::CLI::HISTORY_PATH)
+			history ? history.sources_covered_by(test_paths) : {}
+		rescue Quickdraw::History::Error
+			{}
+		ensure
+			history&.close
+		end
+
+		counterpart = Quickdraw::Commands::Counterpart.new
+		sources = test_paths.flat_map { |path| covered.fetch(path) { [counterpart.find(path)].compact } }
+		sources.uniq.select { |path| source?(path) && File.file?(path) }
+	end
+
+	# Where each `test` call with a changed line starts its block, which is
+	# the line a test is defined at.
+	private def changed_test_lines(path, lines)
+		require "prism"
+		starts = []
+		nodes = [Prism.parse_file(path).value]
+
+		while (node = nodes.pop)
+			if node in Prism::CallNode[name: :test | :fuzz, receiver: nil, block: Prism::BlockNode => block]
+				starts << block.location.start_line if lines.any? { |line| line.between?(node.location.start_line, node.location.end_line) }
+			end
+
+			nodes.concat(node.compact_child_nodes)
+		end
+
+		starts
+	end
+
+	EQUIVALENT = /\A#\s*quickdraw:equivalent\b(?<description>.*?)(?:\s+--\s*(?<reason>.*))?\z/
+	EQUIVALENT_MARK = /[ \t]*#\s*quickdraw:equivalent\b.*$/
+
+	# { line => [[description or nil, reason or nil]] }, from comments such as
+	# `# quickdraw:equivalent > → >= -- the cap below makes it the same`.
+	# Without a description, it's every mutant on the line.
+	private def equivalents(source)
+		Prism.parse_comments(source).each_with_object({}) do |comment, marks|
+			match = EQUIVALENT.match(comment.slice.strip) or next
+			description = match[:description].strip
+			reason = match[:reason]&.strip
+			(marks[comment.location.start_line] ||= []) << [(description unless description.empty?), (reason unless reason.to_s.empty?)]
+		end
+	end
+
+	# The mark on one of `mutant`'s lines that covers it, as [line, description, reason], or nil.
+	private def equivalent(mutant, marks)
+		mutant.line.upto(mutant.last_line) do |line|
+			marks.fetch(line, []).each do |description, reason|
+				return [line, description, reason] if description.nil? || description == mutant.description
+			end
+		end
+
+		nil
 	end
 
 	# { path => changed lines } for the project's own Ruby files.
-	private def changed_sources
-		changes = Quickdraw::Changes.lines or return "mutate needs a git repository to see what’s changed, or files to mutate."
+	private def changed_sources(base)
+		changes = Quickdraw::Changes.lines(base:) or return "mutate needs a git repository to see what’s changed, or files to mutate."
 		changes.select { |path, _lines| source?(path) && File.file?(path) }
+	rescue Quickdraw::Changes::UnknownBase => error
+		error.message
 	end
 
 	# { path => lines, or nil for all of them }
@@ -568,7 +800,7 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def parse
-		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED, matrix: false, show: nil }
+		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED, matrix: false, show: nil, base: nil, unique_kills: false }
 
 		until @args.empty?
 			argument = @args.shift
@@ -586,11 +818,16 @@ class Quickdraw::Commands::Mutate
 			in "--threshold"
 				options[:threshold] = Float(@args.shift.to_s, exception: false)
 				return usage("--threshold needs a percentage, as in --threshold 80.") unless options[:threshold]&.between?(0, 100)
+			in "--base"
+				options[:base] = @args.shift
+				return usage("--base needs a git ref, as in --base origin/main.") unless options[:base] && !options[:base].start_with?("-")
 			in "--show"
 				options[:show] = @args.shift
 				return usage("--show needs a survivor's id, from the last run, or all.") unless options[:show]
 			in "--matrix"
 				options[:matrix] = true
+			in "--unique-kills"
+				options[:unique_kills] = true
 			in "--format"
 				options[:format] = @args.shift
 				return usage("--format needs one of #{FORMATS.join(', ')}.") unless FORMATS.include?(options[:format])
@@ -604,6 +841,10 @@ class Quickdraw::Commands::Mutate
 			end
 		end
 
+		return usage("--base mutates the lines changed since a ref, so it can’t be used with files.") if options[:base] && options[:targets].any?
+
+		# In a pull request on GitHub Actions, what it changes.
+		options[:base] ||= "origin/#{ENV['GITHUB_BASE_REF']}" if options[:targets].empty? && !ENV["GITHUB_BASE_REF"].to_s.empty?
 		options
 	end
 
@@ -620,12 +861,16 @@ class Quickdraw::Commands::Mutate
 			Mutates the lines changed since the last commit, or the files, directories and lines given,
 			and runs the tests that run each mutant. Lists the mutants no test failed for.
 
+			        --base REF        Mutate the lines changed since this branched from REF, as in a pull
+			                          request (on GitHub Actions, the pull request's base, by default)
 			    -p, --processes N     Run N workers
 			    -s, --seed N          Seed rand in tests with N (default #{DEFAULT_SEED}), the same for every mutant
 			        --threshold PERCENT
 			                          Fail if fewer than PERCENT of mutants are killed (default 100)
 			        --matrix          Run every test against each mutant, and list tests that kill none
 			                          (blind) and tests whose kills others also make (redundant)
+			        --unique-kills    Fail if a test this changes isn't the only one to kill some mutant of the
+			                          code it runs (a test marked `mutation: false` is exempt). Implies --matrix
 			        --format FORMAT   human, agent or json
 			        --show ID         Show a survivor from the last run: its change and the tests that ran it
 			                          (all lists every survivor)
