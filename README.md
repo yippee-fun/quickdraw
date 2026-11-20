@@ -191,7 +191,7 @@ Runs with `--no-history` aren't kept, so their agent report shows the first prob
 qd --format human --format junit:reports/junit.xml
 ```
 
-Under GitHub Actions, failures are annotated and a summary is written for the job.
+Under GitHub Actions, failures are annotated and a summary is written for the job (see CI).
 
 In a terminal, a line of a failure's message, context or output is cut to 500 characters, saying how many more there were. Anywhere else, such as a CI log or a file, it's shown in full (up to 100,000 characters), since that's read after the run. With `CI` set, the output counts as a CI log even on a terminal, starts with a line saying what it ran on (`Ruby 3.4.7 (x86_64-linux) · 4 cores · 2 workers · seed 4130`), and agents get all of a failing test's captured output (its last 64KB) rather than its last 20 lines.
 
@@ -202,6 +202,32 @@ What a test prints, to stdout or stderr, from Ruby, a subprocess or a C extensio
 `--no-capture` shows output as it's printed instead.
 
 Debuggers work in any run. When a test reaches `binding.irb`, `debugger`, `binding.break` or `binding.pry`, Quickdraw pauses its display and gives that worker the terminal, one debugger at a time, while other workers keep going. The test's timeout is paused, and Ctrl-C goes to the debugger.
+
+## CI
+
+Under GitHub Actions, each problem is an annotation on the line it failed on, and the job gets a summary. An annotation's message starts with the test's name and location, as in `UserTest › greets · test/user.test.rb:3`, with the rest indented under it, since raw logs (`gh run view --log`) show only the message.
+
+Logs cut long values short, so keep the run itself: `.quickdraw/last-run.jsonl` has each problem in full, with its message, backtrace, output and rerun command, and the run's arguments, seed, Ruby and platform. Each problem is written once it's final (after any retry), so a run that's killed or crashes keeps those it had. Upload it when the tests fail:
+
+```yaml
+- run: bundle exec qd
+- if: failure()
+  uses: actions/upload-artifact@v4
+  with:
+    name: quickdraw-${{ matrix.ruby-version }} # unique for each job
+    path: .quickdraw/last-run.jsonl
+    include-hidden-files: true # .quickdraw is hidden
+```
+
+Then download it and read it with the same commands as a local run:
+
+```sh
+gh run download RUN_ID --name quickdraw-3.4 --dir tmp/ci
+qd last --from tmp/ci/last-run.jsonl                         # the result, a line per problem
+qd last --from tmp/ci/last-run.jsonl test/cart.test.rb:12    # a problem in full
+```
+
+A file another version of Quickdraw kept differently says which version to read it with.
 
 ## Leaks
 

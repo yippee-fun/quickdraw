@@ -20,28 +20,32 @@ module Integration
 			stdout.each_line.filter_map { |line| JSON.parse(line) if line.start_with?("{") }
 		end
 
-		# What a terminal would show once the run ends: each line as carriage
-		# returns and erasing to the end of the line (as a status line is
-		# redrawn) left it, without hiding and showing the cursor.
-		def screen
-			stdout.gsub(/\e\[\?25[lh]/, "").split(/\r?\n/, -1).map do |line|
-				cells = +""
-				column = 0
+		# What a terminal would show once the run ends (see Integration.screen).
+		def screen = Integration.screen(stdout)
+	end
 
-				line.scan(/\r|\e\[K|[^\r\e]+|\e/) do |token|
-					case token
-					in "\r" then column = 0
-					in "\e[K" then cells = cells[0, column]
-					else
-						cells << (" " * (column - cells.size)) if column > cells.size
-						cells[column, token.size] = token
-						column += token.size
-					end
+	# What a terminal would show of `output`: each line as carriage returns and
+	# erasing to the end of the line (as StatusLine redraws itself) left it,
+	# without other escape codes, such as colours, hiding the cursor or
+	# clearing the screen.
+	def self.screen(output)
+		output.gsub(/\e\[[\d;?]*[A-JL-Za-z]/, "").split(/\r?\n/, -1).map do |line|
+			cells = +""
+			column = 0
+
+			line.scan(/\r|\e\[K|[^\r\e]+|\e/) do |token|
+				case token
+				in "\r" then column = 0
+				in "\e[K" then cells = cells[0, column]
+				else
+					cells << (" " * (column - cells.size)) if column > cells.size
+					cells[column, token.size] = token
+					column += token.size
 				end
+			end
 
-				cells
-			end.join("\n")
-		end
+			cells
+		end.join("\n")
 	end
 
 	# A run's verdict, then its counts, from the human summary.
@@ -137,6 +141,7 @@ module Integration
 				"QUICKDRAW_WORKER" => nil,
 				"TEST_ENV_NUMBER" => nil,
 				**ENV.keys.grep(/\AGITHUB_/).to_h { |name| [name, nil] },
+				"CI" => nil,
 				"POSIXLY_CORRECT" => nil,
 				# Bundler resolves the Gemfile in every process, which takes about
 				# 120ms. The load path it set up for this one does the same job.
@@ -160,7 +165,8 @@ module Integration
 				if now - started_at > timeout
 					kill_group(pid)
 					Process.wait(pid)
-					raise "Quickdraw didn’t finish within #{timeout}s. Output so far:\n#{Quickdraw.utf8("#{stdout}#{stderr}")}"
+					output = Integration.screen(Quickdraw.utf8("#{stdout}#{stderr}")).gsub(/^(?=.)/, "  ")
+					raise "Quickdraw didn’t finish within #{timeout}s. Output so far:\n#{output}"
 				end
 
 				IO.select(readers, nil, nil, 0.05)

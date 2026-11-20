@@ -188,9 +188,23 @@ class FormatsTest < Quickdraw::Test
 		summary = File.join(project.directory, "summary.md")
 		result = project.run("-p", "1", "--no-history", env: { "GITHUB_ACTIONS" => "true", "GITHUB_STEP_SUMMARY" => summary })
 
-		assert_includes result.output, "::error file=shapes.test.rb,line=5,title=Shapes › computes area::Expected  7%0AActual    6"
-		assert_includes result.output, "::error file=shapes.test.rb,line=2,title=Shapes › raises in a helper::NoMethodError"
+		assert_includes result.output, "::error file=shapes.test.rb,line=5,title=Shapes › computes area::Shapes › computes area · shapes.test.rb:4%0A  Expected  7%0A  Actual    6"
+		assert_includes result.output, "::error file=shapes.test.rb,line=2,title=Shapes › raises in a helper::Shapes › raises in a helper · shapes.test.rb:8%0A  NoMethodError"
 		assert_includes File.read(summary), "| 3 | 1 | 1 | 0 | 0 | 1 | 0 |"
+	end
+
+	test "leads a GitHub Actions annotation's message with its test, and indents the rest, since raw logs show only the message", timeout: 20 do
+		project = project(
+			"nested.test.rb" => <<~'RUBY',
+				class Nested < Quickdraw::Test
+					test("runs\nanother suite") { assert(false) { "100%, a:b\n\nERROR isolated 0\n  at depth" } }
+				end
+			RUBY
+		)
+		result = project.run("-p", "1", "--no-history", "--retry", "0", env: { "GITHUB_ACTIONS" => "true" })
+
+		annotations = result.stdout.lines.grep(/\A::error /)
+		assert_equal annotations, ["::error file=nested.test.rb,line=2,title=Nested › runs%0Aanother suite::Nested › runs another suite · nested.test.rb:2%0A  100%25, a:b%0A%0A  ERROR isolated 0%0A    at depth\n"]
 	end
 
 	test "writes JUnit XML", timeout: 20 do

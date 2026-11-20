@@ -22,10 +22,12 @@ class Quickdraw::Reporters::Agent
 	# `kept` says, once the run finishes, whether it was kept for `quickdraw
 	# last`, which has the details. `replay` is for `quickdraw last`, which
 	# has only the results with problems, so not a profile or coverage.
-	# `command` runs the run's tests again, such as `qd browser`.
-	def initialize(io: $stdout, backtrace: false, kept: nil, replay: false, command: Quickdraw::Reporters.command)
+	# `command` runs the run's tests again, such as `qd browser`, and `last`
+	# reads the kept run, such as `qd last --from FILE`.
+	def initialize(io: $stdout, backtrace: false, kept: nil, replay: false, command: Quickdraw::Reporters.command, last: "#{Quickdraw::Reporters.command} last")
 		@io = io
 		@command = command
+		@last = last
 		@backtrace = backtrace
 		@kept = kept
 		@replay = replay
@@ -133,11 +135,9 @@ class Quickdraw::Reporters::Agent
 	end
 
 	private def print_commands(outcome, kept)
-		command = Quickdraw::Reporters.command
-
 		if kept
 			path, test, _result = @problems.first || @leaks.first
-			@io.puts "Details: #{command} last #{shell(test ? "#{path}:#{test['line']}" : path)} (or a whole file). All problems: #{command} last --list"
+			@io.puts "Details: #{@last} #{shell(test ? "#{path}:#{test['line']}" : path)} (or a whole file). All problems: #{@last} --list"
 		end
 
 		@io.puts "Rerun the failures with: #{@command} --failed" if outcome.recorded && @problems.any?
