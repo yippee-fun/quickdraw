@@ -32,7 +32,7 @@ class Quickdraw::Reporters::Agent
 		@profile = Quickdraw::Profile.new
 	end
 
-	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
+	def start(processes:, worker_choice:, seed:, paths:, estimate: nil, **)
 		@processes = processes
 		@seed = seed
 	end

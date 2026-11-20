@@ -54,11 +54,12 @@ class Quickdraw::CLI
 	private def parse
 		require "optparse"
 
+		# Run settings config can set too (see Configuration#settings) are nil
+		# unless given, so config decides.
 		options = {
 			backtrace: false,
 			timings: false,
 			timeline: false,
-			elastic: false,
 			profile: false,
 			coverage: false,
 			processes: nil,
@@ -72,10 +73,6 @@ class Quickdraw::CLI
 			names: [],
 			excludes: [],
 			outputs: [],
-			capture: true,
-			leaks: "warn",
-			retries: 1,
-			allow_flaky: false,
 		}
 
 		parser = option_parser(options)
@@ -157,7 +154,7 @@ class Quickdraw::CLI
 		usage_error "--failed needs run history, so it can’t be used with --no-history." if options[:failed] && !options[:history]
 		usage_error "--quarantine needs run history, so it can’t be used with --no-history." if options[:quarantine] && !options[:history]
 
-		unless LEAK_MODES.include?(options[:leaks])
+		if options[:leaks] && !LEAK_MODES.include?(options[:leaks])
 			suggestion = suggest(options[:leaks], LEAK_MODES)
 			usage_error "--leaks takes #{LEAK_MODES[...-1].join(', ')} or #{LEAK_MODES.last}, not #{options[:leaks].inspect}.", ("Did you mean #{suggestion}?" if suggestion)
 		end
@@ -277,12 +274,12 @@ class Quickdraw::CLI
 				options[:retries] = it
 			end
 
-			parser.on("--allow-flaky", "Pass the run when every failure passed on retry") do
-				options[:allow_flaky] = true
+			parser.on("--[no-]allow-flaky", "Pass the run when every failure passed on retry") do |it|
+				options[:allow_flaky] = it
 			end
 
-			parser.on("--quarantine", "Let tests that were flaky in the last #{Quickdraw::History::QUARANTINE_WINDOW} runs fail without failing the run") do
-				options[:quarantine] = true
+			parser.on("--[no-]quarantine", "Let tests that were flaky in the last #{Quickdraw::History::QUARANTINE_WINDOW} runs fail without failing the run") do |it|
+				options[:quarantine] = it
 			end
 
 			parser.on("--flakes FILE", "Write the tests that passed on retry, with each attempt, to FILE as JSON") do |it|
@@ -326,11 +323,11 @@ class Quickdraw::CLI
 			end
 
 			parser.on(
-				"--no-capture",
-				"Show what tests print as they print it, rather than with their failures",
+				"--[no-]capture",
+				"With --no-capture, show what tests print as they print it, rather than with their failures",
 				"(for a debugger such as binding.irb, also run one test with -p 1)",
-			) do
-				options[:capture] = false
+			) do |it|
+				options[:capture] = it
 			end
 
 			parser.on("--leaks MODE", "Threads, child processes and ENV changes a test leaves behind: warn (default), fail or off") do |it|
@@ -352,8 +349,8 @@ class Quickdraw::CLI
 				options[:efficiency] = true
 			end
 
-			parser.on("--elastic", "Add workers while tests leave CPU idle, unless the count is given") do
-				options[:elastic] = true
+			parser.on("--[no-]elastic", "Add workers while tests leave CPU idle, unless the count is given") do |it|
+				options[:elastic] = it
 			end
 
 			parser.separator ""
@@ -604,13 +601,15 @@ class Quickdraw::CLI
 			whole_files:,
 			profile: options[:profile],
 			coverage: options[:coverage],
+			capture: options[:capture],
 			# What loading prints goes through the reporter, so it isn't mixed into its lines.
-			capture: (options[:capture] && reporter.shows_loading_output?) ? :loading : options[:capture],
-			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
+			capture_loading: reporter.shows_loading_output?,
+			leaks: options[:leaks]&.to_sym,
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
-			quarantined: (flaky_keys if options[:quarantine]),
+			quarantine: options[:quarantine],
 			flakes_path: options[:flakes_path],
+			output_paths: [*options[:outputs].filter_map(&:last), (File.expand_path(Quickdraw::Reporters::LastRun::PATH) if options[:history])].compact,
 			repeatable: !options[:changed],
 			warm_loaders: options[:warm_loaders],
 			timeline: options[:timeline],
@@ -631,7 +630,7 @@ class Quickdraw::CLI
 			io = path ? File.open(path, "w") : $stdout
 
 			case format
-			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live: options[:capture])
+			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live: options[:capture] != false)
 			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace], kept: (-> { last_run.saved? } if last_run))
 			in "json" then Quickdraw::Reporters::JSON.new(io:)
 			in "junit" then Quickdraw::Reporters::JUnit.new(io:)
@@ -714,25 +713,6 @@ class Quickdraw::CLI
 
 	# Read in a throwaway process, since the loader forks from this one and
 	# sqlite3 must not reach it.
-	# { key => true } for the tests flaky in recent runs, for --quarantine,
-	# or none without history yet. A history that can't be read, such as one a
-	# CI cache restored from an older Quickdraw, quarantines nothing, rather
-	# than stop the run that would rebuild it.
-	private def flaky_keys
-		result = Quickdraw.isolate do
-			Quickdraw::History.exist?(HISTORY_PATH) ? Quickdraw::History.new(HISTORY_PATH, read_only: true).flaky_keys : {}
-		rescue Quickdraw::History::Error => error
-			error.message
-		end
-
-		case result
-		in Hash then result
-		in String => message
-			warn "--quarantine couldn’t read the run history (#{message}), so nothing is quarantined this run."
-			{}
-		end
-	end
-
 	private def failing
 		result = Quickdraw.isolate do
 			history = Quickdraw::History.new(HISTORY_PATH)

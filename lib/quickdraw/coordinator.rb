@@ -295,23 +295,34 @@ class Quickdraw::Coordinator
 	# how workers spent the run (see Timeline). With `elastic`, a count that
 	# wasn't given grows while tests leave CPU idle (see Elastic). Flaky tests
 	# go to config's on_flaky callbacks, and to `flakes_path` as JSON. With
-	# `quarantined` ({ key => true }), those tests can fail without failing the run.
+	# `quarantine`, tests flaky in recent runs can fail without failing the run.
+	#
+	# Run settings config can set too (`capture`, `leaks`, `retries`,
+	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic` and `processes`)
+	# are nil unless the command line gave them, and config's apply then (see
+	# #apply_settings).
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: false, leaks: nil, retries: 0, allow_flaky: false, quarantined: nil, flakes_path: nil, warm_loaders: nil, timeline: false, elastic: false
+		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil
 	)
 		@timeline = Quickdraw::Timeline.new if timeline
 		@elastic_allowed = elastic
 		@warm_loaders = warm_loaders
 		@repeatable = repeatable
 		@retry_count = retries
-		@flakes = Flakes.new(seed:, path: flakes_path, quarantined:)
+		@allow_flaky = allow_flaky
+		@quarantine = quarantine
+		@flakes_path = flakes_path
+		# Reports' files, which config's flakes path mustn't be.
+		@output_paths = output_paths
+		@flakes = Flakes.new(seed:, path: flakes_path, quarantined: nil)
 		# Workers waiting for the terminal, and the one in a debugger.
 		@debug_queue = []
 		@debugger = nil
-		@outcome = Quickdraw::Outcome.new(allow_flaky:)
+		@outcome = Quickdraw::Outcome.new
 		@capture = capture
+		@capture_loading = capture_loading
 		@leaks = leaks
 		@seed = seed
 		@processes = processes
@@ -361,7 +372,8 @@ class Quickdraw::Coordinator
 		# First, so it opens while config boots.
 		@history = Quickdraw::HistoryProcess.new(@history_path) if @history_path
 		# A retry needs a fresh worker, which needs fork.
-		@retries = Retries.new(@forking ? @retry_count : 0, fail_fast: @fail_fast, in_history: !@history.nil?)
+		# Channels for retries open before config is read, so for as many as it could ask for.
+		@retries = Retries.new(@forking ? (@retry_count || Quickdraw::Configuration::MOST_RETRIES) : 0, fail_fast: @fail_fast, in_history: !@history.nil?)
 
 		# Keyed by group, nil for tests in none. This loader reports the groups
 		# config defines; the others start once it has.
@@ -382,15 +394,24 @@ class Quickdraw::Coordinator
 		# Group loaders fork from this process, so they start before run history
 		# (sqlite3) loads, once the first loader says which groups there are.
 		report = @forking ? first_report(interrupt_reader) : [:booted, [], nil]
-		groups = case report
-		in [:booted, groups, *] then groups
-		else []
+		groups, settings = case report
+		in [:booted, groups, _coverage, settings] then [groups, settings]
+		in [:booted, groups, *] then [groups, {}]
+		else [[], {}]
 		end
+		# Before the group loaders start, so they get what config set too.
+		apply_settings(settings)
 		groups_reported(groups) unless @interrupted
 
 		load_plan
 		# Retries get the channels left over, so a low file limit costs retries, not workers.
 		@processes, @worker_choice = @forking ? choose_processes([@loaders[nil].spares.size - SPARE_CHANNELS, 1].max) : [1, "default"]
+
+		# Channels for workers open before config is read, for as many as the machine has cores.
+		if @configured_processes && @processes < @configured_processes
+			warn "config.processes = #{@configured_processes}, but channels for only #{@processes} workers were opened before config was read. -p #{@configured_processes} opens more."
+		end
+
 		@free_slots = Array.new(@processes) { |slot| slot }
 		@scheduler = Scheduler.new(
 			groups:, group_of: @group_of, plan: @plan, core_budget: @processes,
@@ -400,7 +421,7 @@ class Quickdraw::Coordinator
 		@slot_count = @processes
 		@workers_added_at = []
 
-		@reporter.start(processes: @processes, worker_choice: @worker_choice, seed: @seed, paths: @display_paths.values, estimate:)
+		@reporter.start(processes: @processes, worker_choice: @worker_choice, seed: @seed, paths: @display_paths.values, estimate:, capture: !!@capture)
 		reporting_started_at = now
 
 		unless @interrupted
@@ -546,14 +567,15 @@ class Quickdraw::Coordinator
 		session = @warm_loaders&.session(
 			group, gemfile: @gemfiles[group], capacity:,
 			test_files: @test_files, seed: @seed, profile: @profile, coverage: !@coverage.nil?, test_output_to_stderr: @test_output_to_stderr,
-			capture: @capture, leaks: @leaks,
+			capture: @capture, capture_loading: @capture_loading, leaks: @leaks,
 		)
 		return session if session
 
 		coordinator_channels, worker_channels = Array.new(capacity) { Quickdraw::Channel.pair }.transpose
 
 		unless @forking
-			Quickdraw::Loader.new(worker_channels, @test_files, @seed, profile: @profile).call_in_thread
+			# Without fork, tests share this process, so leaks can't be told apart.
+			Quickdraw::Loader.new(worker_channels, @test_files, @seed, profile: @profile, leaks: :off).call_in_thread
 			return LoaderProcess.new(group:, pid: nil, control: nil, report: nil, channels: coordinator_channels)
 		end
 
@@ -564,7 +586,7 @@ class Quickdraw::Coordinator
 			worker_channels, @test_files, @seed,
 			gemfile: @gemfiles[group],
 			control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, coverage: !@coverage.nil?, group:, report: report_writer,
-			capture: @capture, leaks: @leaks,
+			capture: @capture, capture_loading: @capture_loading, leaks: @leaks,
 		) do
 			coordinator_channels.each(&:close)
 			control_writer.close
@@ -587,7 +609,7 @@ class Quickdraw::Coordinator
 	# exited while booting.
 	private def reported(loader, report)
 		error = case report
-		in [:booted, _groups, coverage]
+		in [:booted, _groups, coverage, *]
 			if coverage
 				# What booting covered, which its workers don't repeat.
 				@coverage.add(coverage)
@@ -629,6 +651,54 @@ class Quickdraw::Coordinator
 	end
 
 	# Starts a loader for each group with tests to run.
+	# What the command line left unset, from config's `settings` (see
+	# Configuration#settings), or else the defaults. Retries are as many as
+	# the channels opened for them allow (see Configuration::MOST_RETRIES).
+	private def apply_settings(settings)
+		@capture = settings.fetch(:capture, true) if @capture.nil?
+		@capture = :loading if @capture && @capture_loading
+		@retries.count = @forking ? (@retry_count || settings.fetch(:retries, 1)) : 0
+		@outcome.allow_flaky = @allow_flaky.nil? ? settings.fetch(:allow_flaky, false) : @allow_flaky
+		@elastic_allowed = settings.fetch(:elastic, false) if @elastic_allowed.nil?
+		@configured_processes = settings[:processes] unless @processes
+		@processes ||= @configured_processes
+
+		if !@forking && @leaks.nil? && settings[:leaks] == :fail
+			warn "config.leaks = :fail needs fork, which this platform doesn’t support, so leaks aren’t checked."
+		end
+
+		if @flakes_path.nil? && (path = settings[:flakes]&.then { |it| File.expand_path(it) })
+			if @output_paths.include?(path)
+				warn "config.flakes is #{path}, which a report writes too, so flakes aren’t written."
+			else
+				@flakes.path = path
+			end
+		end
+
+		quarantine = @quarantine.nil? ? settings.fetch(:quarantine, false) : @quarantine
+		@flakes.quarantined = flaky_keys if quarantine && @history_path
+	end
+
+	# { key => true } for the tests flaky in recent runs, for quarantine, or
+	# none without history yet. Read in a throwaway process, since loaders
+	# fork from this one and sqlite3 must not reach them. A history that can't
+	# be read, such as one a CI cache restored from an older Quickdraw,
+	# quarantines nothing, rather than stop the run that would rebuild it.
+	private def flaky_keys
+		result = Quickdraw.isolate do
+			Quickdraw::History.exist?(@history_path) ? Quickdraw::History.new(@history_path, read_only: true).flaky_keys : {}
+		rescue Quickdraw::History::Error => error
+			error.message
+		end
+
+		case result
+		in Hash then result
+		in String => message
+			warn "Quarantine couldn’t read the run history (#{message}), so nothing is quarantined this run."
+			{}
+		end
+	end
+
 	private def groups_reported(groups)
 		@gemfiles = groups.to_h { |name, _patterns, gemfile| [name, gemfile] }
 		@group_of = @display_paths.to_h do |_path, display_path|

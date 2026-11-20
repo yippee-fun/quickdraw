@@ -52,13 +52,15 @@ class Quickdraw::Reporters::Human
 		@status_line.start
 	end
 
-	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
+	def start(processes:, worker_choice:, seed:, paths:, estimate: nil, capture: true)
 		@worker_choice = worker_choice
 		@processes = processes
 		@seed = seed
 		@estimate = estimate
 		@status_line.files = paths.size
 		@path_width = [paths.map(&:size).max || 0, PATH_WIDTH].min
+		# As config may have said, tests print to the terminal, under which the status line would be lost.
+		@status_line.stop unless capture
 	end
 
 	def result(path, test, result)

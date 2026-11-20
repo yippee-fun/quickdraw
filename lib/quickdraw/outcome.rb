@@ -40,7 +40,9 @@ class Quickdraw::Outcome
 		@interrupted = false
 	end
 
-	attr_reader :tests, :assertions, :flaky, :quarantined, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions, :allow_flaky
+	attr_reader :tests, :assertions, :flaky, :quarantined, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions
+	# Set once config is read (see Coordinator#apply_settings).
+	attr_accessor :allow_flaky
 	# `not_run` counts tests in loaded files. Files never loaded (e.g. after
 	# --fail-fast stopped the run) are counted in `unloaded_files`, since their
 	# tests are unknown.

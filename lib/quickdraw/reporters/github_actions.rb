@@ -18,7 +18,7 @@ class Quickdraw::Reporters::GitHubActions
 		@leaks = []
 	end
 
-	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
+	def start(processes:, worker_choice:, seed:, paths:, estimate: nil, **)
 		@seed = seed
 	end
 

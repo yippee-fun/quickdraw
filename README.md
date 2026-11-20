@@ -377,6 +377,16 @@ Quickdraw.configure do |config|
 
   # Around every test, including its setup and teardown.
   config.around_test { |test, run| Timecop.freeze { run.call } }
+
+  # Settings the command line has options for, which those override.
+  config.leaks = :fail          # --leaks fail (:warn, :fail or :off)
+  config.retries = 2            # --retry 2 (0 to 3; --retry can go higher)
+  config.allow_flaky = true     # --allow-flaky
+  config.quarantine = true      # --quarantine
+  config.flakes = "tmp/flakes.json" # --flakes tmp/flakes.json
+  config.capture = false        # --no-capture
+  config.elastic = true         # --elastic
+  config.processes = 4          # -p 4
 end
 ```
 

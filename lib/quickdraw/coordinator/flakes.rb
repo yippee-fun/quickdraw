@@ -12,6 +12,9 @@ class Quickdraw::Coordinator::Flakes
 		@entries = []
 	end
 
+	# Set once config is read (see Coordinator#apply_settings).
+	attr_writer :path, :quarantined
+
 	# With --quarantine, a test that failed, or passed on retry, and was flaky
 	# in recent runs (see History::QUARANTINE_WINDOW), so it doesn't fail the run.
 	# Not one that crashed or hung its worker, whose failed exit fails the run anyway.
@@ -36,6 +39,8 @@ class Quickdraw::Coordinator::Flakes
 		json = JSON.generate(Quickdraw::Flake.report(Quickdraw::Flake.context(@seed), @entries))
 
 		if @path
+			require "fileutils"
+			FileUtils.mkdir_p(File.dirname(@path))
 			temporary = "#{@path}.#{Process.pid}.tmp"
 			File.write(temporary, json)
 			File.rename(temporary, @path)

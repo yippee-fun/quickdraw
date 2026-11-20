@@ -46,6 +46,13 @@ class Quickdraw::Coordinator::Retries
 		@pending = []
 	end
 
+	# Once config is read, at most as many as channels were opened for.
+	def count=(count)
+		raise ArgumentError, "Channels were opened for #{@count} retries, not #{count}." if count > @count
+
+		@count = count
+	end
+
 	# Each retry in a fresh worker needs a channel for that worker, and another
 	# for the worker that replaces it. Each test's retry in the worker it
 	# failed in needs one for that worker's replacement.

@@ -11,7 +11,7 @@ class Quickdraw::Reporters::JSON
 		@io = io
 	end
 
-	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
+	def start(processes:, worker_choice:, seed:, paths:, estimate: nil, **)
 		# Lazily, so json never reaches the loader, which forks before this runs.
 		require "json"
 

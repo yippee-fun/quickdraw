@@ -22,12 +22,61 @@ class Quickdraw::Configuration
 		@flaky_callbacks = []
 		@groups = []
 		@timeout = 300
+		@settings = {}
 	end
 
 	attr_reader :before_forking_callbacks
 	attr_reader :after_forking_callbacks
 	attr_reader :flaky_callbacks
 	attr_reader :groups
+
+	# The run settings config set (see below), which the command line's
+	# options override. Read in the loader, which reports them to the
+	# coordinator, since that never loads config.
+	attr_reader :settings
+
+	# The most retries config can set, since the channels for them are opened
+	# before config is read. `--retry N` can ask for more.
+	MOST_RETRIES = 3
+
+	# As --leaks: :warn, :fail or :off.
+	def leaks=(mode)
+		raise ArgumentError, "config.leaks must be :warn, :fail or :off, not #{mode.inspect}." unless mode in :warn | :fail | :off
+
+		@settings[:leaks] = mode
+	end
+
+	# As --retry.
+	def retries=(count)
+		unless (Integer === count) && count.between?(0, MOST_RETRIES)
+			raise ArgumentError, "config.retries must be 0 to #{MOST_RETRIES}, not #{count.inspect}. --retry N can retry more."
+		end
+
+		@settings[:retries] = count
+	end
+
+	# As --processes.
+	def processes=(count)
+		raise ArgumentError, "config.processes must be 1 or more, not #{count.inspect}." unless (Integer === count) && count >= 1
+
+		@settings[:processes] = count
+	end
+
+	# As --flakes.
+	def flakes=(path)
+		raise ArgumentError, "config.flakes must be a path, not #{path.inspect}." unless String === path
+
+		@settings[:flakes] = path
+	end
+
+	# As --allow-flaky, --quarantine, --no-capture (capture = false) and --elastic.
+	[:allow_flaky, :quarantine, :capture, :elastic].each do |name|
+		define_method(:"#{name}=") do |value|
+			raise ArgumentError, "config.#{name} must be true or false, not #{value.inspect}." unless value in true | false
+
+			@settings[name] = value
+		end
+	end
 
 	# Called with each test that failed, then passed when retried (a Flake),
 	# once the run's tests have finished, in the process that booted config:

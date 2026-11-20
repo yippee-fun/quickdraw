@@ -12,7 +12,7 @@ class Quickdraw::Reporters::JUnit
 		@suites = Hash.new { |suites, file| suites[file] = [] }
 	end
 
-	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
+	def start(processes:, worker_choice:, seed:, paths:, estimate: nil, **)
 		@seed = seed
 	end
 

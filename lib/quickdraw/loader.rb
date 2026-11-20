@@ -21,16 +21,19 @@ class Quickdraw::Loader
 	# `group` names the group (see Configuration#group) whose tests this loader
 	# runs, or is nil for tests in none. Once it has booted, the loader writes
 	# to `report`, if given, a length-prefixed Marshal message: [:booted,
-	# groups, coverage] with the groups config defines as [name, patterns,
-	# gemfile] and, with `coverage`, what booting covered (see CoverageCollector);
-	# or [:failed, error] if booting raised.
+	# groups, coverage, settings] with the groups config defines as [name,
+	# patterns, gemfile, cores, file_seconds], with `coverage`, what booting
+	# covered (see CoverageCollector), and the run settings config set (see
+	# Configuration#settings); or [:failed, error] if booting raised.
 	#
-	# `capture` and `leaks` are for workers (see Worker#initialize).
+	# `capture` and `leaks` are for workers (see Worker#initialize), or nil for
+	# config to say. With `capture_loading`, what loading files prints goes to
+	# the reporter.
 	#
 	# With a `link` instead (see WarmLoaders), the loader stays booted for
 	# watch mode, and serves a run at a time, each with the commands, report
 	# and channels above as named pipes in a directory, rather than once.
-	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, leaks: nil, link: nil)
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, capture_loading: false, leaks: nil, link: nil)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
@@ -41,6 +44,7 @@ class Quickdraw::Loader
 		@group = group
 		@report = report
 		@capture = capture
+		@capture_loading = capture_loading
 		@leaks = leaks
 		@link = link
 		@running = {}
@@ -154,7 +158,7 @@ class Quickdraw::Loader
 
 		if @report || @link
 			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile, group.cores, group.file_seconds] }
-			@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage)]
+			@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage), Quickdraw::Config.settings]
 		end
 
 		return serve_runs if @link
@@ -210,7 +214,7 @@ class Quickdraw::Loader
 	# Skipped if the run has already gone, after Ctrl-C, say.
 	private def serve_run(directory)
 		settings = Marshal.load(File.binread(File.join(directory, "settings")))
-		@test_files, @seed, @profile, @capture, @leaks = settings.values_at(:test_files, :seed, :profile, :capture, :leaks)
+		@test_files, @seed, @profile, @capture, @capture_loading, @leaks = settings.values_at(:test_files, :seed, :profile, :capture, :capture_loading, :leaks)
 		@directory = directory
 		@running = {}
 		@statuses = []
@@ -242,7 +246,7 @@ class Quickdraw::Loader
 			# Taken, so workers don't inherit it, in place of what loading the
 			# reloaded files' old versions covered. Other files have zero counts.
 			reloaded = Quickdraw::CoverageCollector.take
-			@boot_report.last.merge!(reloaded.slice(*Quickdraw::CoverageCollector.run(reloaded)))
+			@boot_report[2].merge!(reloaded.slice(*Quickdraw::CoverageCollector.run(reloaded)))
 		end
 
 		@autoloadable = autoloadable_files
@@ -417,8 +421,22 @@ class Quickdraw::Loader
 		ENV["QUICKDRAW_WORKER"] = index.to_s
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		# Before the callbacks, so processes they start aren't blamed on tests.
-		Quickdraw::Leaks::ProcessStarts.watch if @leaks
+		Quickdraw::Leaks::ProcessStarts.watch if leaks
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture: @capture, leaks: @leaks).call
+		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:).call
+	end
+
+	# Whether workers capture what tests print, as the run said or else config
+	# (see Configuration#settings), and with :loading, what loading files
+	# prints too, for the reporter.
+	private def capture
+		capture = @capture.nil? ? Quickdraw::Config.settings.fetch(:capture, true) : @capture
+		(capture && @capture_loading) ? :loading : capture
+	end
+
+	# :warn, :fail, or nil for off, as the run said or else config.
+	private def leaks
+		mode = @leaks || Quickdraw::Config.settings.fetch(:leaks, :warn)
+		mode unless mode == :off
 	end
 end
