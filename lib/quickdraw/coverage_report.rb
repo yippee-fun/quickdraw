@@ -17,7 +17,7 @@ class Quickdraw::CoverageReport
 	Count = Data.define(:covered, :total) do
 		def ratio = (total > 0) ? covered.fdiv(total) : 1.0
 		# Rounded down, so 99.9% isn't shown as 100%, in integers, so 29 of 100 isn't 28%.
-		def percent = (total > 0) ? (covered * 100) / total : 100
+		def percent = (covered * 100) / total
 		def +(other) = with(covered: covered + other.covered, total: total + other.total)
 	end
 
@@ -70,6 +70,13 @@ class Quickdraw::CoverageReport
 	def lines = files.sum(Count.new(covered: 0, total: 0), &:lines)
 	def branches = files.sum(Count.new(covered: 0, total: 0), &:branches)
 	def methods = files.sum(Count.new(covered: 0, total: 0), &:methods)
+
+	# "71% of lines" and so on, without kinds there are none of, such as
+	# branches in code without any. Empty when no lines were loaded.
+	def totals
+		{ "lines" => lines, "branches" => branches, "methods" => methods }
+			.filter_map { |kind, count| "#{count.percent}% of #{kind}" if count.total > 0 }
+	end
 
 	# The files with the most uncovered lines, most first.
 	def least_covered(limit)

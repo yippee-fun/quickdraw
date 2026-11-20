@@ -36,7 +36,7 @@ class Quickdraw::Reporters::Human
 		@command = command
 		@backtrace = backtrace
 		@show_timings = timings
-		@timings = Quickdraw::Timings.new
+		@timings = Quickdraw::Timings.new(each_test: timings)
 		@profile = Quickdraw::Profile.new
 		@color = io.tty? && !ENV.key?("NO_COLOR")
 		@status_line = Quickdraw::Reporters::StatusLine.new(io:, live:, color: @color)
@@ -446,11 +446,8 @@ class Quickdraw::Reporters::Human
 	# Totals, then the lines most worth testing: changed ones first.
 	private def print_coverage(coverage)
 		@io.puts
-		@io.puts "#{bold('Coverage')} #{[
-			"#{coverage_percent(coverage.lines)} of lines",
-			("#{coverage_percent(coverage.branches)} of branches" if coverage.branches.total > 0),
-			("#{coverage_percent(coverage.methods)} of methods" if coverage.methods.total > 0),
-		].compact.join(' · ')}"
+		totals = coverage.totals
+		@io.puts "#{bold('Coverage')} #{totals.any? ? totals.join(' · ') : 'no lines loaded'}"
 
 		if (changed = coverage.changed)
 			count, uncovered = changed
@@ -463,7 +460,7 @@ class Quickdraw::Reporters::Human
 		if least.any?
 			@io.puts "  Least covered"
 			least.each do |file|
-				@io.puts "    #{coverage_percent(file.lines).rjust(4)}  #{file.path}  #{dim("missing #{Quickdraw::CoverageReport.ranges(file.uncovered)}")}"
+				@io.puts "    #{"#{file.lines.percent}%".rjust(4)}  #{file.path}  #{dim("missing #{Quickdraw::CoverageReport.ranges(file.uncovered)}")}"
 			end
 		end
 
@@ -473,10 +470,6 @@ class Quickdraw::Reporters::Human
 		end
 
 		@io.puts dim("  #{Quickdraw::CoverageReport::HTML_PATH} · #{Quickdraw::CoverageReport::LCOV_PATH} · #{Quickdraw::CoverageReport::JSON_PATH}")
-	end
-
-	private def coverage_percent(count)
-		"#{count.percent}%"
 	end
 
 	# The verdict and the counts, then each problem, then how to rerun them,
@@ -590,7 +583,7 @@ class Quickdraw::Reporters::Human
 	private def run_bound_by_slowest(outcome)
 		return if outcome.interrupted || @processes <= 1 || @timings.count == 0
 
-		slowest = @timings.slowest_tests(1).first
+		slowest = @timings.slowest
 		slowest if slowest.duration >= HINT_THRESHOLD && slowest.duration >= outcome.duration * 0.5
 	end
 

@@ -205,6 +205,51 @@ class WatchTest < Quickdraw::Test
 		assert_match Integration.summaries(after_change).first, /\A1 test · 1 assertion/
 	end
 
+	test "reruns everything when config changes, even with a test of the same name", timeout: 40 do
+		project = project(
+			"config/quickdraw.rb" => "",
+			"test/quickdraw.test.rb" => "class Q < Quickdraw::Test; test('q') { assert true }; end\n",
+			"test/other.test.rb" => "class O < Quickdraw::Test; test('o') { assert true }; end\n",
+		)
+
+		result = project.watch({ "config/quickdraw.rb" => "" })
+
+		assert result.success?
+		refute_includes result.stdout, "so running"
+		assert_equal summaries(result).map { |summary| summary[/\A\d+ tests?/] }, ["2 tests", "2 tests"]
+	end
+
+	test "--efficiency applies to the processes that run tests", timeout: 40 do
+		skip "Efficiency cores are only on M-series Macs" unless Quickdraw::Platform.m_series?
+
+		project = project(
+			"bin/taskpolicy" => "#!/bin/sh\necho \"$@\" >> taskpolicy.log\n",
+			"test/a.test.rb" => <<~RUBY,
+				class A < Quickdraw::Test
+					test("a") do
+						ancestors = [Process.pid]
+						ancestors << Integer(`ps -o ppid= -p \#{ancestors.last}`) while ancestors.last > 1
+						File.write("ancestors.log", ancestors.join(" "))
+						assert true
+					end
+				end
+			RUBY
+		)
+		File.chmod(0o755, File.join(project.directory, "bin/taskpolicy"))
+		path = { "PATH" => "#{File.join(project.directory, 'bin')}:#{ENV.fetch('PATH')}" }
+		policies = -> { File.read(File.join(project.directory, "taskpolicy.log")).lines.map { |line| line.split.last } }
+		ancestors = -> { File.read(File.join(project.directory, "ancestors.log")).split }
+
+		assert project.run("--efficiency", "--no-history", env: path).success?
+		assert_equal policies.call.size, 1
+		assert_includes ancestors.call, policies.call.first
+
+		File.delete(File.join(project.directory, "taskpolicy.log"))
+		project.run("--watch", "--efficiency", "--no-history", env: path, tty: [40, 120], interrupt_when: /^Watching/, timeout: 30)
+		assert_equal policies.call.size, 1
+		assert_includes ancestors.call, policies.call.first
+	end
+
 	test "keys run only failures, filter by name and path, and run everything again", timeout: 40 do
 		result = watch(
 			calculator,

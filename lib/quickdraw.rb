@@ -65,7 +65,6 @@ module Quickdraw
 	autoload :Fuzz, "quickdraw/fuzz"
 	autoload :WorkerPool, "quickdraw/worker_pool"
 	autoload :Coordinator, "quickdraw/coordinator"
-	autoload :ArgumentError, "quickdraw/errors/argument_error"
 	autoload :Configuration, "quickdraw/configuration"
 	autoload :HTMLPrettifier, "quickdraw/html_prettifier"
 	autoload :BasicTest, "quickdraw/basic_test"
@@ -87,7 +86,6 @@ module Quickdraw
 	class Interrupted < Exception; end
 
 	Null = Object.new.freeze
-	Error = Module.new
 	Config = Configuration.new
 
 	def self.configure(&)

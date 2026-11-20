@@ -194,8 +194,8 @@ class Quickdraw::Reporters::Agent
 
 	# Uncovered lines as path:ranges, which is what an agent writing tests needs.
 	private def print_coverage(coverage)
-		percent = -> (count) { "#{count.percent}%" }
-		@io.puts "Coverage: #{percent.(coverage.lines)} of lines, #{percent.(coverage.branches)} of branches, #{percent.(coverage.methods)} of methods (#{Quickdraw::CoverageReport::JSON_PATH} has it all)."
+		totals = coverage.totals
+		@io.puts "Coverage: #{totals.any? ? totals.join(', ') : 'no lines loaded'} (#{Quickdraw::CoverageReport::JSON_PATH} has it all)."
 
 		if (changed = coverage.changed)
 			count, uncovered = changed
@@ -207,7 +207,7 @@ class Quickdraw::Reporters::Agent
 
 		if least.any?
 			@io.puts "Least covered files, with their uncovered lines:"
-			least.each { |file| @io.puts "- #{file.path} (#{percent.(file.lines)}): #{Quickdraw::CoverageReport.ranges(file.uncovered)}" }
+			least.each { |file| @io.puts "- #{file.path} (#{file.lines.percent}%): #{Quickdraw::CoverageReport.ranges(file.uncovered)}" }
 		end
 
 		never_loaded = coverage.never_loaded
