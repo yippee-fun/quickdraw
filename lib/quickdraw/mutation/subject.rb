@@ -3,9 +3,11 @@
 # A method that mutants change. `nesting` is the classes and modules around its
 # definition, outermost first, as [keyword, name] such as ["class", "Admin::User"]
 # or ["class", "<< self"], or ["class_eval", "Point"] for a block evaluated in
-# a class, as in `Point = Data.define do`. `path` is absolute, and `id` is
-# unique in a run.
-Quickdraw::Mutation::Subject = Data.define(:id, :path, :line, :nesting, :name, :singleton) do
+# a class, as in `Point = Data.define do`. `usings` are the refinements its
+# file activates before it, as [depth, constant], where depth is how many of
+# `nesting` are around the `using`. `path` is absolute, and `id` is unique in
+# a run.
+Quickdraw::Mutation::Subject = Data.define(:id, :path, :line, :nesting, :usings, :name, :singleton) do
 	# The class or module the method is defined on. Raises NameError if one of
 	# those around it isn't defined, and TypeError if it isn't a module.
 	def owner

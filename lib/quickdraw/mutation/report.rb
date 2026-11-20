@@ -27,6 +27,7 @@ class Quickdraw::Mutation::Report
 		@threshold = threshold
 		@matrix = matrix
 		@mutants = plan.mutants
+		@reach = plan.reach
 		@ignored = plan.ignored
 		@keys = plan.keys
 		@outcomes = outcomes
@@ -42,7 +43,9 @@ class Quickdraw::Mutation::Report
 
 		counted = outcomes.reject { |job, _outcome| reach_ids.key?(job.mutant.id) }
 		@killed, rest = counted.partition { |_job, (status, *)| KILLED.include?(status) }
-		@survived, @errors = rest.partition { |_job, (status, *)| status == "survived" }
+		@survived = rest.select { |_job, (status, *)| status == "survived" }
+		# Including those run only to judge the tests this changes, which then can't be.
+		@errors = outcomes.reject { |_job, (status, *)| KILLED.include?(status) || status == "survived" }
 		@survived.sort_by! { |job, _outcome| [job.mutant.subject.path, job.mutant.line, job.mutant.id] }
 		tested = @killed.size + @survived.size
 		@score = (100.0 * @killed.size / tested if tested > 0)
@@ -184,8 +187,8 @@ class Quickdraw::Mutation::Report
 			"ignored" => @ignored.map do |mutant, reason|
 				{ "id" => @keys.fetch(mutant.id), "path" => relative(mutant.subject.path), "line" => mutant.line, "method" => mutant.subject.label, "description" => mutant.description, "reason" => reason }
 			end,
-			"errors" => @errors.size,
-			"missing" => missing_mutants,
+			"errors" => @errors.count { |job, _outcome| !@reach_ids.key?(job.mutant.id) },
+			"missing" => missing_mutants(@mutants),
 			"cached" => @from_cache,
 			"duration" => @duration.round(3),
 			"interrupted" => !!@interrupted,
@@ -244,13 +247,7 @@ class Quickdraw::Mutation::Report
 			@io.puts
 		end
 
-		incomplete = @kill_matrix.incomplete
-		if incomplete > 0
-			@io.puts "#{yellow('!')} Not every test ran against #{pluralize(incomplete, 'mutant')}, since a test crashed, hung or didn’t load, so #{(incomplete == 1) ? 'its tests' : 'their tests'} can’t be blind or redundant."
-			@io.puts
-		end
-
-		sections.any? || incomplete > 0
+		sections.any?
 	end
 
 	private def matrix_entries(entries) = entries.first(SHOWN_MATRIX_TESTS)
@@ -283,6 +280,10 @@ class Quickdraw::Mutation::Report
 		{
 			"tests" => @unique_tests.map { |test| { "path" => relative(test.path), "line" => test.line, "name" => test.name, "exempt" => test.exempt } },
 			"not_unique" => @not_unique.map { |test| { "path" => relative(test.path), "line" => test.line, "name" => test.name } },
+			"incomplete" => @kill_matrix.incomplete,
+			# Of the mutants run only to judge them.
+			"errors" => @errors.count { |job, _outcome| @reach_ids.key?(job.mutant.id) },
+			"missing" => missing_mutants(@reach),
 		}
 	end
 
@@ -320,12 +321,20 @@ class Quickdraw::Mutation::Report
 			messages << "Couldn’t find #{list(labels)} once tests had loaded, so #{(missing_mutants == 1) ? 'its mutant' : "#{missing_mutants} mutants"} didn’t run."
 		end
 
+		incomplete = @kill_matrix&.incomplete || 0
+
+		if incomplete > 0
+			judgements = [("blind or redundant" if @matrix), ("counted as the only one to kill #{(incomplete == 1) ? 'it' : 'them'}" if @not_unique)].compact
+			messages << "Not every test ran against #{pluralize(incomplete, 'mutant')}, since a test crashed, hung or didn’t load, so #{(incomplete == 1) ? 'its tests' : 'their tests'} can’t be #{judgements.join(', or ')}."
+		end
+
 		messages
 	end
 
-	private def missing_mutants
+	# Of `mutants`, those whose method couldn't be found.
+	private def missing_mutants(mutants = [*@mutants, *@reach])
 		ids = @missing.to_h { |subject| [subject.id, true] }
-		@mutants.count { |mutant| ids.key?(mutant.subject.id) }
+		mutants.count { |mutant| ids.key?(mutant.subject.id) }
 	end
 
 	# The change as removed and added lines, without their common indentation.

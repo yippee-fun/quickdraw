@@ -166,12 +166,15 @@ class Quickdraw::Commands::Mutate
 
 		if @unique_kills
 			@unique_tests = changed_tests(baselines.select { |baseline| baseline.status == "passed" })
-			changed = @unique_tests.to_h { |test| [[test.path, test.index], true] }
+			judged = @unique_tests.reject(&:exempt).to_h { |test| [[test.path, test.index], true] }
 
-			# Only those a test this changes runs, to judge it by.
+			# Which could have judged them.
+			@missing |= subjects.reject { |subject| runner.traced.key?(subject.id) } if judged.any?
+
+			# Only those a test this changes and doesn't exempt runs, to judge it by.
 			@plan.reach.each do |mutant|
 				tests = covering.fetch([mutant.subject.id, mutant.covering_line], nil) if runner.traced.key?(mutant.subject.id)
-				next unless tests&.any? { |test| changed.key?([test.path, test.index]) }
+				next unless tests&.any? { |test| judged.key?([test.path, test.index]) }
 
 				@reach_ids[mutant.id] = true
 				@jobs << job(mutant, tests)
@@ -355,7 +358,8 @@ class Quickdraw::Commands::Mutate
 			        --matrix          Run every test against each mutant, and list tests that kill none
 			                          (blind) and tests whose kills others also make (redundant)
 			        --unique-kills    Fail if a test this changes isn't the only one to kill some mutant of the
-			                          code it runs (a test marked `mutation: false` is exempt). Implies --matrix
+			                          code it runs (a test marked `mutation: false` is exempt). Runs every test
+			                          against each mutant, as --matrix does
 			        --no-cache        Run every mutant, rather than reuse the outcome of those whose method,
 			                          tests and the code their tests run haven't changed since an earlier run
 			        --format FORMAT   human, agent or json
