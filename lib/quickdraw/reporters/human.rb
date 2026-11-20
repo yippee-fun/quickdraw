@@ -7,10 +7,6 @@
 class Quickdraw::Reporters::Human
 	include Quickdraw::Reporters::Formatting
 
-	SPINNER = %w[⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏].freeze
-	# Seconds between the spinner's frames.
-	SPIN_INTERVAL = 0.08
-
 	# Below this much total test time, shares and hints are mostly noise.
 	HINT_THRESHOLD = 1.0
 	SLOWEST_LIMIT = 10
@@ -41,46 +37,19 @@ class Quickdraw::Reporters::Human
 		@timings = Quickdraw::Timings.new
 		@profile = Quickdraw::Profile.new
 		@color = io.tty? && !ENV.key?("NO_COLOR")
-		@live = live && io.tty? && ENV["TERM"] != "dumb"
-		# Held while writing, so the spinner's thread doesn't write in between.
-		@lock = Mutex.new
+		@status_line = Quickdraw::Reporters::StatusLine.new(io:, live:, color: @color)
 		@problems = []
 		@tallies = Hash.new { |hash, path| hash[path] = FileTally.new }
-		@files = nil
-		@files_done = 0
-		@tests_done = 0
-		@failing = 0
-		@flaky = 0
 		@set_aside = []
 		@leaks = []
 		# The worst that happened in each file with a problem.
 		@file_statuses = {}
 		@path_width = 0
-		# What's printed while a debugger has the terminal, until it's done.
-		@held = []
 	end
 
 	# Before config boots, which can take a while, so the spinner shows it's going.
 	def booting
-		return unless @live
-
-		@started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-		@frame = 0
-		@width = terminal_width
-		@ticks = Thread::Queue.new
-		hide_cursor
-		# Not in loaders and workers, which inherit it as they fork.
-		pid = Process.pid
-		at_exit { show_cursor if Process.pid == pid }
-
-		@spinner = Thread.new do
-			until @ticks.pop(timeout: SPIN_INTERVAL)
-				@lock.synchronize do
-					@frame += 1
-					draw_status
-				end
-			end
-		end
+		@status_line.start
 	end
 
 	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
@@ -88,7 +57,7 @@ class Quickdraw::Reporters::Human
 		@processes = processes
 		@seed = seed
 		@estimate = estimate
-		@files = paths.size
+		@status_line.files = paths.size
 		@path_width = [paths.map(&:size).max || 0, PATH_WIDTH].min
 	end
 
@@ -100,17 +69,15 @@ class Quickdraw::Reporters::Human
 		tally.tests += 1
 		tally.duration += result["duration"].to_f
 		tally.statuses[status] += 1
-		@tests_done += 1
+		@status_line.test_done(status)
 
 		case status
 		in "failed" | "errored"
 			@file_statuses[path] = "failed"
 			@problems << [path, test, result]
-			@failing += 1
 		in "flaky" | "quarantined"
 			@file_statuses[path] ||= "flaky"
 			@problems << [path, test, result]
-			@flaky += 1
 		in "skipped" | "pending" then @set_aside << [path, test, result["skipped"]]
 		in "passed" then nil
 		end
@@ -119,59 +86,43 @@ class Quickdraw::Reporters::Human
 	end
 
 	def finished_file(path)
-		@files_done += 1
-		printing { print_file(path) }
+		@status_line.file_done
+		@status_line.above { print_file(path) }
 	end
 
 	# A file with no tests to run, as none matched a filter, gets no line, but counts as done.
 	def nothing_to_run(_path)
-		@lock.synchronize do
-			@files_done += 1
-			draw_status
-		end
+		@status_line.file_done
+		@status_line.redraw
 	end
 
 	def load_failed(path, error)
 		@file_statuses[path] = "failed to load"
 		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
-		@files_done += 1
-		printing { @io.puts "#{red('✗')} #{path_column(path)}  #{red('could not be loaded')}" }
+		@status_line.file_done
+		@status_line.above { @io.puts "#{red('✗')} #{path_column(path)}  #{red('could not be loaded')}" }
 	end
 
 	def shows_loading_output? = true
 
 	# What loading a test file printed, whole, so it isn't mixed into a line.
 	def printed(output)
-		printing do
+		@status_line.above do
 			@io.print output
 			@io.puts unless output.end_with?("\n")
 		end
 	end
 
-	# While a test is in a debugger, which has the terminal, until #resume.
 	def pause
-		@lock.synchronize do
-			clear_status
-			show_cursor
-			@paused = true
-		end
+		@status_line.pause
 	end
 
 	def resume
-		@lock.synchronize do
-			@paused = false
-			held, @held = @held, []
-			held.each(&:call)
-			hide_cursor if @spinner
-			draw_status
-			@io.flush
-		end
+		@status_line.resume
 	end
 
 	def finish(outcome)
-		# Held if Ctrl-C came as a debugger was given the terminal.
-		resume if @paused
-		stop_status
+		@status_line.stop
 
 		# Each in full, after the file lines, which stay short.
 		@problems.each { |path, test, result| print_problem(path, test, result) }
@@ -186,118 +137,6 @@ class Quickdraw::Reporters::Human
 		print_leaks if @leaks.any?
 		print_coverage(outcome.coverage) if outcome.coverage
 		print_summary(outcome)
-	end
-
-	# The verdict and the counts, then each problem, then how to rerun them,
-	# then anything else worth knowing, a line each.
-	private def print_summary(outcome)
-		@io.puts
-		@io.puts "#{verdict(outcome)}  #{counts(outcome)}"
-
-		if @problems.any?
-			@io.puts
-			@problems.each { |path, test, result| @io.puts "  #{recap(path, test, result)}" }
-		end
-
-		command = Quickdraw::Reporters.command
-		print_notes([
-			(["Rerun failures", "#{command} --failed"] if @problems.any? && outcome.recorded),
-			(["Same order", "#{command} --seed #{@seed}"] unless outcome.passed?),
-		].compact) { |label| dim(label) }
-		print_notes(notes(outcome)) { |label| yellow(label) }
-	end
-
-	private def verdict(outcome)
-		if outcome.interrupted then label("INTERRUPTED", 43)
-		elsif outcome.passed? then label("PASSED", 42)
-		else label("FAILED", 41)
-		end
-	end
-
-	# How many tests and assertions, each count in the colour of what it means,
-	# then how long the run took.
-	private def counts(outcome)
-		failed_to_load = @file_statuses.count { |_path, status| status == "failed to load" }
-
-		[
-			pluralize(outcome.tests, "test"),
-			"#{delimit(outcome.assertions)} #{(outcome.assertions == 1) ? 'assertion' : 'assertions'}",
-			(red("#{outcome.failed} failed") if outcome.failed > 0),
-			(yellow("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}") if outcome.flaky > 0),
-			(yellow("#{outcome.quarantined} quarantined") if outcome.quarantined > 0),
-			(dim("#{outcome.skipped} skipped") if outcome.skipped > 0),
-			(dim("#{outcome.pending} pending") if outcome.pending > 0),
-			(red("#{outcome.errored} errored") if outcome.errored > 0),
-			(red("#{pluralize(failed_to_load, 'file')} failed to load") if failed_to_load > 0),
-			(yellow("#{outcome.not_run} not run") if outcome.not_run > 0),
-			(yellow("#{pluralize(outcome.unloaded_files, 'file')} not loaded") if outcome.unloaded_files > 0),
-			(yellow("#{outcome.without_assertions} without assertions") if outcome.without_assertions > 0),
-			format("%.2fs", outcome.duration),
-		].compact.join(dim(" · "))
-	end
-
-	private def recap(path, test, result)
-		return "#{red('✗')} #{path} could not be loaded" unless test
-
-		"#{marker(result)} #{path}:#{test['line']} #{name_of(test)}#{dim(' (quarantined)') if result['quarantined']}#{dim(' (flaky)') if result['passed_on_retry'] && !result['quarantined']}"
-	end
-
-	# [label, text] pairs, under each other, their labels lined up.
-	private def print_notes(notes)
-		return if notes.empty?
-
-		width = notes.map { |label, _text| label.size }.max
-		@io.puts
-		notes.each { |label, text| @io.puts "  #{yield(label.ljust(width))}  #{text}" }
-	end
-
-	private def notes(outcome)
-		notes = []
-		notes << ["Interrupted", "Tests that were running or hadn’t started count as not run."] if outcome.interrupted
-		notes << ["Fail fast", "Stopped after the first problem."] if !outcome.interrupted && outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
-		notes << ["No match", "No tests matched the given lines, --name or --exclude."] if outcome.nothing_matched
-		notes << ["Exit status", "A worker or the loader exited with a failure status, e.g. from an at_exit hook."] if outcome.processes_failed && @problems.empty?
-
-		skipped = @set_aside.reject { |_path, _test, skipped| skipped["pending"] }
-		notes << ["Skipped", skip_reasons(skipped)] if skipped.any?
-
-		pending = @set_aside.select { |_path, _test, skipped| skipped["pending"] }
-		notes << ["Pending", listed(pending.map { |path, test, _skipped| "#{path}:#{test['line']} #{name_of(test)}" })] if pending.any?
-
-		if (slowest = run_bound_by_slowest(outcome))
-			notes << ["Slow", "#{location(slowest)} took #{seconds(slowest.duration)}, #{percent(slowest.duration / outcome.duration)} of the run."]
-		end
-
-		notes
-	end
-
-	# The most common reasons first, with how many tests gave each.
-	private def skip_reasons(skipped)
-		reasons = skipped.map { |_path, _test, skipped| reason(skipped["reason"]) }
-		listed(reasons.tally.sort_by { |reason, count| [-count, reason] }.map { |reason, count| "#{reason} (#{count})" }, separator: " · ")
-	end
-
-	private def reason(text)
-		first_line = plain(text.to_s).lines.first.to_s.strip
-		first_line.empty? ? "no reason given" : truncate(first_line, REASON_WIDTH)
-	end
-
-	private def listed(items, separator: ", ")
-		shown = items.first(NOTE_LIMIT).join(separator)
-		(items.size > NOTE_LIMIT) ? "#{shown}#{separator}and #{items.size - NOTE_LIMIT} more" : shown
-	end
-
-	private def truncate(text, width)
-		(text.size > width) ? "#{text[0, width - 1]}…" : text
-	end
-
-	# The slowest test, if it took at least half the run, so splitting it up
-	# would shorten the run.
-	private def run_bound_by_slowest(outcome)
-		return if outcome.interrupted || @processes <= 1 || @timings.count == 0
-
-		slowest = @timings.slowest_tests(1).first
-		slowest if slowest.duration >= HINT_THRESHOLD && slowest.duration >= outcome.duration * 0.5
 	end
 
 	private def print_file(path)
@@ -327,289 +166,6 @@ class Quickdraw::Reporters::Human
 	private def path_column(path)
 		directory, slash, name = path.rpartition("/")
 		"#{dim("#{directory}#{slash}")}#{name}#{' ' * [@path_width - path.size, 0].max}"
-	end
-
-	# Now, above the status line, or once a debugger is done with the terminal.
-	private def printing(&print)
-		@lock.synchronize do
-			next @held << print if @paused
-
-			clear_status
-			print.call
-			draw_status
-			@io.flush
-		end
-	end
-
-	# The spinner, then how far the run has got. Shortened to fit the terminal,
-	# since a line that wraps can't be cleared. The cursor goes back to the
-	# start of the line, so what config or a loader prints writes over it.
-	private def draw_status
-		return unless @spinner && !@paused
-
-		elapsed = format("%.1fs", Process.clock_gettime(Process::CLOCK_MONOTONIC) - @started_at)
-		progress = @files ? ["#{@files_done}/#{@files} files", pluralize(@tests_done, "test")] : ["Booting"]
-		problems = [(red("#{@failing} failed") if @failing > 0), (yellow("#{@flaky} flaky") if @flaky > 0)].compact
-		parts = [*progress, *problems, dim(elapsed)]
-		room = @width - 3
-		parts.delete_at(1) while parts.size > 2 && plain(parts.join(" · ")).size > room
-		parts = [] if plain(parts.join(" · ")).size > room
-		@io.print "\r\e[K#{[cyan(SPINNER[@frame % SPINNER.size]), (parts.join(dim(' · ')) if parts.any?)].compact.join(' ')}\r"
-		@status_shown = true
-	end
-
-	private def clear_status
-		return unless @status_shown
-
-		@io.print "\r\e[K"
-		@status_shown = false
-	end
-
-	private def stop_status
-		return unless @spinner
-
-		@ticks.push(:stop)
-		@spinner.join
-		@spinner = nil
-
-		@lock.synchronize do
-			clear_status
-			show_cursor
-		end
-
-		@io.flush
-	end
-
-	# The cursor sits at the start of the status line, so it would cover the spinner.
-	private def hide_cursor
-		@io.print "\e[?25l"
-		@cursor_hidden = true
-	end
-
-	private def show_cursor
-		return unless @cursor_hidden
-
-		@io.print "\e[?25h"
-		@io.flush
-		@cursor_hidden = false
-	end
-
-	# From stty rather than io/console, which group loaders, forked from this
-	# process, would pass on to tests.
-	private def terminal_width
-		columns = IO.popen(["stty", "size"], in: @io, err: File::NULL, &:read).split.last.to_i
-		columns.positive? ? columns : 80
-	rescue SystemCallError
-		80
-	end
-
-	# The tests' total time against the last run of the same tests, when it's a
-	# real difference. Total test time, unlike the run's, doesn't depend on how
-	# many workers ran or how long booting took.
-	private def comparison(outcome)
-		estimate = @estimate
-		return unless estimate && estimate.tests == outcome.tests && estimate.test_time > 0 && !outcome.interrupted
-
-		test_time = @timings.test_time
-		change = (test_time / estimate.test_time) - 1
-		return if change.abs < 0.1 || (test_time - estimate.test_time).abs < 0.05
-
-		if change.negative?
-			" #{dim('·')} #{green("tests #{percent(-change)} faster than the last run")}"
-		else
-			" #{dim('·')} #{yellow("tests #{percent(change)} slower than the last run")}"
-		end
-	end
-
-	# Shares that are too small to matter are left out.
-	private def print_timing_summary(outcome)
-		@io.puts
-		timings = @timings
-		elapsed = outcome.duration
-		utilization = busy(outcome) if timings.count > 0
-		split = " (#{phase_breakdown(timings)})" if timings.count > 0 && (timings.setup_and_teardown_share >= 0.1 || timings.outside_phases_time / timings.count >= 0.001)
-
-		shares = if timings.count > 0
-			[
-				"#{seconds(timings.test_time)} of test time#{split}",
-				("#{percent(timings.waiting_share)} waiting" if timings.waiting_share >= 0.1),
-				("#{percent(timings.gc_share)} in GC" if timings.gc_share >= 0.05),
-			].compact
-		else
-			[]
-		end
-
-		row "Duration", [format("%.2fs", elapsed), *shares.map { |share| dim(share) }].join(dim(" · ")) + comparison(outcome).to_s
-
-		added = outcome.workers_added.to_i
-		workers = (added > 0) ? "#{@processes + added} #{dim("(#{@processes} #{@worker_choice}, #{added} added as tests waited)")}" : "#{@processes} #{dim("(#{@worker_choice})")}"
-		row "Workers", "#{workers}#{dim(" · busy #{percent(utilization)}") if utilization}"
-
-		return if timings.count == 0
-
-		per_test = [
-			"#{delimit(timings.allocations_per_test)} allocations",
-			*timings.counts_per_test.map { |name, count, time| "#{format('%.1f', count)} #{name}#{" (#{seconds(time)})" if time > 0}" },
-		]
-		row "Per test", per_test.join(dim(" · "))
-	end
-
-	# A line of --timings' rows, its label right-aligned in a column.
-	private def row(label, text)
-		@io.puts " #{dim(label.rjust(LABEL_WIDTH))}  #{text}"
-	end
-
-	# The share of the workers' time spent running tests, counting workers added
-	# while running from when they were added.
-	private def busy(outcome)
-		worker_time = outcome.worker_time.to_f
-		return @timings.utilization(elapsed: outcome.duration, processes: @processes) unless worker_time > 0
-
-		(@timings.test_time / worker_time).clamp(0.0, 1.0)
-	end
-
-	# Below the rows, under their values.
-	private def print_hints(outcome)
-		timings = @timings
-		elapsed = outcome.duration
-		return if timings.count == 0 || timings.test_time < HINT_THRESHOLD
-
-		utilization = busy(outcome)
-
-		hints = []
-
-		if timings.setup_and_teardown_share >= 0.5
-			hints << "Setup and teardown take #{percent(timings.setup_and_teardown_share)} of test time. " \
-				"Look for expensive shared hooks, factories or fixtures#{', or run with --profile to find them' unless @profile.any?}."
-		end
-
-		if timings.waiting_share >= 0.3
-			hints << "Tests spend #{percent(timings.waiting_share)} of their time waiting rather than computing " \
-				"(IO, network, sleep, locks, or competing for the CPU)."
-		end
-
-		if timings.gc_share >= 0.15
-			hints << "GC takes #{percent(timings.gc_share)} of test time. Reducing allocations or enlarging the heap may help."
-		end
-
-		# The summary says when the slowest test bounds the run.
-		if @processes > 1 && elapsed >= 2 && utilization < 0.6 && !run_bound_by_slowest(outcome)
-			hints << "Workers spent #{percent(1 - utilization)} of the run not running tests " \
-				"(booting, loading files or waiting for work)."
-		end
-
-		indent = " " * (LABEL_WIDTH + 3)
-		hints.each { |hint| @io.puts "#{indent}#{yellow('!')} #{hint}" }
-	end
-
-	# Totals, then the lines most worth testing: changed ones first.
-	private def print_coverage(coverage)
-		@io.puts
-		@io.puts "#{bold('Coverage')} #{[
-			"#{coverage_percent(coverage.lines)} of lines",
-			("#{coverage_percent(coverage.branches)} of branches" if coverage.branches.total > 0),
-			("#{coverage_percent(coverage.methods)} of methods" if coverage.methods.total > 0),
-		].compact.join(' · ')}"
-
-		if (changed = coverage.changed)
-			count, uncovered = changed
-			@io.puts "  Changed lines: #{count.covered} of #{count.total} covered"
-			uncovered.each { |path, lines| @io.puts "    #{red('✗')} #{path}:#{Quickdraw::CoverageReport.ranges(lines)}" }
-		end
-
-		least = coverage.least_covered(COVERAGE_LIMIT)
-
-		if least.any?
-			@io.puts "  Least covered"
-			least.each do |file|
-				@io.puts "    #{coverage_percent(file.lines).rjust(4)}  #{file.path}  #{dim("missing #{Quickdraw::CoverageReport.ranges(file.uncovered)}")}"
-			end
-		end
-
-		if (never_loaded = coverage.never_loaded).any?
-			shown = never_loaded.first(COVERAGE_LIMIT).join(", ")
-			@io.puts "  #{yellow('!')} Never loaded by a test: #{shown}#{" and #{never_loaded.size - COVERAGE_LIMIT} more" if never_loaded.size > COVERAGE_LIMIT}"
-		end
-
-		@io.puts dim("  #{Quickdraw::CoverageReport::HTML_PATH} · #{Quickdraw::CoverageReport::LCOV_PATH} · #{Quickdraw::CoverageReport::JSON_PATH}")
-	end
-
-	private def coverage_percent(count)
-		"#{count.percent}%"
-	end
-
-	# A method in many tests with a large share is a cost they share.
-	private def print_profile
-		@io.puts
-		@io.puts "#{bold('Where test time goes')} #{dim("· #{delimit(@profile.samples)} samples from #{pluralize(@profile.tests, 'test')}")}"
-		@io.puts dim("   total    self   tests")
-
-		@profile.top(PROFILE_LIMIT).each do |method|
-			@io.puts [
-				"  #{percent(method.share).rjust(6)}",
-				dim(percent(method.self_share).rjust(6)),
-				delimit(method.tests).rjust(7),
-				"  #{method.label}  #{dim([relative(method.path), method.line].compact.join(':'))}",
-			].join(" ")
-		end
-	end
-
-	private def print_slowest
-		return if @timings.count == 0
-
-		@io.puts
-		@io.puts bold("Slowest tests")
-
-		@timings.slowest_tests(SLOWEST_LIMIT).each do |test|
-			total = Quickdraw::PHASES.sum { |phase| test.wall(phase) }
-			split = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(test.wall(phase) / total)}" }.join(", ") if total > 0
-			@io.puts "  #{seconds(test.duration).rjust(8)}  #{location(test)}  #{dim(split.to_s)}"
-		end
-
-		@io.puts
-		@io.puts bold("Slowest files")
-
-		@timings.slowest_files(SLOWEST_LIMIT).each do |path, duration, count|
-			@io.puts "  #{seconds(duration).rjust(8)}  #{path}  #{dim(pluralize(count, 'test'))}"
-		end
-	end
-
-	# Around hooks run outside the measured phases. Below about 1ms per test, the
-	# time outside phases is Quickdraw's own overhead, so it isn't shown.
-	private def phase_breakdown(timings)
-		parts = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(timings.phase_share(phase))}" }
-		around = timings.outside_phases_time
-		parts << "plus #{seconds(around)} in around hooks" if around / timings.count >= 0.001
-		parts.join(", ")
-	end
-
-	private def location(timed)
-		"#{timed.path}:#{timed.test['line']} #{name_of(timed.test)}"
-	end
-
-	private def seconds(value)
-		Quickdraw::Timer::Duration.new(value * 1_000_000_000).to_s
-	end
-
-	private def percent(ratio)
-		"#{(ratio * 100).round}%"
-	end
-
-	private def delimit(number)
-		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
-	end
-
-	# Warnings, since a leak only breaks the tests that run after it.
-	private def print_leaks
-		@io.puts
-		@io.puts "#{yellow('!')} #{pluralize(@leaks.size, 'test')} left state behind, which can make later tests fail"
-
-		@leaks.sort_by { |path, test, _| [path, test["line"]] }.first(LEAK_LIMIT).each do |path, test, leaks|
-			@io.puts "  #{path}:#{test['line']} #{name_of(test)}"
-			leaks.each { |leak| @io.puts "    #{dim(leak['message'])}" }
-		end
-
-		@io.puts "  and #{pluralize(@leaks.size - LEAK_LIMIT, 'more test')}" if @leaks.size > LEAK_LIMIT
 	end
 
 	private def print_problem(path, test, result)
@@ -724,17 +280,338 @@ class Quickdraw::Reporters::Human
 		end
 	end
 
-	# Dark text on a coloured background, or just the text without colour.
-	private def label(text, background)
-		@color ? "\e[1;30;#{background}m #{text} \e[0m" : text
+	private def print_slowest
+		return if @timings.count == 0
+
+		@io.puts
+		@io.puts bold("Slowest tests")
+
+		@timings.slowest_tests(SLOWEST_LIMIT).each do |test|
+			total = Quickdraw::PHASES.sum { |phase| test.wall(phase) }
+			split = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(test.wall(phase) / total)}" }.join(", ") if total > 0
+			@io.puts "  #{seconds(test.duration).rjust(8)}  #{location(test)}  #{dim(split.to_s)}"
+		end
+
+		@io.puts
+		@io.puts bold("Slowest files")
+
+		@timings.slowest_files(SLOWEST_LIMIT).each do |path, duration, count|
+			@io.puts "  #{seconds(duration).rjust(8)}  #{path}  #{dim(pluralize(count, 'test'))}"
+		end
+	end
+
+	# Shares that are too small to matter are left out.
+	private def print_timing_summary(outcome)
+		@io.puts
+		timings = @timings
+		elapsed = outcome.duration
+		utilization = busy(outcome) if timings.count > 0
+		split = " (#{phase_breakdown(timings)})" if timings.count > 0 && (timings.setup_and_teardown_share >= 0.1 || timings.outside_phases_time / timings.count >= 0.001)
+
+		shares = if timings.count > 0
+			[
+				"#{seconds(timings.test_time)} of test time#{split}",
+				("#{percent(timings.waiting_share)} waiting" if timings.waiting_share >= 0.1),
+				("#{percent(timings.gc_share)} in GC" if timings.gc_share >= 0.05),
+			].compact
+		else
+			[]
+		end
+
+		row "Duration", [format("%.2fs", elapsed), *shares.map { |share| dim(share) }].join(dim(" · ")) + comparison(outcome).to_s
+
+		added = outcome.workers_added.to_i
+		workers = (added > 0) ? "#{@processes + added} #{dim("(#{@processes} #{@worker_choice}, #{added} added as tests waited)")}" : "#{@processes} #{dim("(#{@worker_choice})")}"
+		row "Workers", "#{workers}#{dim(" · busy #{percent(utilization)}") if utilization}"
+
+		return if timings.count == 0
+
+		per_test = [
+			"#{delimit(timings.allocations_per_test)} allocations",
+			*timings.counts_per_test.map { |name, count, time| "#{format('%.1f', count)} #{name}#{" (#{seconds(time)})" if time > 0}" },
+		]
+		row "Per test", per_test.join(dim(" · "))
+	end
+
+	# A line of --timings' rows, its label right-aligned in a column.
+	private def row(label, text)
+		@io.puts " #{dim(label.rjust(LABEL_WIDTH))}  #{text}"
+	end
+
+	# Around hooks run outside the measured phases. Below about 1ms per test, the
+	# time outside phases is Quickdraw's own overhead, so it isn't shown.
+	private def phase_breakdown(timings)
+		parts = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(timings.phase_share(phase))}" }
+		around = timings.outside_phases_time
+		parts << "plus #{seconds(around)} in around hooks" if around / timings.count >= 0.001
+		parts.join(", ")
+	end
+
+	# The tests' total time against the last run of the same tests, when it's a
+	# real difference. Total test time, unlike the run's, doesn't depend on how
+	# many workers ran or how long booting took.
+	private def comparison(outcome)
+		estimate = @estimate
+		return unless estimate && estimate.tests == outcome.tests && estimate.test_time > 0 && !outcome.interrupted
+
+		test_time = @timings.test_time
+		change = (test_time / estimate.test_time) - 1
+		return if change.abs < 0.1 || (test_time - estimate.test_time).abs < 0.05
+
+		if change.negative?
+			" #{dim('·')} #{green("tests #{percent(-change)} faster than the last run")}"
+		else
+			" #{dim('·')} #{yellow("tests #{percent(change)} slower than the last run")}"
+		end
+	end
+
+	# The share of the workers' time spent running tests, counting workers added
+	# while running from when they were added.
+	private def busy(outcome)
+		worker_time = outcome.worker_time.to_f
+		return @timings.utilization(elapsed: outcome.duration, processes: @processes) unless worker_time > 0
+
+		(@timings.test_time / worker_time).clamp(0.0, 1.0)
+	end
+
+	# Below the rows, under their values.
+	private def print_hints(outcome)
+		timings = @timings
+		elapsed = outcome.duration
+		return if timings.count == 0 || timings.test_time < HINT_THRESHOLD
+
+		utilization = busy(outcome)
+
+		hints = []
+
+		if timings.setup_and_teardown_share >= 0.5
+			hints << "Setup and teardown take #{percent(timings.setup_and_teardown_share)} of test time. " \
+				"Look for expensive shared hooks, factories or fixtures#{', or run with --profile to find them' unless @profile.any?}."
+		end
+
+		if timings.waiting_share >= 0.3
+			hints << "Tests spend #{percent(timings.waiting_share)} of their time waiting rather than computing " \
+				"(IO, network, sleep, locks, or competing for the CPU)."
+		end
+
+		if timings.gc_share >= 0.15
+			hints << "GC takes #{percent(timings.gc_share)} of test time. Reducing allocations or enlarging the heap may help."
+		end
+
+		# The summary says when the slowest test bounds the run.
+		if @processes > 1 && elapsed >= 2 && utilization < 0.6 && !run_bound_by_slowest(outcome)
+			hints << "Workers spent #{percent(1 - utilization)} of the run not running tests " \
+				"(booting, loading files or waiting for work)."
+		end
+
+		indent = " " * (LABEL_WIDTH + 3)
+		hints.each { |hint| @io.puts "#{indent}#{yellow('!')} #{hint}" }
+	end
+
+	# A method in many tests with a large share is a cost they share.
+	private def print_profile
+		@io.puts
+		@io.puts "#{bold('Where test time goes')} #{dim("· #{delimit(@profile.samples)} samples from #{pluralize(@profile.tests, 'test')}")}"
+		@io.puts dim("   total    self   tests")
+
+		@profile.top(PROFILE_LIMIT).each do |method|
+			@io.puts [
+				"  #{percent(method.share).rjust(6)}",
+				dim(percent(method.self_share).rjust(6)),
+				delimit(method.tests).rjust(7),
+				"  #{method.label}  #{dim([relative(method.path), method.line].compact.join(':'))}",
+			].join(" ")
+		end
+	end
+
+	# Warnings, since a leak only breaks the tests that run after it.
+	private def print_leaks
+		@io.puts
+		@io.puts "#{yellow('!')} #{pluralize(@leaks.size, 'test')} left state behind, which can make later tests fail"
+
+		@leaks.sort_by { |path, test, _| [path, test["line"]] }.first(LEAK_LIMIT).each do |path, test, leaks|
+			@io.puts "  #{path}:#{test['line']} #{name_of(test)}"
+			leaks.each { |leak| @io.puts "    #{dim(leak['message'])}" }
+		end
+
+		@io.puts "  and #{pluralize(@leaks.size - LEAK_LIMIT, 'more test')}" if @leaks.size > LEAK_LIMIT
+	end
+
+	# Totals, then the lines most worth testing: changed ones first.
+	private def print_coverage(coverage)
+		@io.puts
+		@io.puts "#{bold('Coverage')} #{[
+			"#{coverage_percent(coverage.lines)} of lines",
+			("#{coverage_percent(coverage.branches)} of branches" if coverage.branches.total > 0),
+			("#{coverage_percent(coverage.methods)} of methods" if coverage.methods.total > 0),
+		].compact.join(' · ')}"
+
+		if (changed = coverage.changed)
+			count, uncovered = changed
+			@io.puts "  Changed lines: #{count.covered} of #{count.total} covered"
+			uncovered.each { |path, lines| @io.puts "    #{red('✗')} #{path}:#{Quickdraw::CoverageReport.ranges(lines)}" }
+		end
+
+		least = coverage.least_covered(COVERAGE_LIMIT)
+
+		if least.any?
+			@io.puts "  Least covered"
+			least.each do |file|
+				@io.puts "    #{coverage_percent(file.lines).rjust(4)}  #{file.path}  #{dim("missing #{Quickdraw::CoverageReport.ranges(file.uncovered)}")}"
+			end
+		end
+
+		if (never_loaded = coverage.never_loaded).any?
+			shown = never_loaded.first(COVERAGE_LIMIT).join(", ")
+			@io.puts "  #{yellow('!')} Never loaded by a test: #{shown}#{" and #{never_loaded.size - COVERAGE_LIMIT} more" if never_loaded.size > COVERAGE_LIMIT}"
+		end
+
+		@io.puts dim("  #{Quickdraw::CoverageReport::HTML_PATH} · #{Quickdraw::CoverageReport::LCOV_PATH} · #{Quickdraw::CoverageReport::JSON_PATH}")
+	end
+
+	private def coverage_percent(count)
+		"#{count.percent}%"
+	end
+
+	# The verdict and the counts, then each problem, then how to rerun them,
+	# then anything else worth knowing, a line each.
+	private def print_summary(outcome)
+		@io.puts
+		@io.puts "#{verdict(outcome)}  #{counts(outcome)}"
+
+		if @problems.any?
+			@io.puts
+			@problems.each { |path, test, result| @io.puts "  #{recap(path, test, result)}" }
+		end
+
+		command = Quickdraw::Reporters.command
+		print_notes([
+			(["Rerun failures", "#{command} --failed"] if @problems.any? && outcome.recorded),
+			(["Same order", "#{command} --seed #{@seed}"] unless outcome.passed?),
+		].compact) { |label| dim(label) }
+		print_notes(notes(outcome)) { |label| yellow(label) }
+	end
+
+	private def verdict(outcome)
+		if outcome.interrupted then label("INTERRUPTED", 43)
+		elsif outcome.passed? then label("PASSED", 42)
+		else label("FAILED", 41)
+		end
+	end
+
+	# How many tests and assertions, each count in the colour of what it means,
+	# then how long the run took.
+	private def counts(outcome)
+		failed_to_load = @file_statuses.count { |_path, status| status == "failed to load" }
+
+		[
+			pluralize(outcome.tests, "test"),
+			"#{delimit(outcome.assertions)} #{(outcome.assertions == 1) ? 'assertion' : 'assertions'}",
+			(red("#{outcome.failed} failed") if outcome.failed > 0),
+			(yellow("#{outcome.flaky} flaky#{' (allowed)' if outcome.allow_flaky}") if outcome.flaky > 0),
+			(yellow("#{outcome.quarantined} quarantined") if outcome.quarantined > 0),
+			(dim("#{outcome.skipped} skipped") if outcome.skipped > 0),
+			(dim("#{outcome.pending} pending") if outcome.pending > 0),
+			(red("#{outcome.errored} errored") if outcome.errored > 0),
+			(red("#{pluralize(failed_to_load, 'file')} failed to load") if failed_to_load > 0),
+			(yellow("#{outcome.not_run} not run") if outcome.not_run > 0),
+			(yellow("#{pluralize(outcome.unloaded_files, 'file')} not loaded") if outcome.unloaded_files > 0),
+			(yellow("#{outcome.without_assertions} without assertions") if outcome.without_assertions > 0),
+			format("%.2fs", outcome.duration),
+		].compact.join(dim(" · "))
+	end
+
+	private def recap(path, test, result)
+		return "#{red('✗')} #{path} could not be loaded" unless test
+
+		"#{marker(result)} #{path}:#{test['line']} #{name_of(test)}#{dim(' (quarantined)') if result['quarantined']}#{dim(' (flaky)') if result['passed_on_retry'] && !result['quarantined']}"
 	end
 
 	private def marker(result)
 		(result["passed_on_retry"] || result["quarantined"]) ? yellow("~") : red("✗")
 	end
 
+	# [label, text] pairs, under each other, their labels lined up.
+	private def print_notes(notes)
+		return if notes.empty?
+
+		width = notes.map { |label, _text| label.size }.max
+		@io.puts
+		notes.each { |label, text| @io.puts "  #{yield(label.ljust(width))}  #{text}" }
+	end
+
+	private def notes(outcome)
+		notes = []
+		notes << ["Interrupted", "Tests that were running or hadn’t started count as not run."] if outcome.interrupted
+		notes << ["Fail fast", "Stopped after the first problem."] if !outcome.interrupted && outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
+		notes << ["No match", "No tests matched the given lines, --name or --exclude."] if outcome.nothing_matched
+		notes << ["Exit status", "A worker or the loader exited with a failure status, e.g. from an at_exit hook."] if outcome.processes_failed && @problems.empty?
+
+		skipped = @set_aside.reject { |_path, _test, skipped| skipped["pending"] }
+		notes << ["Skipped", skip_reasons(skipped)] if skipped.any?
+
+		pending = @set_aside.select { |_path, _test, skipped| skipped["pending"] }
+		notes << ["Pending", listed(pending.map { |path, test, _skipped| "#{path}:#{test['line']} #{name_of(test)}" })] if pending.any?
+
+		if (slowest = run_bound_by_slowest(outcome))
+			notes << ["Slow", "#{location(slowest)} took #{seconds(slowest.duration)}, #{percent(slowest.duration / outcome.duration)} of the run."]
+		end
+
+		notes
+	end
+
+	# The most common reasons first, with how many tests gave each.
+	private def skip_reasons(skipped)
+		reasons = skipped.map { |_path, _test, skipped| reason(skipped["reason"]) }
+		listed(reasons.tally.sort_by { |reason, count| [-count, reason] }.map { |reason, count| "#{reason} (#{count})" }, separator: " · ")
+	end
+
+	private def reason(text)
+		first_line = plain(text.to_s).lines.first.to_s.strip
+		first_line.empty? ? "no reason given" : truncate(first_line, REASON_WIDTH)
+	end
+
+	private def listed(items, separator: ", ")
+		shown = items.first(NOTE_LIMIT).join(separator)
+		(items.size > NOTE_LIMIT) ? "#{shown}#{separator}and #{items.size - NOTE_LIMIT} more" : shown
+	end
+
+	private def truncate(text, width)
+		(text.size > width) ? "#{text[0, width - 1]}…" : text
+	end
+
+	# The slowest test, if it took at least half the run, so splitting it up
+	# would shorten the run.
+	private def run_bound_by_slowest(outcome)
+		return if outcome.interrupted || @processes <= 1 || @timings.count == 0
+
+		slowest = @timings.slowest_tests(1).first
+		slowest if slowest.duration >= HINT_THRESHOLD && slowest.duration >= outcome.duration * 0.5
+	end
+
+	private def location(timed)
+		"#{timed.path}:#{timed.test['line']} #{name_of(timed.test)}"
+	end
+
+	private def seconds(value)
+		Quickdraw::Timer::Duration.new(value * 1_000_000_000).to_s
+	end
+
+	private def percent(ratio)
+		"#{(ratio * 100).round}%"
+	end
+
+	private def delimit(number)
+		number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
+	end
+
 	private def clean(text)
 		@color ? text.scrub : plain(text)
+	end
+
+	# Dark text on a coloured background, or just the text without colour.
+	private def label(text, background)
+		@color ? "\e[1;30;#{background}m #{text} \e[0m" : text
 	end
 
 	private def red(text) = style(text, 31)
