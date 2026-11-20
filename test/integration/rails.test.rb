@@ -354,6 +354,50 @@ class RailsTest < Quickdraw::Test
 		assert_includes result.stdout, "ActiveRecord::StatementInvalid: SQLite3::SQLException: cannot rollback - no transaction is active"
 	end
 
+	test "keeps another database's fixtures when it doesn't empty databases, though no model has connected to it", timeout: 60 do
+		project = app(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.rails(fixtures: :all) }\n",
+			"config/database.yml" => <<~YAML,
+				test:
+				  primary:
+				    adapter: sqlite3
+				    database: db/test.sqlite3
+				  other:
+				    adapter: sqlite3
+				    database: db/other.sqlite3
+			YAML
+			"db/other_schema.rb" => "ActiveRecord::Schema[8.1].define(version: 1) { create_table(:dogs) { |t| t.string :name } }\n",
+			"app/models/other_record.rb" => "class OtherRecord < ActiveRecord::Base\n\tself.abstract_class = true\n\tconnects_to database: { writing: :other }\nend\n",
+			"app/models/dog.rb" => "class Dog < OtherRecord; end\n",
+			"test/fixtures/users.yml" => "ada:\n  name: Ada\n",
+			"test/fixtures/dogs.yml" => "rex:\n  name: Rex\n",
+			"test/users.test.rb" => "class UsersTest < Quickdraw::Test\n\ttest('users') { assert_equal User.pluck(:name).sort, YAML.load_file('test/fixtures/users.yml').values.map { _1['name'] }.sort }\nend\n",
+		)
+
+		first = project.run("-p", "1", "--no-history", timeout: 30)
+		assert first.success? do
+			first.output
+		end
+
+		project.write("test/fixtures/users.yml" => "ada:\n  name: Ada\ngrace:\n  name: Grace\n")
+		second = project.run("-p", "1", "--no-history", env: { "SKIP_TEST_DATABASE_TRUNCATE" => "1" }, timeout: 30)
+
+		assert second.success? do
+			second.output
+		end
+	end
+
+	test "needs Rails 7.2 or later", timeout: 30 do
+		result = project(
+			"config/quickdraw.rb" => "Quickdraw.configure(&:rails)\n",
+			"config/environment.rb" => "require 'active_support/notifications'\nmodule Rails; def self.gem_version = Gem::Version.new('7.1.5'); end\n",
+			"test/a.test.rb" => "class ATest < Quickdraw::Test; test('a') { assert true }; end\n",
+		).run("-p", "1", "--no-history", timeout: 30)
+
+		refute result.success?
+		assert_includes result.output, "config.rails needs Rails 7.2 or later, and this is Rails 7.1.5."
+	end
+
 	test "Rails' test helpers", timeout: 30 do
 		result = app(
 			"config/application.rb" => <<~RUBY,

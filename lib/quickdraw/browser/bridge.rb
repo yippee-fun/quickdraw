@@ -6,12 +6,17 @@ require "json"
 # request is a line of JSON on its input, answered by a line on its output.
 class Quickdraw::Browser::Bridge
 	SCRIPT = File.join(__dir__, "bridge.mjs").freeze
+	READ_SIZE = 65_536
 
 	# Starts Node, which launches the browser and opens the first pages while
 	# the worker loads test files. `settings` are bridge.mjs's.
 	def initialize(node:, playwright:, settings:, log:)
 		@log = log
 		@id = 0
+		@unanswered = Set.new
+		@buffer = "".b
+		# How much of the buffer has no newline.
+		@scanned = 0
 		@mutex = Thread::Mutex.new
 		input, @writer = IO.pipe
 		@reader, output = IO.pipe
@@ -51,10 +56,15 @@ class Quickdraw::Browser::Bridge
 
 	private def request(operation, params)
 		id = (@id += 1)
-		@writer.write("#{JSON.generate({ id:, op: operation, **params })}\n")
-		line = @reader.gets or raise Quickdraw::Browser::Error, exited
-		message = JSON.parse(line.force_encoding(Encoding::UTF_8))
-		raise "Quickdraw’s Node process answered #{message['id']}, not #{id}." unless message["id"] == id
+		json = "#{JSON.generate({ id:, op: operation, **params })}\n"
+
+		# Whole, or Node would read the next request as the rest of this one.
+		Thread.handle_interrupt(Object => :never) do
+			@writer.write(json)
+			@unanswered << id
+		end
+
+		message = reply(id)
 
 		if (error = message["error"])
 			raise ((error["name"] == "TimeoutError") ? Quickdraw::Browser::TimeoutError : Quickdraw::Browser::Error), error["message"]
@@ -63,6 +73,36 @@ class Quickdraw::Browser::Bridge
 		message["result"]
 	rescue Errno::EPIPE, IOError
 		raise Quickdraw::Browser::Error, exited
+	end
+
+	# Skips the replies to earlier requests, which an exception, such as a
+	# Timeout around a page call, stopped waiting for.
+	private def reply(id)
+		loop do
+			message = JSON.parse(line)
+			raise Quickdraw::Browser::Error, "Quickdraw’s Node process answered #{message['id']}, not #{id}." unless @unanswered.delete?(message["id"])
+			return message if message["id"] == id
+		end
+	end
+
+	# Not with gets, which loses what it has read of a line when an exception
+	# interrupts it. Interrupts only stop the wait.
+	private def line
+		until (newline = @buffer.index("\n", @scanned))
+			@scanned = @buffer.bytesize
+			@reader.wait_readable
+
+			Thread.handle_interrupt(Object => :never) do
+				case @reader.read_nonblock(READ_SIZE, exception: false)
+				in String => data then @buffer << data
+				in :wait_readable then nil
+				in nil then raise Quickdraw::Browser::Error, exited
+				end
+			end
+		end
+
+		@scanned = 0
+		@buffer.slice!(0..newline).force_encoding(Encoding::UTF_8)
 	end
 
 	private def exited

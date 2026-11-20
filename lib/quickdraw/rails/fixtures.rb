@@ -104,6 +104,8 @@ module Quickdraw::Rails::Fixtures
 		kept = intact(connection, entries.select { |name, entry| entry.digest == digest(name) })
 		kept = kept.reject { |_name, entry| redated?(connection, entry, now) }
 		kept = independent(kept, entries.except(*kept.keys)) if empty
+		# For #load, which may find no connection to this database later.
+		kept.each_value { |entry| entry.tables.each_key { |table| references(entry.database, table) } }
 
 		if kept.empty?
 			connection.truncate_tables(*connection.tables) if empty

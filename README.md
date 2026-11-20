@@ -397,6 +397,8 @@ end
 
 ## Rails
 
+For Rails 7.2 or later:
+
 ```ruby
 Quickdraw.configure(&:rails)
 ```
@@ -453,7 +455,7 @@ They're Rails' own, and their assertions count as the test's. Time travels back,
 
 ## Browser testing
 
-Browser tests use [Playwright](https://playwright.dev) with Chromium, Firefox or WebKit. Each worker runs Playwright's JavaScript API in a Node process of its own, so you need Node, but no Playwright gem; Puma, which serves your app, needs to be in your bundle. `config.browser` runs the files matching its patterns in a group of their own, so other tests never start a browser. The block returns the app they test:
+Browser tests use [Playwright](https://playwright.dev) with Chromium, Firefox or WebKit. Each worker runs Playwright's JavaScript API in a Node process of its own, so you need Node, but no Playwright gem; Puma 7 or later, which serves your app, needs to be in your bundle. `config.browser` runs the files matching its patterns in a group of their own, so other tests never start a browser. The block returns the app they test:
 
 ```ruby
 Quickdraw.configure do |config|
