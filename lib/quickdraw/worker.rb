@@ -93,6 +93,17 @@ class Quickdraw::Worker
 			@skipped = { "pending" => true, "reason" => nil }
 		end
 
+		# A test that finished without asserting anything checked nothing, so it fails.
+		def fail_without_assertions(path, line)
+			return if @assertions > 0 || @errors.any? || @skipped
+
+			@failures << {
+				"message" => "This test made no assertions. A test without a block is pending, if it isn’t written yet.",
+				"path" => path,
+				"line" => line,
+			}
+		end
+
 		# From Sampler#record, with --profile.
 		attr_writer :profile
 
@@ -377,6 +388,7 @@ class Quickdraw::Worker
 			end
 		end
 
+		recorder.fail_without_assertions(definition.block.source_location[0], definition.line) if definition.block
 		recorder.output = output if output && recorder.problem?
 		result = recorder.to_h
 

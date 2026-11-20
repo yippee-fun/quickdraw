@@ -69,7 +69,6 @@ class Quickdraw::Reporters::JSON
 			"load_errors" => outcome.load_errors,
 			"not_run" => outcome.not_run,
 			"unloaded_files" => outcome.unloaded_files,
-			"without_assertions" => outcome.without_assertions,
 			"duration" => outcome.duration,
 			"coverage" => outcome.coverage&.then do |coverage|
 				{ "lines" => coverage.lines.to_h, "branches" => coverage.branches.to_h, "methods" => coverage.methods.to_h }

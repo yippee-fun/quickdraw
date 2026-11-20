@@ -71,7 +71,7 @@ module Integration
 		if (index = parts.index { |part| part.end_with?(" errored") })
 			parts[index] = "#{Integer(parts[index][/\A\d+/]) + files} errored"
 		else
-			parts.insert(parts.index { |part| part.match?(/not run|not loaded|without assertions|\A[\d.]+s\z/) }, "#{files} errored")
+			parts.insert(parts.index { |part| part.match?(/not run|not loaded|\A[\d.]+s\z/) }, "#{files} errored")
 		end
 
 		parts.join(" · ")
