@@ -75,6 +75,9 @@ module Quickdraw::Reporters
 		LIBRARY = "#{Quickdraw::LIB}/".freeze
 		EXECUTABLES = "#{File.expand_path('../exe', Quickdraw::LIB)}/".freeze
 
+		# Frames in Ruby's own core: CRuby's and TruffleRuby's, then JRuby's Java.
+		RUBY_CORE = Quickdraw.deep_freeze(["<internal:", "org/jruby/"])
+
 		private def name_of(test)
 			Quickdraw::Filter.name_of(test)
 		end
@@ -105,7 +108,7 @@ module Quickdraw::Reporters
 
 		# Whether the error has frames, and none but Quickdraw's and Ruby's own.
 		private def raised_in_quickdraw?(frames)
-			frames.any? && frames.take_while { |frame| !frame.start_with?(EXECUTABLES) }.all? { |frame| frame.start_with?(LIBRARY, "<internal:") }
+			frames.any? && frames.take_while { |frame| !frame.start_with?(EXECUTABLES) }.all? { |frame| frame.start_with?(LIBRARY, *RUBY_CORE) }
 		end
 
 		private def terminal? = Quickdraw::Reporters.terminal?(@io)

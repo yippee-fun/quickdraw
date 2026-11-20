@@ -55,7 +55,9 @@ class FailureDetailsTest < Quickdraw::Test
 
 		assert_includes result.stdout, "ArgumentError: wrong number of arguments (given 0, expected 1)"
 		assert_includes result.stdout, "Raised inside Quickdraw, whose frames are usually hidden (--backtrace shows them all):"
-		assert_match result.stdout, %r{^  \S*lib/quickdraw\.rb:\d+:in .*remove_tree}
+		# JRuby raises a wrong number of arguments where the method was called.
+		first_frame = (RUBY_ENGINE == "jruby") ? %r{^  \S*lib/quickdraw/basic_test\.rb:\d+:in .*run_test} : %r{^  \S*lib/quickdraw\.rb:\d+:in .*remove_tree}
+		assert_match result.stdout, first_frame
 	end
 
 	test "shows where a long string comes closest, and all of it when the output isn't a terminal", timeout: 20 do

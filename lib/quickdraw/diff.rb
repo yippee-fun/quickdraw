@@ -61,7 +61,7 @@ module Quickdraw
 			region = text[first, needle.size * 3].chars
 
 			offset = region.each_index.max_by do |candidate|
-				[needle.each_with_index.count { |char, index| region[candidate + index] == char }, -candidate]
+				[needle.each_index.count { |index| region[candidate + index] == needle[index] }, -candidate]
 			end
 
 			first + offset
