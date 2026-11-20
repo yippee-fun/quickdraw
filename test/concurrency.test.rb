@@ -80,6 +80,7 @@ class ConcurrencyTest < Quickdraw::Test
 			Quickdraw::Worker,
 			Quickdraw::Reporters::Formatting,
 			Quickdraw::Inspector,
+			Quickdraw::Spy,
 			Quickdraw::History,
 			Quickdraw::Mutation::Mutator,
 			Quickdraw::Mutation::Planner,
@@ -118,6 +119,7 @@ class ConcurrencyTest < Quickdraw::Test
 			"Quickdraw::Inspector::DATA_TO_H",
 			"Quickdraw::Inspector::PUBLIC_SEND",
 			"Quickdraw::Inspector::STRUCT_EACH_PAIR",
+			"Quickdraw::Spy::CURRENT_THREAD",
 		]
 	end
 end

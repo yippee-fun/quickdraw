@@ -295,7 +295,7 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
 - Snapshot testing with an update mode.
 - Table-driven tests.
 - Allocation and performance assertions.
-- Stubs and mocks that are always reset.
+- **Stubs and spies** (done): `stub`, `spy`, `stub_const` and `stub_env`, undone through `defer` after every test, before the leak checks. No mock objects or expectations: assert on a spy's calls instead.
 - `describe` blocks for grouping, with names that nest into the test name (done). Each block is a subclass, so `setup`, helpers and `super` work as with any class.
 - `test "name"` without a block is reported as pending, and `skip "reason"` skips a test (done). Both are listed in the human output, counted everywhere, and ignored by `--failed`. Still to do: a test with a block must make at least one assertion (#58).
 - **Structured diffs** (done): `assert_equal` on multi-line values diffs `Quickdraw::Inspector.pretty` output, which expands hashes, arrays, sets, Data, Structs and plain objects one element per line.
