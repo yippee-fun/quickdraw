@@ -47,6 +47,9 @@ class Quickdraw::CLI
 		# Before any loader starts, so every process knows where to look.
 		ENV[Quickdraw::Debugger::FLAG] = File.join(Quickdraw.temporary_directory, "quickdraw-debugging-#{Process.pid}")
 
+		# Before anything forks, so watch mode's loaders and every worker inherit it.
+		system("taskpolicy", "-b", "-p", Process.pid.to_s) if options[:efficiency]
+
 		if options[:watch]
 			watch(options)
 		else
@@ -354,11 +357,7 @@ class Quickdraw::CLI
 				options[:backtrace] = true
 			end
 
-			parser.on(
-				"--[no-]capture",
-				"With --no-capture, show what tests print as they print it, rather than with their failures",
-				"(for a debugger such as binding.irb, also run one test with -p 1)",
-			) do |it|
+			parser.on("--[no-]capture", "With --no-capture, show what tests print as they print it, rather than with their failures") do |it|
 				options[:capture] = it
 			end
 
@@ -562,8 +561,6 @@ class Quickdraw::CLI
 	end
 
 	private def run(options)
-		system("taskpolicy", "-b", "-p", Process.pid.to_s) if options[:efficiency]
-
 		files = test_files(options[:patterns])
 		# Files that run even when browser tests are left out (see Coordinator#selected?):
 		# those given, and in watch mode, changed.

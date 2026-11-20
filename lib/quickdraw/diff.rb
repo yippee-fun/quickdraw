@@ -192,33 +192,7 @@ module Quickdraw
 				new_positions[line]&.reverse_each { |new_idx| matches << [old_idx, new_idx] }
 			end
 
-			lis_matches(matches)
-		end
-
-		private def lis_matches(matches)
-			return matches if matches.length <= 1
-
-			n = matches.length
-			tails = []
-			indices = []
-			predecessors = Array.new(n)
-
-			matches.each_with_index do |(old_pos, new_pos), i|
-				pos = tails.bsearch_index { |t| t >= new_pos } || tails.length
-
-				tails[pos] = new_pos
-				indices[pos] = i
-				predecessors[i] = (pos > 0) ? indices[pos - 1] : nil
-			end
-
-			result = []
-			idx = indices[tails.length - 1]
-			while idx
-				result.unshift(matches[idx])
-				idx = predecessors[idx]
-			end
-
-			result
+			longest_increasing_subsequence(matches)
 		end
 
 		private def additions(lines, _start_pos)

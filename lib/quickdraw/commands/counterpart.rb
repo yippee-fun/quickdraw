@@ -56,9 +56,10 @@ class Quickdraw::Commands::Counterpart
 	# lib/quickdraw/inspector.rb: lib/quickdraw/inspector.test.rb, then
 	# test/quickdraw/inspector.test.rb, test/inspector.test.rb and so on.
 	private def test_for(path)
-		relative = without_root(path, SOURCE_DIRECTORIES).delete_suffix(".rb")
-		# Without the directory named after the project, as in lib/quickdraw/.
-		relatives = [relative, relative.split("/", 2)[1]].compact
+		under_root = without_root(path, SOURCE_DIRECTORIES)
+		relative = under_root.delete_suffix(".rb")
+		# Under a source root, also without the directory named after the project, as in lib/quickdraw/.
+		relatives = [relative, (relative.split("/", 2)[1] unless under_root == path)].compact
 
 		candidates = [
 			"#{path.delete_suffix('.rb')}#{TEST_SUFFIX}",

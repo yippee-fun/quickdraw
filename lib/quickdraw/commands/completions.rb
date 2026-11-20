@@ -10,7 +10,8 @@ class Quickdraw::Commands::Completions
 	RUNS = ["all", "browser"].freeze
 	BROWSERS = "chromium firefox webkit"
 
-	Option = Data.define(:long, :short, :argument, :description)
+	# `opposite` is the other form of a --[no-]name switch.
+	Option = Data.define(:long, :short, :argument, :description, :opposite)
 
 	INSTALL = <<~TEXT
 		Usage: quickdraw completions SHELL
@@ -41,13 +42,28 @@ class Quickdraw::Commands::Completions
 	private def options
 		require "optparse"
 
-		Quickdraw::CLI.new([]).option_parser.top.list.grep(OptionParser::Switch).map do |switch|
-			Option.new(
+		Quickdraw::CLI.new([]).option_parser.top.list.grep(OptionParser::Switch).flat_map do |switch|
+			option = Option.new(
 				long: switch.long.first,
 				short: switch.short.first,
 				argument: switch.arg&.strip&.split&.first,
 				description: Array(switch.desc).join(" "),
+				opposite: nil,
 			)
+
+			case option.long
+			in /\A--\[no-\](?<name>.+)\z/
+				positive = "--#{$~[:name]}"
+				negative = "--no-#{$~[:name]}"
+				# The description is for the form it names, or else the positive one.
+				described, other = option.description.include?(negative) ? [negative, positive] : [positive, negative]
+
+				[
+					option.with(long: described, opposite: other),
+					option.with(long: other, opposite: described, description: "The opposite of #{described}"),
+				]
+			else [option]
+			end
 		end
 	end
 
@@ -104,6 +120,8 @@ class Quickdraw::Commands::Completions
 			elsif names.size > 1
 				# Both forms of an option exclude each other.
 				"'(#{names.join(' ')})'{#{names.join(',')}}"
+			elsif option.opposite
+				"'(#{option.opposite})'#{option.long}"
 			else
 				names.first
 			end

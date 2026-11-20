@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # Aggregates per-test timing results across the whole run. Results arrive with
-# times already converted to seconds.
+# times already converted to seconds. Each test's record is only kept with
+# `each_test`, for #slowest_tests; otherwise only the slowest is.
 class Quickdraw::Timings
 	CPU = Quickdraw::STATS.index("cpu")
 	GC_TIME = Quickdraw::STATS.index("gc")
@@ -11,8 +12,14 @@ class Quickdraw::Timings
 		def wall(phase) = stats[Quickdraw::PHASES.index(phase)]
 	end
 
-	def initialize
-		@tests = []
+	attr_reader :count, :test_time, :slowest
+
+	def initialize(each_test:)
+		@tests = [] if each_test
+		@count = 0
+		# Total time spent in tests, summed across workers.
+		@test_time = 0.0
+		@slowest = nil
 		@files = Hash.new { |hash, key| hash[key] = [0.0, 0] }
 		@totals = Array.new(Quickdraw::STATS.size, 0)
 		@counts = Hash.new { |hash, key| hash[key] = [0, 0.0] }
@@ -22,7 +29,12 @@ class Quickdraw::Timings
 		duration = result["duration"] or return
 		stats = result["stats"]
 
-		@tests << Test.new(duration:, path:, test:, stats:)
+		@count += 1
+		@test_time += duration
+		slowest = @slowest.nil? || duration > @slowest.duration
+		timed = Test.new(duration:, path:, test:, stats:) if slowest || @tests
+		@slowest = timed if slowest
+		@tests << timed if @tests
 
 		file = @files[path]
 		file[0] += duration
@@ -41,15 +53,8 @@ class Quickdraw::Timings
 	# frequent first.
 	def counts_per_test
 		@counts
-			.map { |name, (count, seconds)| [name, count.fdiv(@tests.size), seconds / @tests.size] }
+			.map { |name, (count, seconds)| [name, count.fdiv(@count), seconds / @count] }
 			.sort_by { |_name, count, _seconds| -count }
-	end
-
-	def count = @tests.size
-
-	# Total time spent in tests, summed across workers.
-	def test_time
-		@tests.sum(&:duration)
 	end
 
 	def phase_share(phase)
@@ -78,7 +83,7 @@ class Quickdraw::Timings
 	end
 
 	def allocations_per_test
-		@tests.empty? ? 0 : @totals[ALLOCATIONS] / @tests.size
+		(@count > 0) ? @totals[ALLOCATIONS] / @count : 0
 	end
 
 	# How much of the available worker time was spent running tests.
@@ -87,6 +92,8 @@ class Quickdraw::Timings
 	end
 
 	def slowest_tests(limit)
+		raise "Timings only keeps each test with each_test: true." unless @tests
+
 		@tests.max_by(limit, &:duration)
 	end
 

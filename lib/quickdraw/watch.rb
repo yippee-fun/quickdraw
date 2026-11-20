@@ -99,10 +99,11 @@ class Quickdraw::Watch
 	end
 
 	# The test files that cover the changed paths, or nil to run everything
-	# selected. Only without paths given, since those choose the tests.
+	# selected: for config and the bundle, as for a deleted path. Only without
+	# paths given, since those choose the tests.
 	private def affected_tests(paths)
 		return if @options[:patterns].any? || @failed_only
-		return if paths.any? { |path| !File.exist?(path) }
+		return if paths.any? { |path| Quickdraw::WarmLoaders::REBOOT.match?(path) || !File.exist?(path) }
 
 		counterpart = Quickdraw::Commands::Counterpart.new
 		tests = paths.map { |path| path.end_with?(Quickdraw::Commands::Counterpart::TEST_SUFFIX) ? path : counterpart.find(path) }

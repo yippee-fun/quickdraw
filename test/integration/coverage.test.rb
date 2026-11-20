@@ -163,8 +163,12 @@ class CoverageTest < Quickdraw::Test
 
 		result = project.run("-p", "1", "--no-history", "--coverage")
 
+		assert_includes result.stdout, "Coverage no lines loaded\n"
 		assert_includes result.stdout, "! Never loaded by a test: lib/orphan.rb"
 		assert File.exist?(File.join(project.directory, ".quickdraw/coverage/coverage.json"))
+
+		agent = project.run("-p", "1", "--no-history", "--coverage", "--format", "agent")
+		assert_includes agent.stdout, "Coverage: no lines loaded (.quickdraw/coverage/coverage.json has it all).\n"
 	end
 
 	test "writes LCOV and JSON, and adds totals to the JSON stream", timeout: 20 do

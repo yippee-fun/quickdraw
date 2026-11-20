@@ -176,6 +176,19 @@ class ReportingTest < Quickdraw::Test
 		assert_includes result.output, "RuntimeError: broken"
 	end
 
+	test "notes a slow test that takes most of the run, without --timings", timeout: 20 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
+		result = project(
+			"a.test.rb" => "class A < Quickdraw::Test; test('slow') { sleep 1.1; assert true }; end\n",
+			"b.test.rb" => "class B < Quickdraw::Test; test('fast') { assert true }; end\n",
+		).run("-p", "2", "--no-history")
+
+		assert result.success?
+		assert_match result.output, /^  Slow  a\.test\.rb:1 A › slow took 1\.\d+s, \d+% of the run\.$/
+		refute_includes result.output, "Slowest tests"
+	end
+
 	test "lists the slowest tests and files with --timings", timeout: 20 do
 		result = project("a.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--timings")
 			class A < Quickdraw::Test

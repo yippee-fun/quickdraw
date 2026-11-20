@@ -83,6 +83,18 @@ class CommandsTest < Quickdraw::Test
 		assert_includes orphan.stderr, "No counterpart found for lib/orphan.rb."
 	end
 
+	test "counterpart keeps the first directory of a path outside the source directories", timeout: 20 do
+		project = project(
+			"lib/billing/cart.rb" => "",
+			"test/billing/cart.test.rb" => "",
+			"engines/billing/cart.rb" => "",
+			"engines/billing/test/cart.test.rb" => "",
+		)
+
+		assert_equal project.run("counterpart", "lib/billing/cart.rb").stdout, "test/billing/cart.test.rb\n"
+		assert_equal project.run("counterpart", "engines/billing/cart.rb").stdout, "engines/billing/test/cart.test.rb\n"
+	end
+
 	def shell?(name) = system("command -v #{name} > /dev/null")
 
 	def completions(shell)
@@ -102,25 +114,58 @@ class CommandsTest < Quickdraw::Test
 			COMP_WORDS=(qt brow); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
 			COMP_WORDS=(qt browser ins); COMP_CWORD=2; _quickdraw; echo "${COMPREPLY[@]}"
 			COMP_WORDS=(qt browser install fire); COMP_CWORD=3; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qt --no-cap); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qt --cap); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
 		BASH
 
-		assert_equal IO.popen(["bash", "-c", script], &:read), "--failed --fail-fast\njson junit\ndoctor\nbrowser\ninstall\nfirefox\n"
+		assert_equal IO.popen(["bash", "-c", script], &:read), "--failed --fail-fast\njson junit\ndoctor\nbrowser\ninstall\nfirefox\n--no-capture\n--capture\n"
 	end
 
 	test "fish completes options, formats and commands", timeout: 20 do
 		skip "fish isn’t installed" unless shell?("fish")
 
 		script = "source #{completions('fish')}; complete -C 'qt --format j'; complete -C 'quickdraw hist'; complete -C 'qt all --fail-'; " \
-			"complete -C 'qt browser ins'; complete -C 'qt browser install fire'; complete -C 'qt browser --name install --fail-'"
+			"complete -C 'qt browser ins'; complete -C 'qt browser install fire'; complete -C 'qt browser --name install --fail-'; " \
+			"complete -C 'qt --no-cap'; complete -C 'qt --cap'"
 		output = IO.popen(["fish", "-c", script], &:read)
 
-		assert_equal output.lines.map { |line| line.split("\t").first.chomp }, ["json", "junit", "history", "--fail-fast", "install", "firefox", "--fail-fast"]
+		assert_equal output.lines.map { |line| line.split("\t").first.chomp },
+			# Fish matches inside words too, so --cap gives --no-capture as well.
+			["json", "junit", "history", "--fail-fast", "install", "firefox", "--fail-fast", "--no-capture", "--capture", "--no-capture"]
 	end
 
 	test "zsh completions are valid zsh", timeout: 20 do
 		skip "zsh isn’t installed" unless shell?("zsh")
 
 		assert system("zsh", "-n", completions("zsh"))
+	end
+
+	# Types each in an interactive zsh, then Tab, and prints the line it completes to.
+	ZSH_COMPLETER = <<~'ZSH'
+		zmodload zsh/zpty
+		zpty z 'TERM=dumb zsh -f -i'
+		zpty -w z "PS1='>'; autoload -Uz compinit; compinit -u -D; source ${(q)1}; echo RE''ADY"
+		zpty -r z output '*READY*'
+		for typed in ${@:2}; do
+			zpty -w -n z "qt $typed"$'\t'
+			output=""
+			repeat 100 {
+				sleep 0.05
+				while zpty -r -t z chunk; do output+=$chunk; done
+				[[ $output == *"qt $typed"?*" " ]] && break
+			}
+			print -r -- "${output##*>}"
+			zpty -w -n z $'\C-u'
+		done
+		zpty -d z
+	ZSH
+
+	test "zsh completes options, both forms of --[no-] ones too", timeout: 20 do
+		skip "zsh isn’t installed" unless shell?("zsh")
+
+		output = IO.popen(["zsh", "-f", "-c", ZSH_COMPLETER, "zsh", completions("zsh"), "--fail-f", "--no-cap", "--cap", "--al"], &:read)
+
+		assert_equal output.scan(/qt (\S+)/).flatten, ["--fail-fast", "--no-capture", "--capture", "--allow-flaky"]
 	end
 
 	test "completions without a shell explains how to install them", timeout: 20 do

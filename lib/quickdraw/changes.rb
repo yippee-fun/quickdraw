@@ -24,14 +24,32 @@ module Quickdraw::Changes
 	# deleted after line n, and no others, count as n + 0.5.
 	def lines(base: nil, deletions: false)
 		untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", "*.rb") or return
-		diff = git("diff", since(base), "--relative", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--", "*.rb")
+		diff = git("diff", since(base), "--relative", "--unified=0", "--inter-hunk-context=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--", "*.rb")
 		# Before the first commit, staged files are new in full.
 		untracked = "#{untracked}#{staged('*.rb')}" unless diff
 		diff ||= ""
 		changes = {}
 		path = nil
+		# Lines left in the hunk, which can look like file headers, as an added
+		# line starting "++ " does.
+		old_left = 0
+		new_left = 0
 
 		diff.each_line(chomp: true) do |line|
+			if old_left > 0 || new_left > 0
+				case line[0]
+				in "-" then old_left -= 1
+				in "+" then new_left -= 1
+				in " "
+					old_left -= 1
+					new_left -= 1
+				# "\ No newline at end of file"
+				in "\\" then nil
+				end
+
+				next
+			end
+
 			case line
 			# Git ends names with spaces with a tab, and quotes names with
 			# quotes, backslashes or control characters, C style.
@@ -39,11 +57,14 @@ module Quickdraw::Changes
 				file = $~[:file]
 				file = file.undump if file.start_with?('"')
 				path = (file == "/dev/null") ? nil : file.delete_prefix("b/")
-			in /\A@@ -\S+ \+(?<start>\d+)(?:,(?<count>\d+))? @@/ if path
+			in /\A@@ -\d+(?:,(?<old_count>\d+))? \+(?<start>\d+)(?:,(?<new_count>\d+))? @@/
+				old_left = Integer($~[:old_count] || "1", 10)
+				new_left = Integer($~[:new_count] || "1", 10)
+				next unless path
+
 				start = Integer($~[:start], 10)
-				count = $~[:count] ? Integer($~[:count], 10) : 1
-				lines = (start...(start + count)).to_a
-				lines << (start + 0.5) if deletions && count == 0
+				lines = (start...(start + new_left)).to_a
+				lines << (start + 0.5) if deletions && new_left == 0
 				(changes[path] ||= []).concat(lines)
 			else nil
 			end
