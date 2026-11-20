@@ -65,10 +65,10 @@ module Quickdraw::Browser
 			browsers.each do |browser|
 				raise ArgumentError, "config.browser’s browsers must be chromium, firefox or webkit, not #{browser}." unless browser in "chromium" | "firefox" | "webkit"
 
-				config.group("browser:#{browser}", *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS, variant: browser) { prepare(app:, browser:, artifacts: File.join(ARTIFACTS, browser), **settings) }
+				config.group("browser:#{browser}", *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS, browser: true, variant: browser) { prepare(app:, browser:, artifacts: File.join(ARTIFACTS, browser), **settings) }
 			end
 		else
-			config.group(:browser, *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS) { prepare(app:, **settings) }
+			config.group(:browser, *patterns, gemfile:, cores:, file_seconds: FILE_SECONDS, browser: true) { prepare(app:, **settings) }
 		end
 
 		@settings = { **settings, browsers: browsers || [settings.fetch(:browser, "chromium").to_s], gemfile:, app: !app.nil? }

@@ -163,6 +163,8 @@ class Quickdraw::Watch
 			path_contains: @path_filter,
 			required_names: [@name_filter].compact,
 			warm_loaders: @loaders,
+			# Changed browser tests run, though a plain run leaves them out.
+			changed_paths: changed,
 		)
 
 		if tests

@@ -20,6 +20,25 @@ class VariantsTest < Quickdraw::Test
 		assert_equal config.groups.map { |group| [group.name, group.variant] }, [["browser", nil]]
 	end
 
+	test "config.browser's groups are browser groups, left out of plain runs unless by_default: true" do
+		config = Quickdraw::Configuration.new
+		config.group(:models, "test/models/**/*.test.rb")
+		config.browser("test/system/**/*.test.rb") { :app }
+
+		assert_equal config.groups.map { |group| [group.name, group.browser] }, [["models", false], ["browser", true]]
+		assert_equal config.settings, { browser_by_default: false }
+
+		config = Quickdraw::Configuration.new
+		config.browser("test/system/**/*.test.rb", by_default: true) { :app }
+		assert_equal config.settings, { browser_by_default: true }
+
+		error = assert_raises(ArgumentError) { Quickdraw::Configuration.new.browser("test/**/*.test.rb", by_default: nil) }
+		assert_equal error.message, "config.browser’s by_default must be true or false, not nil."
+
+		error = assert_raises(ArgumentError) { Quickdraw::Configuration.new.group(:system, "test/**/*.test.rb", browser: "yes") }
+		assert_equal error.message, "The system group’s browser must be true or false, not \"yes\"."
+	end
+
 	test "config.browser takes browser: or browsers:, each a browser once" do
 		skip "Variants need fork" unless Process.respond_to?(:fork)
 

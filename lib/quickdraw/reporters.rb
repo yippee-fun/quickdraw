@@ -107,6 +107,11 @@ module Quickdraw::Reporters
 			"#{count} #{noun}#{'s' unless count == 1}"
 		end
 
+		# What a plain run left out (see Coordinator#selected?), after "Left out".
+		private def left_out(outcome)
+			"#{pluralize(outcome.browser_files_left_out, 'browser test file')} · #{Quickdraw::Reporters.command} all runs them too"
+		end
+
 		private def indent(text, spaces)
 			text.gsub(/^(?=.)/, " " * spaces)
 		end

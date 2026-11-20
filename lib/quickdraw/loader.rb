@@ -22,7 +22,7 @@ class Quickdraw::Loader
 	# runs, or is nil for tests in none. Once it has booted, the loader writes
 	# to `report`, if given, a length-prefixed Marshal message: [:booted,
 	# groups, coverage, settings] with the groups config defines as [name,
-	# patterns, gemfile, cores, file_seconds, variant], with `coverage`, what booting
+	# patterns, gemfile, cores, file_seconds, browser, variant], with `coverage`, what booting
 	# covered (see CoverageCollector), and the run settings config set (see
 	# Configuration#settings); or [:failed, error] if booting raised.
 	#
@@ -156,10 +156,7 @@ class Quickdraw::Loader
 			return false
 		end
 
-		if @report || @link
-			groups = Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile, group.cores, group.file_seconds, group.variant] }
-			@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage), Quickdraw::Config.settings]
-		end
+		@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage), Quickdraw::Config.settings] if @report || @link
 
 		return serve_runs if @link
 
@@ -307,8 +304,8 @@ class Quickdraw::Loader
 				next boot_failed(error)
 			end
 
-			# No groups, which would get loaders of their own: this thread runs every group's tests.
-			report([:booted, [], nil, Quickdraw::Config.settings])
+			# This thread runs every group's tests (see Coordinator#groups_reported).
+			report([:booted, groups, nil, Quickdraw::Config.settings])
 			start_worker(channel, 0, real_paths, timeouts: false)
 		ensure
 			# If something failed before reporting, which the coordinator waits for.
@@ -421,6 +418,11 @@ class Quickdraw::Loader
 		end
 
 		Process.warmup if Process.respond_to?(:warmup)
+	end
+
+	# For the boot report (see #initialize).
+	private def groups
+		Quickdraw::Config.groups.map { |group| [group.name, group.patterns, group.gemfile, group.cores, group.file_seconds, group.browser, group.variant] }
 	end
 
 	# Closed afterwards, so workers, which fork later, don't hold it open.

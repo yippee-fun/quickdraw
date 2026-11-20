@@ -46,6 +46,8 @@ class Quickdraw::Reporters::GitHubActions
 			@io.puts "::warning file=#{property(path)},line=#{test['line']},title=#{property("#{plain(name_of(test))} left state behind")}::#{data(message)}"
 		end
 
+		@io.puts "::notice title=Browser tests left out::#{data("Left out #{left_out(outcome)}.")}" if outcome.browser_files_left_out > 0
+
 		write_summary(outcome) if @summary_path && !@summary_path.empty?
 	end
 

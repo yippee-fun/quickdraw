@@ -115,25 +115,41 @@ class Quickdraw::Commands::Doctor
 			started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 			require File.expand_path(path)
 			Quickdraw::Config.before_forking_callbacks.each(&:call)
-			[Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at, Quickdraw::Browser.settings]
+			[Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at, Quickdraw::Browser.settings, Quickdraw::Config.settings.fetch(:browser_by_default, false)]
 		rescue Exception => error
 			"#{error.class}: #{error.message}"
 		end
 
 		case result
-		in [Float => seconds, browser]
+		in [Float => seconds, browser, by_default]
 			@browser = browser
+			@browser_by_default = by_default
 			Check.new(:ok, "Config", "#{path} boots in #{Quickdraw::Timer::Duration.new(seconds * 1_000_000_000)}", nil)
 		in String => error
 			Check.new(:problem, "Config", "#{path} fails to boot", Quickdraw.utf8(error).lines.first.chomp)
 		end
 	end
 
-	# Whether config.browser's tests can run: Puma, Node, Playwright's package
-	# and each browser.
 	private def browsers
 		return [] unless @browser
 
+		[*readiness, selection]
+	end
+
+	# Which runs include browser tests.
+	private def selection
+		command = Quickdraw::Reporters.command
+
+		if @browser_by_default
+			Check.new(:ok, "Browser", "#{command} runs browser tests, as config.browser’s by_default: true says", nil)
+		else
+			Check.new(:ok, "Browser", "#{command} leaves browser tests out unless they’re named", "#{command} browser runs only them, and #{command} all runs everything.")
+		end
+	end
+
+	# Whether config.browser's tests can run: Puma, Node, Playwright's package
+	# and each browser.
+	private def readiness
 		# A group with a Gemfile of its own has gems this bundle doesn't.
 		if @browser[:app] && !@browser[:gemfile] && Gem.find_files("puma.rb").empty?
 			return [Check.new(:problem, "Browser", *Quickdraw::Browser::MISSING_PUMA)]

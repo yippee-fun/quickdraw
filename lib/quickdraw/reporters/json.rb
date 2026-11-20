@@ -4,7 +4,8 @@
 # test, a "load_error" event per file that couldn't load, and a "finish" event.
 # A test's "output" is what it printed, for failures and errors, and "leaks"
 # lists state it left behind. "variant" is the browser a test ran in, or a
-# file couldn't load in, when config.browser has several, or null.
+# file couldn't load in, when config.browser has several, or null. The
+# "finish" event's "browser_files_left_out" counts those a plain run left out.
 class Quickdraw::Reporters::JSON
 	include Quickdraw::Reporters::Formatting
 
@@ -69,6 +70,7 @@ class Quickdraw::Reporters::JSON
 			"load_errors" => outcome.load_errors,
 			"not_run" => outcome.not_run,
 			"unloaded_files" => outcome.unloaded_files,
+			"browser_files_left_out" => outcome.browser_files_left_out,
 			"without_assertions" => outcome.without_assertions,
 			"duration" => outcome.duration,
 			"coverage" => outcome.coverage&.then do |coverage|

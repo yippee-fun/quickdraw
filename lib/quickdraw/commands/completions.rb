@@ -6,6 +6,9 @@ class Quickdraw::Commands::Completions
 	PROGRAMS = ["quickdraw", "qt"].freeze
 	# Options that can be given more than once.
 	REPEATABLE = ["--name", "--exclude", "--browser", "--format"].freeze
+	# Commands that run tests, so take the options.
+	RUNS = ["all", "browser"].freeze
+	BROWSERS = "chromium firefox webkit"
 
 	Option = Data.define(:long, :short, :argument, :description)
 
@@ -73,10 +76,15 @@ class Quickdraw::Commands::Completions
 					completions) COMPREPLY=($(compgen -W "bash zsh fish" -- "$current")); return ;;
 				esac
 
-				if [[ "$current" == -* ]]; then
+				if [[ "${COMP_WORDS[1]}" == browser && "${COMP_WORDS[2]}" == install && $COMP_CWORD -gt 2 ]]; then
+					COMPREPLY=($(compgen -W "#{BROWSERS}" -- "$current"))
+				elif [[ "$current" == -* ]]; then
 					COMPREPLY=($(compgen -W "#{words.grep(/\A-/).join(' ')}" -- "$current"))
 				elif [[ $COMP_CWORD -eq 1 ]]; then
 					COMPREPLY=($(compgen -W "#{commands.map(&:first).join(' ')}" -- "$current"))
+					_quickdraw_files "$current"
+				elif [[ $COMP_CWORD -eq 2 && "$previous" == browser ]]; then
+					COMPREPLY=($(compgen -W "install" -- "$current"))
 					_quickdraw_files "$current"
 				else
 					_quickdraw_files "$current"
@@ -126,6 +134,14 @@ class Quickdraw::Commands::Completions
 				case $words[2] in
 					completions) _values shell bash zsh fish; return ;;
 					counterpart) _files; return ;;
+					browser)
+						if [[ $words[3] == install ]]; then
+							(( CURRENT > 3 )) && _values -w browser #{BROWSERS}
+							return
+						fi
+
+						(( CURRENT == 3 )) && [[ $words[3] != -* ]] && compadd install
+						;;
 				esac
 
 				_arguments -s \\
@@ -138,12 +154,27 @@ class Quickdraw::Commands::Completions
 	end
 
 	private def fish
+		# By position, since install anywhere else is a path.
+		functions = <<~FISH
+			function __quickdraw_browser_next
+				set -l words (commandline -opc)
+				test (count $words) -eq 2; and test "$words[2]" = browser
+			end
+
+			function __quickdraw_browser_install
+				set -l words (commandline -opc)
+				test (count $words) -ge 3; and test "$words[2]" = browser; and test "$words[3]" = install
+			end
+		FISH
+
 		lines = PROGRAMS.flat_map do |program|
-			no_command = "not __fish_seen_subcommand_from #{commands.map(&:first).join(' ')}"
+			no_command = "not __fish_seen_subcommand_from #{(commands.map(&:first) - RUNS).join(' ')}; and not __quickdraw_browser_install"
 
 			[
 				*commands.map { |name, summary| "complete -c #{program} -n '__fish_use_subcommand' -a #{name} -d #{fish_quote(summary)}" },
 				"complete -c #{program} -n '__fish_seen_subcommand_from completions' -x -a 'bash zsh fish'",
+				"complete -c #{program} -n __quickdraw_browser_next -a install -d #{fish_quote('Install what browser tests need')}",
+				"complete -c #{program} -n __quickdraw_browser_install -x -a #{fish_quote(BROWSERS)}",
 				*options.map do |option|
 					parts = ["complete -c #{program} -n #{fish_quote(no_command)}"]
 					parts << "-s #{option.short.delete_prefix('-')}" if option.short
@@ -156,7 +187,7 @@ class Quickdraw::Commands::Completions
 			]
 		end
 
-		lines.join("\n")
+		"#{functions}\n#{lines.join("\n")}"
 	end
 
 	private def zsh_escape(text)

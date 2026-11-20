@@ -307,7 +307,10 @@ class Quickdraw::Coordinator
 	# go to config's on_flaky callbacks, and to `flakes_path` as JSON. With
 	# `quarantine`, tests flaky in recent runs can fail without failing the run.
 	# With `variants`, files run in just the groups with those variants, of
-	# those with one (see Configuration::Group).
+	# those with one (see Configuration::Group). `browser_tests` is :only for
+	# just browser groups' files, :all for every file, or :default to leave
+	# them out unless `named_files` (expanded paths) has them, `variants` were
+	# asked for, or config's by_default includes them.
 	#
 	# Run settings config can set too (`capture`, `leaks`, `retries`,
 	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic` and `processes`)
@@ -316,9 +319,14 @@ class Quickdraw::Coordinator
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil
+		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil,
+		browser_tests: :default, named_files: {}
 	)
+		raise ArgumentError, "browser_tests must be :default, :only or :all, not #{browser_tests.inspect}." unless browser_tests in :default | :only | :all
+
 		@variant_filter = variants
+		@browser_tests = browser_tests
+		@named_files = named_files
 		@timeline = Quickdraw::Timeline.new if timeline
 		@elastic_allowed = elastic
 		@warm_loaders = warm_loaders
@@ -372,8 +380,11 @@ class Quickdraw::Coordinator
 		@lines_checked = {}
 		# Display paths of files that didn't load, or run, in every group they're in.
 		@partly_run = {}
-		# Whether --browser asked for a browser config doesn't have.
+		# Whether --browser asked for a browser config doesn't have, or `qt
+		# browser` for browser tests when config has none.
 		@refused = false
+		# Whether every group config defines booted, for the coverage map.
+		@every_group_booted = false
 		# Files with slow tests waiting (see TestFile#slow?), so dispatching doesn't scan the rest.
 		@slow_files = {}
 		@averages = {}
@@ -422,7 +433,7 @@ class Quickdraw::Coordinator
 		end
 		# Before the group loaders start, so they get what config set too.
 		apply_settings(settings)
-		groups_reported(groups) unless @interrupted
+		groups_reported(groups, booted: (report in [:booted, *])) unless @interrupted
 
 		load_plan
 		# Retries get the channels left over, so a low file limit costs retries, not workers.
@@ -505,6 +516,7 @@ class Quickdraw::Coordinator
 		@retries.abandon { |attempt| report_retry(attempt, attempt.failure) }
 
 		@outcome.interrupted = @interrupted
+		@outcome.refused = @refused
 		@outcome.coverage = @coverage
 		# An interrupted run isn't saved (see #save_history).
 		@outcome.recorded = !@history.nil? && @history.recordable? && !@interrupted
@@ -691,6 +703,7 @@ class Quickdraw::Coordinator
 		@elastic_allowed = settings.fetch(:elastic, false) if @elastic_allowed.nil?
 		@configured_processes = settings[:processes] unless @processes
 		@processes ||= @configured_processes
+		@browser_by_default = settings.fetch(:browser_by_default, false)
 
 		if !@forking && (@retry_count || settings[:retries])&.positive?
 			warn "Retries need fork, which this platform doesn’t support, so failures aren’t retried."
@@ -732,9 +745,10 @@ class Quickdraw::Coordinator
 		end
 	end
 
-	private def groups_reported(groups)
+	private def groups_reported(groups, booted:)
 		@gemfiles = groups.to_h { |name, _patterns, gemfile| [name, gemfile] }
 		@variants = groups.to_h { |name, *, variant| [name, variant] }
+		browser_groups = groups.filter_map { |name, *, browser, _variant| [name, true] if browser }.to_h
 		@unloaded = @unloaded.flat_map do |path, display_path|
 			groups_of(display_path, groups).map { |group| [path, display_path, group] }
 		end
@@ -747,7 +761,37 @@ class Quickdraw::Coordinator
 			return
 		end
 
+		# Config that failed to boot reports no groups. Each file says why.
+		return unless booted
+
+		if @browser_tests == :only && browser_groups.empty?
+			warn "Quickdraw didn’t run any tests: `#{Quickdraw::Reporters.command} browser` runs config.browser’s tests, and #{Quickdraw::Loader::CONFIG_PATH} doesn’t call config.browser."
+			@refused = true
+			return
+		end
+
+		left_out, @unloaded = @unloaded.partition { |path, _display_path, group| !selected?(path, browser_groups.key?(group)) }
+		@outcome.browser_files_left_out = left_out.filter_map { |_path, display_path, group| display_path if browser_groups.key?(group) }.uniq.size
+
+		# So its coverage isn't taken for the whole file's.
+		running = @unloaded.to_h { |_path, display_path| [display_path, true] }
+		left_out.each { |_path, display_path| @partly_run[display_path] = true if running.key?(display_path) }
+
+		# Without fork, one loader runs every group's tests.
+		@unloaded = @unloaded.map { |path, display_path| [path, display_path, nil] }.uniq unless @forking
+
 		@unloaded.map(&:last).uniq.compact.each { |group| @loaders[group] = start_loader(group) }
+		@every_group_booted = !@forking || groups.all? { |name, *| @loaders.key?(name) }
+	end
+
+	# Whether a file runs in a group, by whether it's a browser group (see
+	# #initialize).
+	private def selected?(path, browser)
+		case @browser_tests
+		in :all then true
+		in :only then browser
+		in :default then !browser || @browser_by_default || !@variant_filter.nil? || @named_files.key?(path)
+		end
 	end
 
 	# The groups a file runs in: the first it's in, or if that has a variant,
@@ -1048,7 +1092,8 @@ class Quickdraw::Coordinator
 	# { test path => [source paths, whether every test in the file ran] }. A
 	# file that only ran some tests may not have run all its sources.
 	private def coverage_map
-		whole = { Quickdraw::History::BOOT => true }
+		# A group that didn't boot may load sources the others don't.
+		whole = { Quickdraw::History::BOOT => @every_group_booted }
 
 		@files.each_value do |file|
 			whole[file.display_path] = whole.fetch(file.display_path, true) && !@partly_run.key?(file.display_path) && file.whole? && file.pending.empty?

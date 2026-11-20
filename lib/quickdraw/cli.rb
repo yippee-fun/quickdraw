@@ -16,15 +16,21 @@ class Quickdraw::CLI
 	end
 
 	def call
+		# For the last run's report.
+		@command_line = [Quickdraw::Reporters.command, *@args.map { |argument| argument.match?(%r{\A[\w./:=@%+,-]+\z}) ? argument : argument.inspect }].join(" ")
+
 		# A file or directory with a command's name is still run as tests.
-		if (name = @args.first) && !File.exist?(name) && (command = Quickdraw::Commands.find(name))
+		case @args
+		in [("all" | "browser") => scope, *rest] if !File.exist?(scope) && !(@args in ["browser", "install", *])
+			@scope = scope
+			@args = rest
+		in [name, *] if !File.exist?(name) && (command = Quickdraw::Commands.find(name))
 			# Commands don't give out the terminal, though a run that started this one might.
 			ENV.delete(Quickdraw::Debugger::FLAG)
 			exit(command.new(@args.drop(1)).call)
+		else
+			nil
 		end
-
-		# For the last run's report.
-		@command_line = [Quickdraw::Reporters.command, *@args.map { |argument| argument.match?(%r{\A[\w./:=@%+,-]+\z}) ? argument : argument.inspect }].join(" ")
 
 		# optparse, etc and anything else needed to parse options load in a
 		# throwaway process so they don’t leak into the processes that run tests.
@@ -32,7 +38,7 @@ class Quickdraw::CLI
 
 		# Ruby reads the timeslice at boot, so it's set by starting again. See Sampler.
 		if options[:profile] && ENV["RUBY_THREAD_TIMESLICE"] != PROFILE_TIMESLICE
-			exec({ "RUBY_THREAD_TIMESLICE" => PROFILE_TIMESLICE }, RbConfig.ruby, "-I", Quickdraw::LIB, File.expand_path($PROGRAM_NAME), *@args)
+			exec({ "RUBY_THREAD_TIMESLICE" => PROFILE_TIMESLICE }, RbConfig.ruby, "-I", Quickdraw::LIB, File.expand_path($PROGRAM_NAME), *@scope, *@args)
 		end
 
 		# Forks keep the timeslice; processes that tests start shouldn't get it.
@@ -236,10 +242,30 @@ class Quickdraw::CLI
 	# Public for shell completions, which read its switches.
 	def option_parser(options = {})
 		OptionParser.new do |parser|
-			parser.banner = "#{bold('Usage:')} #{Quickdraw::Reporters.command} [options] [files, directories, globs or file:line …]\n       #{Quickdraw::Reporters.command} COMMAND [arguments]"
+			command = Quickdraw::Reporters.command
+			paths = "[options] [files, directories, globs or file:line …]"
+
+			parser.banner, *description = case @scope
+			in nil
+				[
+					"#{bold('Usage:')} #{command} #{paths}\n       #{command} COMMAND [arguments]",
+					"Runs tests across every core. With no paths, runs #{DEFAULT_PATTERN}.",
+					"Browser tests (config.browser’s) run only when given as files, or with --failed or --browser.",
+					"#{command} browser runs only them, and #{command} all runs everything.",
+				]
+			in "browser"
+				[
+					"#{bold('Usage:')} #{command} browser #{paths}\n       #{command} browser install [chromium|firefox|webkit …]",
+					"Runs only the browser tests (config.browser’s) across every core. With no paths, those in #{DEFAULT_PATTERN}.",
+					"browser install installs Playwright and the browsers they need, config.browser’s by default.",
+				]
+			in "all"
+				["#{bold('Usage:')} #{command} all #{paths}", "Runs every test, browser tests too, across every core. With no paths, runs #{DEFAULT_PATTERN}."]
+			end
+
 			parser.summary_width = 24
 			parser.separator ""
-			parser.separator "Runs tests across every core. With no paths, runs #{DEFAULT_PATTERN}."
+			description.each { |line| parser.separator line }
 
 			parser.separator ""
 			parser.separator bold("Choosing tests")
@@ -381,12 +407,12 @@ class Quickdraw::CLI
 				exit
 			end
 
-			command = Quickdraw::Reporters.command
 			examples = [
 				["#{command} test/models", "Every test in a directory"],
 				["#{command} test/user.test.rb:12", "The test at line 12"],
 				["#{command} -n /admin/i --fail-fast", "Tests matching a regex, stopping at the first failure"],
 				["#{command} --failed", "What failed last time"],
+				["#{command} all", "Every test, browser tests too"],
 			]
 			width = examples.map { |example, _| example.size }.max
 
@@ -539,7 +565,10 @@ class Quickdraw::CLI
 		system("taskpolicy", "-b", "-p", Process.pid.to_s) if options[:efficiency]
 
 		files = test_files(options[:patterns])
-		files = changed_test_files(files, history: options[:history], base: options[:base]) if options[:changed]
+		# Files that run even when browser tests are left out (see Coordinator#selected?):
+		# those given, and in watch mode, changed.
+		named = [*options[:patterns], *options[:changed_paths]].select { |path| File.file?(path) }
+		files, named = changed_test_files(files, history: options[:history], base: options[:base]) if options[:changed]
 		only_keys = nil
 		whole_files = {}
 
@@ -558,6 +587,7 @@ class Quickdraw::CLI
 
 			only_keys = failing_tests.to_h { |key, _path| [key, true] }
 			whole_files = unloadable_files.to_h { |path| [path, true] }
+			named = files
 
 			# On stderr, so it can't corrupt a JSON stream.
 			warn "No tests are failing in the run history." if files.empty?
@@ -568,6 +598,10 @@ class Quickdraw::CLI
 			files = files.select { |path| path.include?(text) }
 			warn "No test files have #{text} in their path." if files.empty?
 		end
+
+		# By real path, since a file reached by two paths is found by one.
+		named = named.to_h { |path| [File.realpath(path), true] }
+		named_files = files.select { |path| named.key?(File.realpath(path)) }.to_h { |path| [File.expand_path(path), true] }
 
 		# Keyed by each file's expanded path, as the coordinator knows it.
 		lines = files.each_with_object({}) do |path, by_path|
@@ -593,6 +627,7 @@ class Quickdraw::CLI
 			max_processes: options[:max_processes],
 			# inspect, so a path containing a space can't collide with two paths.
 			selection: [
+				*@scope,
 				*options[:patterns].sort,
 				*options[:lines].sort.map { |path, lines| "#{path}:#{lines.sort.join(':')}" },
 				*options[:names].map { |name| "--name #{name}" },
@@ -632,8 +667,22 @@ class Quickdraw::CLI
 			timeline: options[:timeline],
 			elastic: options[:elastic],
 			variants: (options[:browsers] if options[:browsers].any?),
+			browser_tests:,
+			named_files:,
 		).call
 	end
+
+	# See Coordinator#selected?.
+	private def browser_tests
+		case @scope
+		in nil then :default
+		in "browser" then :only
+		in "all" then :all
+		end
+	end
+
+	# How to run this run's tests again, for rerun commands.
+	private def run_command = [Quickdraw::Reporters.command, *@scope].join(" ")
 
 	# Whether the terminal gets a format another program reads.
 	private def machine_readable?(options)
@@ -642,7 +691,7 @@ class Quickdraw::CLI
 
 	private def reporter(options, terminal)
 		# First, so it's saved before the agent format, which points to it, finishes.
-		last_run = Quickdraw::Reporters::LastRun.new(command: @command_line, backtrace: options[:backtrace]) if options[:history]
+		last_run = Quickdraw::Reporters::LastRun.new(command: @command_line, rerun: run_command, backtrace: options[:backtrace]) if options[:history]
 
 		# A status line, which what tests print would garble unless it's captured, which needs fork.
 		live = options[:capture] != false && Quickdraw::Platform.supports_forking?
@@ -651,8 +700,8 @@ class Quickdraw::CLI
 			io = path ? File.open(path, "w") : terminal
 
 			case format
-			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live:)
-			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace], kept: (-> { last_run.saved? } if last_run))
+			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live:, command: run_command)
+			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace], kept: (-> { last_run.saved? } if last_run), command: run_command)
 			in "json" then Quickdraw::Reporters::JSON.new(io:)
 			in "junit" then Quickdraw::Reporters::JUnit.new(io:)
 			end
@@ -673,7 +722,8 @@ class Quickdraw::CLI
 	# For --changed: of `files`, those changed since the last commit, and those
 	# whose tests ran a changed source file in the last --coverage run of them.
 	# Without that map, the changed source files' counterparts. Explanations go
-	# to stderr, so they can't corrupt a JSON stream.
+	# to stderr, so they can't corrupt a JSON stream. Returns them, and the test
+	# files that changed themselves, which count as named.
 	private def changed_test_files(files, history:, base:)
 		changes = begin
 			Quickdraw::Changes.files(base:) or usage_error("--changed needs a git repository, to see what’s changed.")
@@ -681,6 +731,7 @@ class Quickdraw::CLI
 			usage_error(error.message)
 		end
 		test_paths = files.to_h { |path| [path.delete_prefix("./"), path] }
+		changed_tests = changes.filter_map { |path| test_paths[path] }
 
 		# Config, the Gemfile and test helpers, which coverage doesn't map.
 		everything = changes.select do |path|
@@ -690,7 +741,7 @@ class Quickdraw::CLI
 
 		if everything.any?
 			warn "Running every test, since #{everything.first(3).join(', ')}#{' and more' if everything.size > 3} changed."
-			return files
+			return [files, changed_tests]
 		end
 
 		sources = changes.select { |path| path.end_with?(".rb") && !test_paths.key?(path) }
@@ -699,7 +750,7 @@ class Quickdraw::CLI
 		# Loading a file can affect any test, through its constants or callbacks.
 		if booted.any?
 			warn "Running every test, since #{booted.first(3).join(', ')}#{' and more' if booted.size > 3} changed, which loads with config but no test runs its code."
-			return files
+			return [files, changed_tests]
 		end
 
 		if covering.nil? && sources.any?
@@ -714,7 +765,7 @@ class Quickdraw::CLI
 
 		selected = (changes + covering.to_a).filter_map { |path| test_paths[path] }.uniq
 		warn "Nothing has changed that any test runs." if selected.empty?
-		selected
+		[selected, changed_tests]
 	end
 
 	# See History#tests_covering. Nil without history or a map. Read in a

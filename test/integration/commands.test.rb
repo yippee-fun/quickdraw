@@ -99,18 +99,22 @@ class CommandsTest < Quickdraw::Test
 			COMP_WORDS=(qt --fa); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
 			COMP_WORDS=(qt --format j); COMP_CWORD=2; _quickdraw; echo "${COMPREPLY[@]}"
 			COMP_WORDS=(qt doc); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qt brow); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qt browser ins); COMP_CWORD=2; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qt browser install fire); COMP_CWORD=3; _quickdraw; echo "${COMPREPLY[@]}"
 		BASH
 
-		assert_equal IO.popen(["bash", "-c", script], &:read), "--failed --fail-fast\njson junit\ndoctor\n"
+		assert_equal IO.popen(["bash", "-c", script], &:read), "--failed --fail-fast\njson junit\ndoctor\nbrowser\ninstall\nfirefox\n"
 	end
 
 	test "fish completes options, formats and commands", timeout: 20 do
 		skip "fish isn’t installed" unless shell?("fish")
 
-		script = "source #{completions('fish')}; complete -C 'qt --format j'; complete -C 'quickdraw hist'"
+		script = "source #{completions('fish')}; complete -C 'qt --format j'; complete -C 'quickdraw hist'; complete -C 'qt all --fail-'; " \
+			"complete -C 'qt browser ins'; complete -C 'qt browser install fire'; complete -C 'qt browser --name install --fail-'"
 		output = IO.popen(["fish", "-c", script], &:read)
 
-		assert_equal output.lines.map { |line| line.split("\t").first.chomp }, ["json", "junit", "history"]
+		assert_equal output.lines.map { |line| line.split("\t").first.chomp }, ["json", "junit", "history", "--fail-fast", "install", "firefox", "--fail-fast"]
 	end
 
 	test "zsh completions are valid zsh", timeout: 20 do
@@ -130,9 +134,20 @@ class CommandsTest < Quickdraw::Test
 		project = project("init/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n")
 
 		match { project.run("-p", "1", "--no-history", "init") => { summary: /\A1 test · / } }
+
+		project = project("all/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n")
+
+		match { project.run("-p", "1", "--no-history", "all") => { summary: /\A1 test · / } }
+
+		project = project("install/a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n")
+
+		match { project.run("all", "install", "-p", "1", "--no-history") => { summary: /\A1 test · / } }
 	end
 
 	test "--help lists the commands", timeout: 20 do
-		assert_match project.run("--help").stdout, /^Commands\n    init +Create config/
+		help = project.run("--help").stdout
+
+		assert_match help, /^Commands\n    all \[paths\] +Run every test, browser tests too\n    browser \[paths\] +Run only the browser tests/
+		assert_match help, /^    init +Create config/
 	end
 end

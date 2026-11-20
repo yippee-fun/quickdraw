@@ -34,6 +34,8 @@ class Quickdraw::Outcome
 		@without_assertions = 0
 		@not_run = 0
 		@unloaded_files = 0
+		@browser_files_left_out = 0
+		@refused = false
 		@processes_failed = false
 		@stopped_early = false
 		@nothing_matched = false
@@ -55,6 +57,12 @@ class Quickdraw::Outcome
 	# Workers added while running (see Elastic), and the seconds every worker
 	# was there for, counting added ones from when they were added.
 	attr_accessor :workers_added, :worker_time
+
+	# Browser test files a plain run left out (see Coordinator#selected?).
+	attr_accessor :browser_files_left_out
+
+	# Whether the run asked for browser tests config doesn't have, so nothing ran.
+	attr_accessor :refused
 
 	# A CoverageReport with --coverage, or nil.
 	attr_accessor :coverage
@@ -95,6 +103,6 @@ class Quickdraw::Outcome
 
 	def passed?
 		@failed == 0 && @errored == 0 && (@flaky == 0 || @allow_flaky) && @load_errors == 0 && @not_run == 0 && @unloaded_files == 0 &&
-			!@processes_failed && !@nothing_matched && !@interrupted
+			!@processes_failed && !@nothing_matched && !@interrupted && !@refused
 	end
 end

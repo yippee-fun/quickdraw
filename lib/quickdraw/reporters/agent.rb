@@ -22,8 +22,10 @@ class Quickdraw::Reporters::Agent
 	# `kept` says, once the run finishes, whether it was kept for `quickdraw
 	# last`, which has the details. `replay` is for `quickdraw last`, which
 	# has only the results with problems, so not a profile or coverage.
-	def initialize(io: $stdout, backtrace: false, kept: nil, replay: false)
+	# `command` runs the run's tests again, such as `qt browser`.
+	def initialize(io: $stdout, backtrace: false, kept: nil, replay: false, command: Quickdraw::Reporters.command)
 		@io = io
+		@command = command
 		@backtrace = backtrace
 		@kept = kept
 		@replay = replay
@@ -69,6 +71,7 @@ class Quickdraw::Reporters::Agent
 			@io.puts "Stopped after the first problem (--fail-fast)."
 		end
 		@io.puts "No tests matched the given lines, --name or --exclude." if outcome.nothing_matched
+		@io.puts "Left out #{left_out(outcome)}." if outcome.browser_files_left_out > 0
 
 		counts = [
 			pluralize(outcome.tests, "test"),
@@ -137,7 +140,7 @@ class Quickdraw::Reporters::Agent
 			@io.puts "Details: #{command} last #{shell(test ? "#{path}:#{test['line']}" : path)} (or a whole file). All problems: #{command} last --list"
 		end
 
-		@io.puts "Rerun the failures with: #{command} --failed" if outcome.recorded && @problems.any?
+		@io.puts "Rerun the failures with: #{@command} --failed" if outcome.recorded && @problems.any?
 	end
 
 	# Quoted if it has characters a shell would treat specially.

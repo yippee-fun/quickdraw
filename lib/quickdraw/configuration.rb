@@ -15,7 +15,10 @@ class Quickdraw::Configuration
 	# A group with a `variant` (such as a browser's name) is one of several
 	# that each run every file matching them, rather than only the first
 	# group's. Its tests' names, results and history say which.
-	Group = Data.define(:name, :patterns, :gemfile, :setup, :cores, :file_seconds, :variant) do
+	#
+	# A `browser` group's tests, such as config.browser's, are left out of a
+	# plain run unless named (see Coordinator#selected?). `qt browser` runs only them.
+	Group = Data.define(:name, :patterns, :gemfile, :setup, :cores, :file_seconds, :browser, :variant) do
 		def match?(path) = patterns.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }
 	end
 
@@ -121,9 +124,13 @@ class Quickdraw::Configuration
 	# own, or with `browsers: [:chromium, :firefox]`, in a group for each
 	# browser, each running all of them. The block returns the Rack app they
 	# test, such as Rails.application, which each worker serves. See
-	# Quickdraw::Browser.prepare for the options.
-	def browser(*patterns, gemfile: nil, **, &app)
+	# Quickdraw::Browser.prepare for the options. With `by_default: true`, a
+	# plain run includes them, as `qt all` does.
+	def browser(*patterns, gemfile: nil, by_default: false, **, &app)
+		raise ArgumentError, "config.browser’s by_default must be true or false, not #{by_default.inspect}." unless by_default in true | false
+
 		Quickdraw::Browser.configure(self, patterns, gemfile:, app:, **)
+		@settings[:browser_by_default] = by_default
 	end
 
 	# Seconds before a test times out, or nil for never. A test can set its own
@@ -153,9 +160,10 @@ class Quickdraw::Configuration
 	# Defines a group (see Group). A file in more than one group goes in the
 	# first, or if that has a variant, in every group with a variant it's in.
 	# The block runs after the before_forking callbacks.
-	def group(name, *patterns, gemfile: nil, cores: 1, file_seconds: nil, variant: nil, &setup)
+	def group(name, *patterns, gemfile: nil, cores: 1, file_seconds: nil, browser: false, variant: nil, &setup)
 		name = name.to_s
 		variant = variant&.to_s
+		raise ArgumentError, "The #{name} group’s browser must be true or false, not #{browser.inspect}." unless browser in true | false
 		raise ArgumentError, "The #{name} group’s variant must be a word, such as firefox, not #{variant.inspect}." if variant && !variant.match?(/\A[\w.-]+\z/)
 		raise ArgumentError, "There’s already a group with the #{variant} variant." if variant && @groups.any? { |group| group.variant == variant }
 		# Without fork, every group's setup runs in one process, so variants can't run apart.
@@ -171,6 +179,6 @@ class Quickdraw::Configuration
 			raise ArgumentError, "The #{name} group can’t have its own Gemfile, since #{RUBY_ENGINE} can’t fork." unless Process.respond_to?(:fork)
 		end
 
-		@groups << Group.new(name:, patterns: patterns.map(&:to_s).freeze, gemfile: gemfile && File.expand_path(gemfile), setup:, cores:, file_seconds:, variant:)
+		@groups << Group.new(name:, patterns: patterns.map(&:to_s).freeze, gemfile: gemfile && File.expand_path(gemfile), setup:, cores:, file_seconds:, browser:, variant:)
 	end
 end

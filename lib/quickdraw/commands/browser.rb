@@ -8,6 +8,7 @@ require "openssl"
 # `browser install [BROWSER …]` installs Playwright for browser tests: its
 # playwright-core package from npm, unless the project has its own, then the
 # browsers through it, config.browser's by default. Tests never download.
+# `browser` without `install` runs the browser tests (see CLI#call).
 class Quickdraw::Commands::Browser
 	include Quickdraw::Commands::Output
 
@@ -23,9 +24,15 @@ class Quickdraw::Commands::Browser
 
 	def call
 		command, *browsers = @args
+		usage = "Usage: #{Quickdraw::Reporters.command} browser install [#{BROWSERS.join('|')} …]"
+
+		if command == "install" && browsers.intersect?(["-h", "--help"])
+			@io.puts usage, "Installs Playwright and the browsers that browser tests need, config.browser’s by default."
+			return 0
+		end
 
 		unless command == "install" && browsers.all? { |browser| browser in "chromium" | "firefox" | "webkit" }
-			warn "Usage: #{Quickdraw::Reporters.command} browser install [#{BROWSERS.join('|')} …]"
+			warn usage
 			return 2
 		end
 

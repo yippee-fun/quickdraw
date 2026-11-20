@@ -30,8 +30,10 @@ class Quickdraw::Reporters::Human
 		def initialize = super(0, 0.0, Hash.new(0))
 	end
 
-	def initialize(io: $stdout, backtrace: false, timings: false, live: false)
+	# `command` runs the run's tests again, such as `qt browser`.
+	def initialize(io: $stdout, backtrace: false, timings: false, live: false, command: Quickdraw::Reporters.command)
 		@io = io
+		@command = command
 		@backtrace = backtrace
 		@show_timings = timings
 		@timings = Quickdraw::Timings.new
@@ -488,10 +490,9 @@ class Quickdraw::Reporters::Human
 			@problems.each { |path, test, result| @io.puts "  #{recap(path, test, result)}" }
 		end
 
-		command = Quickdraw::Reporters.command
 		print_notes([
-			(["Rerun failures", "#{command} --failed"] if @problems.any? && outcome.recorded),
-			(["Same order", "#{command} --seed #{@seed}"] unless outcome.passed?),
+			(["Rerun failures", "#{@command} --failed"] if @problems.any? && outcome.recorded),
+			(["Same order", "#{@command} --seed #{@seed}"] unless outcome.passed?),
 		].compact) { |label| dim(label) }
 		print_notes(notes(outcome)) { |label| yellow(label) }
 	end
@@ -556,6 +557,7 @@ class Quickdraw::Reporters::Human
 
 		pending = @set_aside.select { |_path, _test, skipped| skipped["pending"] }
 		notes << ["Pending", listed(pending.map { |path, test, _skipped| "#{path}:#{test['line']} #{name_of(test)}" })] if pending.any?
+		notes << ["Left out", left_out(outcome)] if outcome.browser_files_left_out > 0
 
 		if (slowest = run_bound_by_slowest(outcome))
 			notes << ["Slow", "#{location(slowest)} took #{seconds(slowest.duration)}, #{percent(slowest.duration / outcome.duration)} of the run."]

@@ -73,7 +73,7 @@ class BrowserTest < Quickdraw::Test
 		run_browser(browser, app(browser, "test/browser/page.test.rb" => "class PageTest < Quickdraw::Test; include Quickdraw::Browser; test('opens') { page; assert true }; end\n"), "-p", "1")
 	end
 
-	def run_quickdraw(project, *, env: {}) = project.run("--no-history", *, env:, timeout: 30)
+	def run_quickdraw(project, *, env: {}) = project.run("all", "--no-history", *, env:, timeout: 30)
 
 	test "other tests don't start a browser, and can't open a page", timeout: 20 do
 		skip "Only CRuby's bundle has Puma" unless RUBY_ENGINE == "ruby"
@@ -383,7 +383,7 @@ class BrowserTest < Quickdraw::Test
 			end
 		RUBY
 
-		failed = project.run("--retry", "0", "-p", "4", timeout: 30)
+		failed = project.run("all", "--retry", "0", "-p", "4", timeout: 30)
 
 		refute failed.success?
 		match { failed => { summary: /\A3 tests · \d+ assertions · 1 failed/ } }
@@ -426,6 +426,7 @@ class BrowserTest < Quickdraw::Test
 
 		assert_equal without.status.exitstatus, 1
 		assert_match without.stdout, /^  ✗ Browser +Playwright isn’t installed, for browser tests\n +Run `quickdraw browser install`\.$/
+		assert_match without.stdout, /^  ✓ Browser +quickdraw leaves browser tests out unless they’re named\n +quickdraw browser runs only them, and quickdraw all runs everything\.$/
 
 		no_node = project(**config).run("doctor", env: { "QUICKDRAW_PLAYWRIGHT" => playwright_fixture, "QUICKDRAW_NODE" => "/missing/node" })
 
@@ -441,6 +442,132 @@ class BrowserTest < Quickdraw::Test
 		assert_equal Dir.children(browsers), []
 
 		assert_equal project.run("browser", "install", "netscape").status.exitstatus, 2
+
+		help = project.run("browser", "install", "--help")
+		assert(help.success?) { help.output }
+		assert_includes help.stdout, "Usage: quickdraw browser install [chromium|firefox|webkit …]"
+	end
+
+	# Model and browser tests, which pass without a browser, since none opens a page.
+	def mixed(options = "", browser_files = {})
+		project(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.browser('test/browser/**/*.test.rb'#{options}) }\n",
+			"test/model.test.rb" => "class ModelTest < Quickdraw::Test; test('model') { assert true }; end\n",
+			"test/browser/a.test.rb" => "class ATest < Quickdraw::Test; test('a') { assert true }; end\n",
+			"test/browser/b.test.rb" => "class BTest < Quickdraw::Test; test('b') { assert true }; end\n",
+			**browser_files,
+		)
+	end
+
+	# Without Playwright, so a browser group's worker doesn't start one.
+	def run_mixed(project, *, env: {}) = project.run(*, "-p", "1", env: { "QUICKDRAW_PLAYWRIGHT" => nil, "QUICKDRAW_BROWSERS_PATH" => tmpdir, **env }, timeout: 30)
+
+	def ran(result) = result.events.select { |event| event["event"] == "test" }.map { |event| event["name"] }.sort
+
+	test "a plain run leaves browser tests out, and says so", timeout: 30 do
+		project = mixed
+
+		human = run_mixed(project, "--no-history", "--format", "human")
+		assert(human.success?) { human.output }
+		match { human => { summary: /\A1 test · / } }
+		assert_includes human.output, "\n  Left out  2 browser test files · quickdraw all runs them too\n"
+
+		json = run_mixed(project, "--no-history", "--format", "json")
+		assert_equal ran(json), ["ModelTest › model"]
+		assert_equal json.events.last.fetch("browser_files_left_out"), 2
+
+		agent = run_mixed(project, "--no-history", "--format", "agent")
+		assert_includes agent.stdout, "Left out 2 browser test files · quickdraw all runs them too.\nPASSED: 1 test"
+
+		github = run_mixed(project, "--no-history", env: { "GITHUB_ACTIONS" => "true" })
+		assert_includes github.stdout, "::notice title=Browser tests left out::Left out 2 browser test files · quickdraw all runs them too.\n"
+
+		# A directory isn't naming its browser tests.
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test")), ["ModelTest › model"]
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test/browser")), []
+	end
+
+	test "browser runs only browser tests, all runs every test, and a named browser test runs", timeout: 30 do
+		project = mixed
+
+		browser = run_mixed(project, "browser", "--no-history", "--format", "json")
+		assert(browser.success?) { browser.output }
+		assert_equal ran(browser), ["ATest › a", "BTest › b"]
+		assert_equal browser.events.last.fetch("browser_files_left_out"), 0
+		assert_equal ran(run_mixed(project, "browser", "--no-history", "--format", "json", "test/browser/a.test.rb", "test/model.test.rb")), ["ATest › a"]
+
+		all = run_mixed(project, "all", "--no-history", "--format", "json")
+		assert_equal ran(all), ["ATest › a", "BTest › b", "ModelTest › model"]
+		assert_equal all.events.last.fetch("browser_files_left_out"), 0
+
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test/browser/a.test.rb", "test/model.test.rb")), ["ATest › a", "ModelTest › model"]
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test/browser/b.test.rb:1")), ["BTest › b"]
+
+		help = project.run("browser", "--help")
+		assert_includes help.stdout, "Usage: quickdraw browser [options] [files, directories, globs or file:line …]\n       quickdraw browser install [chromium|firefox|webkit …]"
+	end
+
+	test "--failed reruns failing browser tests, and their rerun commands run them", timeout: 30 do
+		project = mixed("", "test/browser/b.test.rb" => "class BTest < Quickdraw::Test; test('b') { assert false }; end\n")
+
+		failed = run_mixed(project, "browser", "--retry", "0", "--format", "human")
+		refute failed.success?
+		assert_includes failed.output, "↻ quickdraw test/browser/b.test.rb:1"
+		assert_match failed.output, /^  Rerun failures  quickdraw browser --failed\n  Same order      quickdraw browser --seed \d+$/
+
+		assert_includes project.run("last").stdout, "Rerun the failures with: quickdraw browser --failed"
+
+		assert_equal ran(run_mixed(project, "--failed", "--format", "json")), ["BTest › b"]
+		assert_equal ran(run_mixed(project, "--format", "json", "test/browser/b.test.rb:1")), ["BTest › b"]
+	end
+
+	test "config.browser's by_default: true runs browser tests in a plain run", timeout: 30 do
+		result = run_mixed(mixed(", by_default: true"), "--no-history", "--format", "json")
+
+		assert_equal ran(result), ["ATest › a", "BTest › b", "ModelTest › model"]
+		assert_equal result.events.last.fetch("browser_files_left_out"), 0
+
+		invalid = run_mixed(mixed(", by_default: 'yes'"), "--no-history")
+		refute invalid.success?
+		assert_includes invalid.output, "ArgumentError: config.browser’s by_default must be true or false, not \"yes\"."
+	end
+
+	test "browser runs nothing, and fails, without config.browser", timeout: 20 do
+		refusal = "Quickdraw didn’t run any tests: `quickdraw browser` runs config.browser’s tests, and config/quickdraw.rb doesn’t call config.browser."
+		result = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n").run("browser", "--no-history")
+
+		refute result.success?
+		assert_includes result.stderr, refusal
+
+		empty = project.run("browser", "--no-history", "--format", "json")
+		assert_equal empty.status.exitstatus, 1
+		assert_equal empty.events.last.fetch("passed"), false
+
+		broken = project("config/quickdraw.rb" => "raise 'config is broken'\n", "a.test.rb" => "").run("browser", "--no-history")
+		refute broken.success?
+		assert_includes broken.output, "config is broken"
+		refute_includes broken.output, refusal
+	end
+
+	test "watch mode runs a changed browser test file, though a plain run leaves it out", timeout: 40 do
+		skip "Watch mode needs fork" unless Process.respond_to?(:fork)
+
+		project = mixed
+		steps = [-> { File.write(File.join(project.directory, "test/browser/a.test.rb"), "class ATest < Quickdraw::Test; test('a again') { assert true }; end\n") }]
+		taken = 0
+
+		# With a directory, so the change doesn't narrow the run to it.
+		result = project.run("-p", "1", "--no-history", "--watch", "test", env: { "QUICKDRAW_PLAYWRIGHT" => nil, "QUICKDRAW_BROWSERS_PATH" => tmpdir }, tty: [40, 120], timeout: 30) do |output, keyboard|
+			watching = output.scan(/^Watching/).size
+			next if watching == 0 || watching == taken
+
+			taken = watching
+			(step = steps[watching - 1]) ? step.call : keyboard.write("q")
+		end
+
+		assert_equal Integration.summaries(result.stdout).map { |summary| summary[/\A\d+ tests?/] }, ["1 test", "2 tests"]
+		assert_includes result.stdout, "✓ test/browser/a.test.rb"
+		refute_includes result.stdout, "test/browser/b.test.rb"
 	end
 
 	# A package.json for a Playwright that needs Node 20, with nothing else.

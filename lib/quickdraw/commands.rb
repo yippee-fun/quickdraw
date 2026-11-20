@@ -17,10 +17,12 @@ module Quickdraw::Commands
 	autoload :Last, "quickdraw/commands/last"
 
 	# Name, constant, arguments and summary, in the order --help lists them.
+	# `all` and `browser` run tests (see CLI#call), except `browser install`.
 	LIST = Quickdraw.deep_freeze([
+		["all", nil, " [paths]", "Run every test, browser tests too"],
+		["browser", :Browser, " [paths]", "Run only the browser tests, or with install, install what they need"],
 		["init", :Init, "", "Create config/quickdraw.rb and an example test"],
 		["doctor", :Doctor, "", "Check that this machine and project are ready to run tests"],
-		["browser", :Browser, " install", "Install the browser, and any driver, that browser tests need"],
 		["last", :Last, "", "The last run’s results, for an AI agent that didn’t see it"],
 		["history", :History, "", "Recent runs, and the slowest and flakiest tests"],
 		["flaky", :Flaky, " [--runs N] …", "Run tests many times in different orders to find flaky ones"],

@@ -124,7 +124,9 @@ ParserTest › parses anything  test/parser.test.rb:3
 ## Running tests
 
 ```sh
-qt                         # every **/*.test.rb file
+qt                         # every **/*.test.rb file, except browser tests
+qt all                     # every test, browser tests too
+qt browser                 # only browser tests
 qt test/models             # a directory
 qt test/user.test.rb:12    # the test at line 12
 qt -n /admin/i -x slow     # tests whose names match /admin/i, but not "slow"
@@ -134,12 +136,12 @@ qt --changed --base main   # or by everything since this branched from main
 qt --watch                 # run again when files change
 ```
 
-`quickdraw` and `qt` are the same command. `qt --help` lists every option.
+`quickdraw` and `qt` are the same command. `qt --help` lists every option. `qt all` and `qt browser` take the same options and paths (see Browser testing for which runs include browser tests).
 
 - **Workers:** Quickdraw chooses the number of workers from previous runs, exploring until it finds the fastest. Pass `-p N` to choose, `--max` for every core, or `--efficiency` for an Apple silicon Mac's efficiency cores. `--elastic` adds workers during a run while its tests mostly wait (on IO, the network or `sleep`) and the CPU is idle, which speeds up the first run of tests like that, before there's history to go on. It never adds workers to tests that keep the CPU busy, or when memory is short.
 - **Order:** tests run in a random order. The seed is printed after each run, and `--seed N` repeats it.
 - **Stopping:** `--fail-fast` stops starting tests after the first problem. Ctrl-C stops the run, lets running tests clean up, and reports what finished.
-- **Watch mode:** a changed test file reruns on its own, and a changed source file reruns its tests. Keys rerun everything, run only failures, or filter by path or name. Config stays booted between runs, so only the first waits for it (a Rails app's rerun takes about 100ms rather than 600ms). It boots again when `config/`, the Gemfile or a file it loaded changes, or a file is added to or deleted from an autoloaded directory. File events come from FSEvents on macOS and inotify on Linux, without a gem. Elsewhere it polls every 0.5s, as it does with `QUICKDRAW_POLL=1`, for file systems that don't send events, such as some Docker volumes.
+- **Watch mode:** a changed test file, browser tests' included, reruns on its own, and a changed source file reruns its tests. Keys rerun everything, run only failures, or filter by path or name. Config stays booted between runs, so only the first waits for it (a Rails app's rerun takes about 100ms rather than 600ms). It boots again when `config/`, the Gemfile or a file it loaded changes, or a file is added to or deleted from an autoloaded directory. File events come from FSEvents on macOS and inotify on Linux, without a gem. Elsewhere it polls every 0.5s, as it does with `QUICKDRAW_POLL=1`, for file systems that don't send events, such as some Docker volumes.
 
 ## Output
 
@@ -235,7 +237,7 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
   A flake has a `key` that stays the same from run to run, for grouping; its `path`, `line` and `name`; its `kind` (`:nondeterministic`, `:order_dependent`, or `:unknown` if its worker crashed); each of its `attempts`, with where it ran, its status, duration, failures and errors; the run's `seed` and a `rerun` command; and the `commit`, `branch` and CI build's `ci_url` (on GitHub Actions, Buildkite, GitLab or CircleCI). `--flakes FILE` writes the same as JSON, for a pipeline that isn't in Ruby.
 - **Quarantine:** with `--quarantine`, a test that was flaky in the last 50 runs still runs, and its failures are still shown and recorded, but it doesn't fail the run, so a known flaky test doesn't block a merge while someone fixes it. It's quarantined until 50 runs have gone by without it being flaky. In JUnit reports it's skipped, and on GitHub Actions it's a warning. In CI, quarantine needs the history from earlier runs, so cache `.quickdraw/` (see On pull requests).
 - `qt history` lists recent runs, the slowest tests, and flaky tests: those that both passed and failed on the same code.
-- `qt flaky --runs 20` runs the tests 20 times in different orders and lists the ones that sometimes fail.
+- `qt flaky --runs 20` runs the tests 20 times in different orders and lists the ones that sometimes fail. Like `qt`, it leaves browser tests out: `qt flaky browser` runs only them, and `qt flaky all` everything.
 - `qt bisect test/user.test.rb:12` takes the last run where that test failed and replays the tests that ran before it in the same worker, in halves, to find which one it depends on.
 
 ## Coverage
@@ -246,7 +248,7 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
 - `lcov.info`, for editors and coverage services;
 - `coverage.json`.
 
-A coverage run also records which source files each test file runs. `qt --changed` uses that to run only the tests affected by your uncommitted changes. Until there's been a coverage run, it runs each changed file's tests by name.
+A coverage run also records which source files each test file runs. `qt --changed` uses that to run only the tests affected by your uncommitted changes. Until there's been a coverage run, it runs each changed file's tests by name. Coverage only measures the tests that run, so `qt all --coverage` maps browser tests too. Like `qt`, `qt --changed` leaves out browser tests, except those whose own files changed; `qt all --changed` runs every affected test.
 
 ## Mutation testing
 
@@ -460,6 +462,15 @@ Quickdraw.configure do |config|
 end
 ```
 
+Browser tests are slow, so `qt` leaves them out, unless you name them, and says how many files it left out. `qt browser` runs only them, and `qt all` runs everything; both take the same options and paths as `qt`. A plain `qt` still runs browser tests that are:
+
+- named by file, as in `qt test/system/signup.test.rb` or `test/system/signup.test.rb:4`, which is how a failure's rerun command names it. A directory or glob that includes browser tests doesn't count, so `qt test` leaves them out;
+- failing, with `--failed`;
+- in a browser `--browser firefox` asks for;
+- changed: with `--changed`, when its own file changed (not when it only runs changed code), and in watch mode, when it or its source file changed.
+
+`config.browser(…, by_default: true)` makes `qt` run them too, as `qt all` does. The summary, and `qt last`, say `Left out 5 browser test files · qt all runs them too`; JSON's `finish` event has `browser_files_left_out`, and on GitHub Actions it's a notice. `qt mutate`, `qt fuzz` and `qt bisect` are unchanged: the first two skip every group's tests, and `bisect` replays the test you give it. A `config.group(…, browser: true)` is treated as browser tests too.
+
 Browser tests run in a group of their own (see Configuration). Each worker's browser needs a core of its own, so a browser test's worker counts as two of the run's cores (`config.browser(…, cores: 1)` to count it as one), and since browser tests are usually the slowest, they get workers first, before history says how long they take, rather than holding up the end of the run.
 
 To run every browser test in several browsers, give `browsers:` instead of `browser:`. Each browser gets a group of its own, `browser:chromium` and so on, so they run at the same time, sharing the run's cores:
@@ -498,7 +509,8 @@ end
 
 - `qt init` sets a project up, with config and an example test.
 - `qt doctor` checks that the machine and project are ready, including for browser tests, and how long config takes to boot.
-- `qt browser install` installs what `config.browser`'s tests need (see Browser testing).
+- `qt all` runs every test, and `qt browser` only browser tests, which `qt` leaves out (see Browser testing).
+- `qt browser install` installs what `config.browser`'s tests need (see Browser testing). `qt browser --help` documents both.
 - `qt counterpart lib/user.rb` prints a source file's test, or a test's source file.
 - `qt mutate` finds code the tests run but don't check (see Mutation testing).
 - `qt fuzz` runs properties for longer, guided by the code their cases reach (see Fuzzing).
