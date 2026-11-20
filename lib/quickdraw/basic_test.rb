@@ -19,8 +19,19 @@ class Quickdraw::BasicTest
 	# mutated, such as a template or configuration.
 	def self.test(description = nil, timeout: nil, mutation: true, &block)
 		line = block ? block.source_location[1] : caller_locations(1, 1).first.lineno
+
+		if block
+			@occurrences ||= {}
+			@description_counts ||= Hash.new(0)
+			@occurrences[block.source_location] = @description_counts[description] += 1
+		end
+
 		Quickdraw.register(Quickdraw::Definition.new(test_class: self, description:, block:, timeout:, line:, mutation:))
 	end
+
+	# Which of the class's tests with its description the test with `block` is,
+	# from 1. A test made other than by `test` is the first.
+	def self.occurrence(block) = @occurrences&.[](block.source_location) || 1
 
 	# Groups tests under a description, which prefixes their names. The group is
 	# a subclass, so it can define helpers and override setup, calling super.

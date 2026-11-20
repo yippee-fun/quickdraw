@@ -22,20 +22,6 @@ class Quickdraw::Test < Quickdraw::BasicTest
 	# The generators and case count of the test that fuzz defined with `block`, if it did.
 	def self.fuzz_target(block) = @fuzz_targets&.[](block)
 
-	def self.test(description = nil, **, &block)
-		if block
-			@occurrences ||= {}
-			@description_counts ||= Hash.new(0)
-			@occurrences[block.source_location] = @description_counts[description] += 1
-		end
-
-		super
-	end
-
-	# Which of the class's tests with its description the test with `block` is,
-	# from 1. A test made other than by `test` is the first.
-	def self.occurrence(block) = @occurrences&.[](block.source_location) || 1
-
 	# Runs the block with values from the generators, `cases` times or until
 	# `seconds` have passed, and reports the simplest values that fail it.
 	def check(*generators, cases: 100, seconds: nil, &block)
@@ -45,7 +31,7 @@ class Quickdraw::Test < Quickdraw::BasicTest
 		test_runner = runner
 		@checks = (@checks || 0) + 1
 		path, line = @block.source_location
-		class_name = self.class.name&.gsub(/#<Module:0x\h+>::/, "")
+		class_name = self.class.name&.then { |name| Quickdraw.utf8(name) }&.gsub(/#<Module:0x\h+>::/, "")
 		# By name, so editing the file doesn't lose the saved case, unless the test has none.
 		name = @description || line
 		occurrence = self.class.occurrence(@block)

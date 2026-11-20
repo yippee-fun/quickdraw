@@ -42,7 +42,7 @@ class DescribeTest < Quickdraw::Test
 			end
 
 			test "has a name that includes each group" do
-				assert_match self.class.name, /DescribeTest › a group › a nested group\z/
+				assert_match Quickdraw.utf8(self.class.name), /DescribeTest › a group › a nested group\z/
 			end
 		end
 	end
