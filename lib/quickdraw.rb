@@ -133,12 +133,15 @@ module Quickdraw
 	# would leak into tests).
 	def self.remove_tree(path)
 		# A trailing slash would make File.symlink? see the link's target.
-		path = path.sub(%r{(?<=.)/+\z}, "")
+		remove_entry(path.sub(%r{(?<=.)/+\z}, ""))
+	end
 
+	# Without matching the path, since a name in the tree may not be valid UTF-8.
+	private_class_method def self.remove_entry(path)
 		if File.directory?(path) && !File.symlink?(path)
 			# A read-only directory's entries can't be deleted until it's writable.
 			File.chmod(File.stat(path).mode | 0o700, path)
-			Dir.each_child(path) { |child| remove_tree(File.join(path, child)) }
+			Dir.each_child(path) { |child| remove_entry(File.join(path, child)) }
 			Dir.rmdir(path)
 		else
 			File.delete(path)

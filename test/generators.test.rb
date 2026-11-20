@@ -171,7 +171,10 @@ class GeneratorsTest < Quickdraw::Test
 			assert hash.each_pair.all? { |key, value| Symbol === key && Integer === value }
 		end
 
-		check(hash_of(integer(1..10), boolean, length: 10)) { |hash| assert_equal hash.keys.sort, [*1..10] }
+		check(hash_of(integer(1..20), boolean, length: 10)) do |hash|
+			assert_equal hash.size, 10
+			assert hash.keys.all? { |key| (1..20) === key }
+		end
 	end
 
 	test "fixed_hash" do
