@@ -13,6 +13,8 @@ class Quickdraw::CoverageReport
 	# Where the project's own code usually is, for finding files no test loads.
 	SOURCE_PATTERN = "{app,lib,src}/**/*.rb"
 
+	GLOB_FLAGS = File::FNM_PATHNAME | File::FNM_EXTGLOB
+
 	# `covered` of `total` lines, branches or methods.
 	Count = Data.define(:covered, :total) do
 		def ratio = (total > 0) ? covered.fdiv(total) : 1.0
@@ -26,9 +28,14 @@ class Quickdraw::CoverageReport
 
 	def initialize
 		@files = {}
+		@excluded = []
 	end
 
-	def any? = @files.any?
+	# Globs, relative to the project, of files or directories to leave out
+	# (see Configuration#exclude_from_coverage).
+	attr_writer :excluded
+
+	def any? = reported.any?
 
 	# Adds coverage as CoverageCollector#take gives it.
 	def add(files)
@@ -36,7 +43,7 @@ class Quickdraw::CoverageReport
 	end
 
 	def files
-		@summaries ||= @files.sort.map do |path, data|
+		@summaries ||= reported.map do |path, data|
 			lines = effective_lines(data)
 			targets = (data["branches"] || {}).each_value.flat_map(&:values)
 			methods = (data["methods"] || {}).values
@@ -85,7 +92,7 @@ class Quickdraw::CoverageReport
 
 	# The project's Ruby files that no test loaded, so aren't in the totals.
 	def never_loaded
-		@never_loaded ||= Dir.glob(SOURCE_PATTERN).grep_v(Quickdraw::CoverageCollector::EXCLUDED).reject { |path| @files.key?(path) }.sort
+		@never_loaded ||= Dir.glob(SOURCE_PATTERN).reject { |path| excluded?(path) || @files.key?(path) }.sort
 	end
 
 	# Lines changed since the last commit, and whether tests ran them, as
@@ -132,7 +139,7 @@ class Quickdraw::CoverageReport
 	# See https://github.com/linux-test-project/lcov/blob/master/man/geninfo.1
 	private def lcov
 		# #files is in the same order.
-		@files.sort.zip(files).map do |(path, data), summary|
+		reported.zip(files).map do |(path, data), summary|
 			records = ["SF:#{File.expand_path(path)}"]
 			methods = data["methods"] || {}
 
@@ -163,7 +170,7 @@ class Quickdraw::CoverageReport
 	def as_json
 		{
 			"totals" => { "lines" => lines.to_h, "branches" => branches.to_h, "methods" => methods.to_h },
-			"files" => @files.sort.to_h { |path, data| [path, file_json(data)] },
+			"files" => reported.to_h { |path, data| [path, file_json(data)] },
 		}
 	end
 
@@ -188,8 +195,20 @@ class Quickdraw::CoverageReport
 
 	# The project's own Ruby changed since the last commit (see Changes).
 	private def changed_lines
-		Quickdraw::Changes.lines&.reject do |path, _lines|
-			Quickdraw::CoverageCollector::EXCLUDED.match?(path) || path == Quickdraw::Loader::CONFIG_PATH
-		end
+		Quickdraw::Changes.lines&.reject { |path, _lines| excluded?(path) }
+	end
+
+	# Sorted by path. Coverage can arrive before config's exclusions do.
+	private def reported
+		@files.reject { |path, _data| excluded?(path) }.sort
+	end
+
+	# A pattern also excludes everything under the directories it matches.
+	private def excluded?(path)
+		return true if Quickdraw::CoverageCollector::EXCLUDED.match?(path) || path == Quickdraw::Loader::CONFIG_PATH
+
+		parts = path.split("/")
+		ancestry = parts.each_index.map { |index| parts[0..index].join("/") }
+		@excluded.any? { |pattern| ancestry.any? { |prefix| File.fnmatch?(pattern, prefix, GLOB_FLAGS) } }
 	end
 end

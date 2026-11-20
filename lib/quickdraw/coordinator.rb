@@ -704,6 +704,7 @@ class Quickdraw::Coordinator
 		@configured_processes = settings[:processes] unless @processes
 		@processes ||= @configured_processes
 		@browser_by_default = settings.fetch(:browser_by_default, false)
+		@coverage&.excluded = settings.fetch(:excluded_from_coverage, [])
 
 		if !@forking && (@retry_count || settings[:retries])&.positive?
 			warn "Retries need fork, which this platform doesn’t support, so failures aren’t retried."

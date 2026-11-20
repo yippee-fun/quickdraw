@@ -185,6 +185,45 @@ class CoverageTest < Quickdraw::Test
 			[["Calculator#add", 1], ["Calculator#divide", 1], ["Calculator#unused", 0]]
 	end
 
+	test "covers lines that class_eval runs with a file and line", timeout: 20 do
+		project = project(
+			"lib/element.rb" => <<~RUBY,
+				class Element
+					class_eval <<~CODE, __FILE__, __LINE__ + 1
+						def div
+							:div
+						end
+
+						def span
+							:span
+						end
+					CODE
+				end
+
+				eval("def rendered = :rendered", binding, "(erb)")
+			RUBY
+			"test/element.test.rb" => "require_relative '../lib/element'\nclass ElementTest < Quickdraw::Test; test('div') { assert_equal Element.new.div, :div }; end\n",
+		)
+		result = project.run("-p", "2", "--no-history", "--coverage")
+
+		assert_match result.stdout, %r{^ +\d+%  lib/element\.rb  missing 7-8$}
+		lcov = File.read(File.join(project.directory, ".quickdraw/coverage/lcov.info"))
+		assert_equal lcov.scan(/^SF:.*/), ["SF:#{File.join(File.realpath(project.directory), 'lib/element.rb')}"]
+	end
+
+	test "leaves out files config excludes, and files under directories it excludes", timeout: 20 do
+		require "json"
+		project = calculator(config: "require_relative '../lib/calculator'\nrequire_relative '../fixtures/.models/user'\nQuickdraw.configure { |config| config.exclude_from_coverage('./fixtures/', 'lib/orphan.rb') }\n")
+		project.write("fixtures/.models/user.rb" => "class User; end\n")
+
+		result = project.run("-p", "1", "--no-history", "--coverage")
+
+		assert result.success?
+		refute_includes result.stdout, "Never loaded"
+		report = JSON.parse(File.read(File.join(project.directory, ".quickdraw/coverage/coverage.json")))
+		assert_equal report["files"].keys, ["lib/calculator.rb"]
+	end
+
 	test "test processes don't load Coverage without --coverage", timeout: 20 do
 		result = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { refute defined?(::Coverage) }; end\n").run("-p", "1", "--no-history")
 

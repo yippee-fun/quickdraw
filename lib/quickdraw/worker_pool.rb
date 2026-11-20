@@ -51,8 +51,8 @@ class Quickdraw::WorkerPool
 	end
 
 	# Runs the block in a thread for each worker, and returns what each returned.
-	def in_slots(&)
-		@slots.map { |slot| Thread.new(slot, &) }.map(&:value)
+	def in_slots(&block)
+		@slots.map { |slot| Thread.new(slot, &block) }.map(&:value)
 	end
 
 	def stop
