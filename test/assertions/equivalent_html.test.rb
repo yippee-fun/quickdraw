@@ -30,4 +30,23 @@ class EquivalentHtmlTest < Quickdraw::Test
 			assert_equivalent_html "<div><span>Hello</span></div>", "<div>Hello</div>"
 		end
 	end
+
+	test "#assert_equivalent_html compares comments and handles wbr" do
+		assert_test(passes: 1) do
+			assert_equivalent_html "<div><!-- note -->a<wbr>b</div>", "<div>\n  <!-- note -->\n  a<wbr>b\n</div>"
+		end
+
+		assert_test(failures: 1) do
+			assert_equivalent_html "<div><!-- note -->a</div>", "<div><!-- other -->a</div>"
+		end
+
+		assert_test(failures: 1) do
+			assert_equivalent_html "<div><!-- note -->a</div>", "<div>a</div>"
+		end
+
+		assert_equal(
+			Quickdraw::HTMLPrettifier.prettify(Nokogiri::HTML4.fragment("<div>a<wbr>b</div>")),
+			Quickdraw::HTMLPrettifier.prettify("<div>a<wbr>b</div>"),
+		)
+	end
 end

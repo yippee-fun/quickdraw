@@ -1,0 +1,215 @@
+:root {
+	color-scheme: light dark;
+	--background: #ffffff;
+	--surface: #f6f8fa;
+	--text: #1f2328;
+	--muted: #59636e;
+	--border: #d1d9e0;
+	--running: #2da44e;
+	--between: #8fd19e;
+	--loading: #4493f8;
+	--starting: #a371f7;
+	--waiting: #d4a72c;
+	--switching: #8c959f;
+	--idle: #f0b4b0;
+	--outside: #eaeef2;
+	--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--background: #0d1117;
+		--surface: #151b23;
+		--text: #e6edf3;
+		--muted: #9198a1;
+		--border: #3d444d;
+		--running: #3fb950;
+		--between: #1f6f35;
+		--loading: #4493f8;
+		--starting: #a371f7;
+		--waiting: #bb8009;
+		--switching: #6e7681;
+		--idle: #6e2b2b;
+		--outside: #212830;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--background);
+	color: var(--text);
+	font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+	max-width: 1200px;
+	margin: 0 auto;
+	padding: 24px 16px 64px;
+}
+
+h1 {
+	margin: 0 0 8px;
+	font-size: 22px;
+	font-weight: 600;
+}
+
+h2 {
+	margin: 32px 0 8px;
+	font-size: 15px;
+	font-weight: 600;
+}
+
+code {
+	font-family: var(--mono);
+	font-size: 13px;
+	overflow-wrap: anywhere;
+}
+
+.muted {
+	color: var(--muted);
+}
+
+.running { background: var(--running); }
+.between { background: var(--between); }
+.loading { background: var(--loading); }
+.starting { background: var(--starting); }
+.waiting { background: var(--waiting); }
+.switching { background: var(--switching); }
+.idle { background: var(--idle); }
+
+.shares {
+	display: flex;
+	height: 12px;
+	border-radius: 6px;
+	overflow: hidden;
+	background: var(--border);
+}
+
+.legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 20px;
+	margin: 10px 0 0;
+	padding: 0;
+	list-style: none;
+	font-variant-numeric: tabular-nums;
+}
+
+.swatch {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	margin-right: 6px;
+	border-radius: 2px;
+}
+
+.chart {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 3px 12px;
+	align-items: center;
+}
+
+.chart .label {
+	color: var(--muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.track,
+.axis {
+	position: relative;
+	height: 16px;
+}
+
+.track {
+	background: var(--outside);
+	border-radius: 2px;
+}
+
+.track > span {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	min-width: 1px;
+}
+
+.track > .outside {
+	background: repeating-linear-gradient(135deg, var(--outside), var(--outside) 4px, var(--border) 4px, var(--border) 5px);
+}
+
+.track > .added {
+	width: 0;
+	min-width: 0;
+	top: -2px;
+	bottom: -2px;
+	border-left: 2px solid var(--text);
+}
+
+.axis {
+	color: var(--muted);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+}
+
+.axis span {
+	position: absolute;
+	transform: translateX(-50%);
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--border);
+	text-align: right;
+	white-space: nowrap;
+}
+
+th:first-child,
+td:first-child {
+	width: 100%;
+	text-align: left;
+	white-space: normal;
+}
+
+th {
+	color: var(--muted);
+	font-weight: 500;
+}
+
+dl {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 4px 16px;
+	margin: 0;
+}
+
+dt {
+	white-space: nowrap;
+}
+
+dd {
+	margin: 0;
+	color: var(--muted);
+}
+
+@media (max-width: 600px) {
+	dl {
+		grid-template-columns: 1fr;
+	}
+
+	dd {
+		margin-bottom: 8px;
+	}
+}

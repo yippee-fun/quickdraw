@@ -134,6 +134,21 @@ class DiffTest < Quickdraw::Test
 		assert_includes diff, "+ y"
 	end
 
+	test "matches each line at most once" do
+		diff = Quickdraw::Diff.diff("0\n1\n2", "0\n0\n1\n3").gsub(/\e\[[\d;]*m/, "")
+
+		assert_equal diff, "  0\n+ 0\n  1\n- 2\n+ 3"
+	end
+
+	test "stays fast with many repeated lines" do
+		old_text = "0\n" * 10_000
+		started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+		diff = Quickdraw::Diff.diff("#{old_text}1", "#{old_text}2").gsub(/\e\[[\d;]*m/, "")
+
+		assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1
+		assert diff.end_with?("  0\n- 1\n+ 2")
+	end
+
 	test "preserves order of changes" do
 		old_text = "1\n2\n3"
 		new_text = "1\ntwo\n3"

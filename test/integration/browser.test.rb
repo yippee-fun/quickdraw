@@ -1,0 +1,678 @@
+# frozen_string_literal: true
+
+require_relative "../support/integration"
+
+# Browser tests need Node, and Playwright's package with each browser
+# installed for it, which `qd browser install chromium firefox webkit` sets
+# up. QUICKDRAW_PLAYWRIGHT can point at another package,
+# PLAYWRIGHT_BROWSERS_PATH at its browsers, and QUICKDRAW_NODE at Node. A
+# browser that can't run here fails its tests, saying why, rather than
+# skipping them, which would hide that they never ran. They're skipped on
+# other engines, whose bundles have no Puma.
+class BrowserTest < Quickdraw::Test
+	include Integration
+
+	BROWSERS = ["chromium", "firefox", "webkit"].freeze
+
+	# Why a browser can't run here, once a test has found out.
+	UNAVAILABLE = {}
+
+	APP = <<~RUBY
+		App = lambda do |env|
+			case env["PATH_INFO"]
+			in "/"
+				[200, { "content-type" => "text/html" }, [<<~HTML]]
+					<!DOCTYPE html>
+					<h1>Hello</h1>
+					<button onclick="setTimeout(() => document.body.append('Done'), 100)">Go</button>
+					<script>console.log("Hi from the page")</script>
+				HTML
+			in "/boom"
+				raise "Boom from the app"
+			in "/stream"
+				[200, { "content-type" => "text/html" }, Enumerator.new { |body| body << "<h1>Streaming</h1>"; raise "Boom while streaming" }]
+			in "/favicon.ico"
+				[404, {}, []]
+			end
+		end
+	RUBY
+
+	def app(browser, files)
+		project(
+			"config/quickdraw.rb" => <<~RUBY,
+				Quickdraw.configure do |config|
+					config.browser("test/browser/**/*.test.rb", browser: "#{browser}", timeout: 2) do
+						require_relative "../app"
+						App
+					end
+				end
+			RUBY
+			"app.rb" => APP,
+			**files,
+		)
+	end
+
+	# Fails at once, after the first test to find out, if `browser` can't run
+	# here because Puma, Node, Playwright or the browser is missing.
+	def run_browser(browser, project, *arguments)
+		skip "Only CRuby's bundle has Puma" unless RUBY_ENGINE == "ruby"
+		unavailable(browser) if UNAVAILABLE[browser]
+
+		run_quickdraw(project, *arguments).tap do |result|
+			UNAVAILABLE[browser] = result.output[/Quickdraw::Browser::(?:Unavailable|MissingGem): (.*(?:Playwright isn’t installed|Executable doesn't exist|Failed to launch the browser process|couldn’t run `|needs puma).*)/, 1]
+			unavailable(browser) if UNAVAILABLE[browser]
+		end
+	end
+
+	def unavailable(browser)
+		raise "#{browser} can’t run here, so its tests didn’t: #{UNAVAILABLE.fetch(browser)}"
+	end
+
+	# Before a slow project, since finding out from a quick one is quicker.
+	def require_browser(browser)
+		run_browser(browser, app(browser, "test/browser/page.test.rb" => "class PageTest < Quickdraw::Test; include Quickdraw::Browser; test('opens') { page; assert true }; end\n"), "-p", "1")
+	end
+
+	def run_quickdraw(project, *, env: {}) = project.run("all", "--no-history", *, env:, timeout: 30)
+
+	test "other tests don't start a browser, and can't open a page", timeout: 20 do
+		skip "Only CRuby's bundle has Puma" unless RUBY_ENGINE == "ruby"
+
+		result = run_quickdraw(app("chromium", "test/model.test.rb" => <<~RUBY), "-p", "1")
+			class ModelTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				test("visits") do
+					assert_equal Quickdraw::Browser.server, nil
+					visit "/"
+				end
+			end
+		RUBY
+
+		refute result.success?
+		assert_includes result.output, "This test file isn’t in the browser group, so it can’t open a page. Add it to config.browser’s patterns."
+		match { result => { summary: /\A1 test · 1 assertion · 1 errored/ } }
+	end
+
+	BROWSERS.each do |browser|
+		describe browser do
+			test "gives each test a fresh page and waits for the page", timeout: 40 do
+				result = run_browser(browser, app(browser, "test/browser/page.test.rb" => <<~RUBY), "-p", "1")
+					class PageTest < Quickdraw::Test
+						include Quickdraw::Browser
+
+						test("waits") do
+							visit "/"
+							page.get_by_role("button", name: "Go").click
+							assert_text "Done"
+							assert_text(/D.ne/, within: "body")
+							assert_text "Hello", within: "h1, button"
+							assert_text "Hello", within: page.get_by_role("heading")
+							assert_selector "h1", text: "Hello"
+							assert_selector "button", count: 1
+							refute_selector "h2"
+							refute_text "Goodbye"
+						end
+
+						2.times do |i|
+							test("isolated \#{i}") do
+								visit "/"
+								assert_equal page.evaluate("localStorage.getItem('visited')"), nil
+								page.evaluate("localStorage.setItem('visited', 'yes')")
+							end
+						end
+					end
+				RUBY
+
+				assert(result.success?) { result.output }
+				match { result => { summary: /\A3 tests · 10 assertions/ } }
+			end
+
+			test "a failed or errored test shows its page's screenshot, HTML and console", timeout: 40 do
+				project = app(browser, "test/browser/page.test.rb" => <<~RUBY)
+					class PageTest < Quickdraw::Test
+						include Quickdraw::Browser
+
+						test("fails") do
+							visit "/"
+							assert_text "Goodbye", timeout: 0.1
+						end
+
+						test("errors") do
+							visit "/"
+							page.locator("#missing").click(timeout: 100)
+						end
+					end
+				RUBY
+
+				result = run_browser(browser, project, "-p", "2", "--format", "human")
+
+				refute result.success?
+				assert_includes result.output, "Expected body to contain \"Goodbye\", but its text was \"Hello Go\" after 0.1s."
+				assert_includes result.output, "Quickdraw::Browser::TimeoutError: locator.click: Timeout 100ms exceeded."
+
+				["test-browser-page-4-fails", "test-browser-page-9-errors"].each do |name|
+					base = result.output[%r{Screenshot: (\.quickdraw/browser/#{name}-\w{1,6})\.png\n}, 1]
+					assert(base) { result.output }
+					assert_includes result.output, "HTML: #{base}.html\n"
+					assert_includes result.output, "Console: #{base}.log\n"
+					assert File.size?(File.join(project.directory, "#{base}.png"))
+					assert_includes File.read(File.join(project.directory, "#{base}.html")), "<h1>Hello</h1>"
+					assert_equal File.read(File.join(project.directory, "#{base}.log")), "log: Hi from the page"
+				end
+			end
+
+			test "raises what the app raised in the test", timeout: 40 do
+				result = run_browser(browser, app(browser, "test/browser/page.test.rb" => <<~RUBY), "-p", "1", "--format", "human")
+					class PageTest < Quickdraw::Test
+						include Quickdraw::Browser
+
+						test("visits") do
+							visit "/boom"
+							assert true
+						end
+
+						test("streams") do
+							visit "/stream"
+							assert true
+						end
+					end
+				RUBY
+
+				refute result.success?
+				assert_includes result.output, "RuntimeError: Boom from the app"
+				assert_includes result.output, "app.rb:11"
+				assert_includes result.output, "RuntimeError: Boom while streaming"
+				assert_match result.output, %r{Screenshot: \.quickdraw/browser/test-browser-page-4-visits-\w+\.png}
+			end
+
+			test "warns about and counts sleeps", timeout: 40 do
+				result = run_browser(browser, app(browser, "test/browser/page.test.rb" => <<~RUBY), "-p", "1", "--format", "human", "--timings")
+					class PageTest < Quickdraw::Test
+						include Quickdraw::Browser
+
+						test("sleeps") do
+							visit "/"
+							sleep 0.01
+							tries = 0
+							assert_eventually { (tries += 1) > 2 }
+							assert_text "Goodbye", timeout: 0.1
+						end
+					end
+				RUBY
+
+				refute result.success?
+				assert_includes result.output, "test/browser/page.test.rb:6: a browser test slept."
+				assert_equal result.output.scan("a browser test slept").size, 1
+				assert_match result.output, /^   Per test  .* · 1\.0 pages \(.*\) · 1\.0 sleeps \(/
+			end
+		end
+	end
+
+	test "pages have Playwright's API, in Ruby", timeout: 40 do
+		result = run_browser("chromium", app("chromium", "app.rb" => <<~RUBY, "test/browser/api.test.rb" => <<~TEST), "-p", "1", "--format", "agent")
+			App = lambda do |env|
+				case env["PATH_INFO"]
+				in "/" then [200, { "content-type" => "text/html" }, [<<~HTML]]
+					<title>Signup</title>
+					<form action="/welcome">
+						<label>Email <input name="email"></label>
+						<label><input type="checkbox" name="terms"> I agree</label>
+						<select name="plan" aria-label="Plan"><option value="free">Free</option><option value="pro">Pro</option></select>
+						<ul><li>Ada</li><li>Grace</li></ul>
+						<button>Sign up</button>
+					</form>
+					<p>Ready
+						to go</p>
+					<button onclick="document.body.append(confirm('Sure?') ? 'Confirmed' : 'Dismissed')">Ask</button>
+				HTML
+				in "/welcome" then [200, { "content-type" => "text/html" }, ["<h1>Welcome</h1><p>\#{env['QUERY_STRING']}</p>"]]
+				end
+			end
+		RUBY
+			class APITest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				test("fills a form") do
+					visit "/"
+					assert_equal page.title, "Signup"
+					page.get_by_label("Email").fill("ada@example.com")
+					page.get_by_label("I agree").check
+					page.get_by_role("combobox", name: "Plan").select_option("pro")
+					assert page.get_by_label("I agree").checked?
+					assert_equal page.get_by_label("Email").input_value, "ada@example.com"
+					assert_equal page.locator("li").all_text_contents, ["Ada", "Grace"]
+					assert_equal page.locator("li").filter(has_text: /grace/i).count, 1
+					assert_equal page.locator("ul").filter(has: page.get_by_text("Ada")).count, 1
+					assert_equal page.evaluate("(name) => `Hi, ${name}`", "Ada"), "Hi, Ada"
+					assert_equal page.screenshot.byteslice(1, 3), "PNG"
+					page.get_by_label("Email").focus
+					page.keyboard.press("Enter")
+					assert_text "email=ada%40example.com&terms=on&plan=pro"
+					assert_text "Welcome", within: page.get_by_role("heading", level: 1)
+				end
+
+				test("matches text as Playwright does, and dismisses dialogs") do
+					visit "/"
+					assert_text "Ready to go"
+					assert_text(/^Ready$/, within: "p")
+					refute_text(/does not exist/, within: "p")
+					assert_selector "button", text: "sign up"
+					refute_selector "button", text: /sign out/i
+					assert_equal page.evaluate("(data) => data.user_id", { "user_id" => 1 }), 1
+					assert_equal page.evaluate("async()=>42"), 42
+					assert_equal page.locator("li").first.evaluate("(el) => el.textContent"), "Ada"
+					assert_equal page.__send__(:$eval, "li", "(el) => el.textContent"), "Ada"
+					assert_equal page.evaluate("(async () => 7)()"), 7
+					assert_equal page.evaluate("(() => { console.log('ignored'); return 7 })()"), 7
+					assert_equal page.evaluate("(async () => { new Promise((done) => setTimeout(done, 10)); return 1 })()"), 1
+					assert page.respond_to?(:goto)
+					refute page.nil?
+					page.get_by_role("button", name: "Ask").click
+					assert_text "Dismissed"
+				end
+
+				test("returns objects as remotes") do
+					visit "/"
+					item = page.locator("li").first.element_handle
+					assert_equal item.text_content, "Ada"
+					assert_includes page.locator("li").first.inspect, "locator(\\"li\\").first()"
+				end
+			end
+		TEST
+
+		assert(result.success?) { result.output }
+		assert_includes result.output, "3 tests, 3 passed"
+	end
+
+	test "the page sees the test's records, which roll back", timeout: 60 do
+		skip "Rails isn’t in the bundle" unless $LOAD_PATH.any? { |path| File.exist?(File.join(path, "rails.rb")) }
+		require_browser("chromium")
+
+		result = run_browser("chromium", project(**RAILS_APP, "test/system/users.test.rb" => <<~RUBY), "-p", "2")
+			class UsersTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				3.times do |i|
+					test("lists \#{i}") do
+						User.create!(name: "Ada \#{i}")
+						visit "/users"
+						assert_text "1 users"
+						assert_text "Ada \#{i}"
+					end
+
+					test("creates \#{i}") do
+						visit "/users"
+						assert_text "0 users"
+						assert_equal page.evaluate("fetch('/users?name=Grace', { method: 'POST' }).then(response => response.status)"), 201
+						assert_equal User.count, 1
+						visit "/users"
+						assert_text "Grace"
+					end
+				end
+			end
+		RUBY
+
+		assert(result.success?) { result.output }
+		match { result => { summary: /\A6 tests · 18 assertions/ } }
+	end
+
+	def chromium_and_webkit(files)
+		project(
+			"config/quickdraw.rb" => <<~RUBY,
+				Quickdraw.configure do |config|
+					config.browser("test/browser/**/*.test.rb", browsers: [:chromium, :webkit], timeout: 2) do
+						require_relative "../app"
+						App
+					end
+				end
+			RUBY
+			"app.rb" => APP,
+			"a.test.rb" => "class ATest < Quickdraw::Test; test('passes') { assert true }; end\n",
+			**files,
+		)
+	end
+
+	test "runs every browser test in each of config.browser's browsers, at once", timeout: 60 do
+		require_browser("chromium")
+		require_browser("webkit")
+
+		# Each waits for the other's browser to start its test, so they must run together.
+		project = chromium_and_webkit("test/browser/page.test.rb" => <<~RUBY)
+			class PageTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				test("meets the other browser") do
+					visit "/"
+					name = Quickdraw::Browser.browser_name
+					other = File.join("tmp", (name == "chromium") ? "webkit" : "chromium")
+					File.write(File.join("tmp", name), "")
+					deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+					Kernel.sleep(0.05) until File.exist?(other) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+					assert File.exist?(other)
+				end
+			end
+		RUBY
+		Dir.mkdir(File.join(project.directory, "tmp"))
+
+		result = run_quickdraw(project, "-p", "5", "--format", "json")
+
+		assert(result.success?) { result.output }
+		tests = result.events.select { |event| event["event"] == "test" }
+		browser_tests = tests.select { |event| event["path"] == "test/browser/page.test.rb" }
+
+		assert_equal browser_tests.map { |event| [event["name"], event["variant"], event["status"]] }.sort, [
+			["PageTest › meets the other browser [chromium]", "chromium", "passed"],
+			["PageTest › meets the other browser [webkit]", "webkit", "passed"],
+		]
+		assert_equal tests.reject { |event| event["path"].start_with?("test/browser/") }.map { |event| [event["name"], event["variant"]] }, [["ATest › passes", nil]]
+	end
+
+	test "a test failing in one browser fails in that one, which --failed and --browser rerun alone", timeout: 90 do
+		require_browser("chromium")
+		require_browser("webkit")
+
+		project = chromium_and_webkit("test/browser/page.test.rb" => <<~RUBY)
+			class PageTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				test("isn't webkit") do
+					visit "/"
+					refute_equal Quickdraw::Browser.browser_name, "webkit"
+				end
+			end
+		RUBY
+
+		failed = project.run("all", "--retry", "0", "-p", "4", timeout: 30)
+
+		refute failed.success?
+		match { failed => { summary: /\A3 tests · \d+ assertions · 1 failed/ } }
+		assert_includes failed.output, "✓ test/browser/page.test.rb [chromium]"
+		assert_includes failed.output, "✗ test/browser/page.test.rb [webkit]"
+		assert_includes failed.output, "quickdraw --browser webkit test/browser/page.test.rb:4"
+
+		rerun = project.run("--failed", "--format", "json", timeout: 30)
+		assert_equal rerun.events.select { |event| event["event"] == "test" }.map { |event| [event["variant"], event["status"]] }, [["webkit", "failed"]]
+
+		last = project.run("last", timeout: 30)
+		assert_includes last.stdout, "PageTest › isn't webkit [webkit]"
+
+		chromium = project.run("--browser", "chromium", "--format", "json", "test/browser", timeout: 30)
+		assert(chromium.success?) { chromium.output }
+		assert_equal chromium.events.select { |event| event["event"] == "test" }.map { |event| [event["variant"], event["status"]] }, [["chromium", "passed"]]
+
+		firefox = project.run("--browser", "firefox", timeout: 30)
+		refute firefox.success?
+		assert_includes firefox.output, "Quickdraw didn’t run any tests: --browser firefox isn’t one of config.browser’s browsers: (chromium, webkit)."
+	end
+
+	test "says when Puma isn't installed", timeout: 20 do
+		project = app("chromium", "fake/puma.rb" => "raise LoadError, 'cannot load such file -- puma'\n", "test/browser/page.test.rb" => <<~RUBY)
+			class PageTest < Quickdraw::Test
+				include Quickdraw::Browser
+				test("opens") { page }
+			end
+		RUBY
+
+		result = run_quickdraw(project, "-p", "1", env: { "RUBYOPT" => "-I#{File.join(project.directory, 'fake')}" })
+
+		refute result.success?
+		assert_includes result.output, "Quickdraw::Browser::MissingGem: The browser group’s setup failed: config.browser needs puma, to serve the app, which isn’t installed. Add it to the Gemfile’s test group."
+	end
+
+	OLD_PUMA = {
+		"fake/puma.rb" => "require 'puma/const'\n",
+		"fake/puma/const.rb" => "module Puma; module Const; PUMA_VERSION = '6.6.1'; end; end\n",
+	}.freeze
+
+	def old_puma_env(project) = { "RUBYOPT" => "-I#{File.join(project.directory, 'fake')}" }
+
+	test "says when Puma is older than 7", timeout: 20 do
+		project = app("chromium", **OLD_PUMA, "test/browser/page.test.rb" => <<~RUBY)
+			class PageTest < Quickdraw::Test
+				include Quickdraw::Browser
+				test("opens") { page }
+			end
+		RUBY
+
+		result = run_quickdraw(project, "-p", "1", env: old_puma_env(project))
+
+		refute result.success?
+		assert_includes result.output, "Quickdraw::Browser::MissingGem: The browser group’s setup failed: config.browser needs Puma 7 or later, to serve the app, but this is Puma 6.6.1. Update it in the Gemfile."
+
+		doctor = project.run("doctor", env: old_puma_env(project))
+
+		assert_equal doctor.status.exitstatus, 1
+		assert_match doctor.stdout, /^  ✗ Browser +config\.browser needs Puma 7 or later, to serve the app, but this is Puma 6\.6\.1\.\n +Update it in the Gemfile\.$/
+	end
+
+	test "a page call a Timeout interrupts leaves the page working, and the test's error stands", timeout: 40 do
+		result = run_browser("chromium", app("chromium", "test/browser/interrupt.test.rb" => <<~RUBY), "-p", "1", "--seed", "1", "--retry", "0")
+			require "timeout"
+
+			class InterruptTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				def slow_evaluate = Timeout.timeout(0.1) { page.evaluate("new Promise((resolve) => setTimeout(resolve, 1000))") }
+
+				test("carries on") do
+					visit "/"
+					assert_raises(Timeout::Error) { slow_evaluate }
+					assert_equal page.evaluate("1 + 1"), 2
+				end
+
+				test("errors") do
+					visit "/"
+					slow_evaluate
+				end
+
+				test("next") do
+					visit "/"
+					assert_text "Hello"
+				end
+			end
+		RUBY
+
+		match { result => { summary: /\A3 tests · \d+ assertions · 1 errored/ } }
+		assert_includes result.output, "Timeout::Error: execution expired"
+		refute_includes result.output, "answered"
+	end
+
+	test "doctor says what browser tests are missing", timeout: 20 do
+		config = { "a.test.rb" => "", "config/quickdraw.rb" => "Quickdraw.configure { |config| config.browser('test/browser/**/*.test.rb', browser: 'webkit') }\n" }
+		without = project(**config).run("doctor", env: { "QUICKDRAW_PLAYWRIGHT" => nil, "QUICKDRAW_BROWSERS_PATH" => tmpdir })
+
+		assert_equal without.status.exitstatus, 1
+		assert_match without.stdout, /^  ✗ Browser +Playwright isn’t installed, for browser tests\n +Run `quickdraw browser install`\.$/
+		assert_match without.stdout, /^  ✓ Browser +quickdraw leaves browser tests out unless they’re named\n +quickdraw browser runs only them, and quickdraw all runs everything\.$/
+
+		no_node = project(**config).run("doctor", env: { "QUICKDRAW_PLAYWRIGHT" => playwright_fixture, "QUICKDRAW_NODE" => "/missing/node" })
+
+		assert_match no_node.stdout, /^  ✗ Browser +Playwright 9\.9\.9 runs on Node 20 or later, which isn’t installed\n +Install it, or set QUICKDRAW_NODE to it\.$/
+	end
+
+	test "browser install never downloads in tests, and says when it's offline", timeout: 20 do
+		browsers = tmpdir
+		offline = project.run("browser", "install", env: { "QUICKDRAW_PLAYWRIGHT" => nil, "QUICKDRAW_BROWSERS_PATH" => browsers, "http_proxy" => "http://127.0.0.1:9", "https_proxy" => "http://127.0.0.1:9", "no_proxy" => nil, "NO_PROXY" => nil })
+
+		assert_equal offline.status.exitstatus, 1
+		assert_match offline.stdout, %r{^✗ Couldn’t download https://registry\.npmjs\.org/playwright-core/[\d.]+ \(.*\)\. Are you offline\?}
+		assert_equal Dir.children(browsers), []
+
+		assert_equal project.run("browser", "install", "netscape").status.exitstatus, 2
+
+		help = project.run("browser", "install", "--help")
+		assert(help.success?) { help.output }
+		assert_includes help.stdout, "Usage: quickdraw browser install [chromium|firefox|webkit …]"
+	end
+
+	# Model and browser tests, which pass without a browser, since none opens a page.
+	def mixed(options = "", browser_files = {})
+		project(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.browser('test/browser/**/*.test.rb'#{options}) }\n",
+			"test/model.test.rb" => "class ModelTest < Quickdraw::Test; test('model') { assert true }; end\n",
+			"test/browser/a.test.rb" => "class ATest < Quickdraw::Test; test('a') { assert true }; end\n",
+			"test/browser/b.test.rb" => "class BTest < Quickdraw::Test; test('b') { assert true }; end\n",
+			**browser_files,
+		)
+	end
+
+	# Without Playwright, so a browser group's worker doesn't start one.
+	def run_mixed(project, *, env: {}) = project.run(*, "-p", "1", env: { "QUICKDRAW_PLAYWRIGHT" => nil, "QUICKDRAW_BROWSERS_PATH" => tmpdir, **env }, timeout: 30)
+
+	def ran(result) = result.events.select { |event| event["event"] == "test" }.map { |event| event["name"] }.sort
+
+	test "a plain run leaves browser tests out, and says so", timeout: 30 do
+		project = mixed
+
+		human = run_mixed(project, "--no-history", "--format", "human")
+		assert(human.success?) { human.output }
+		match { human => { summary: /\A1 test · / } }
+		assert_includes human.output, "\n  Left out  2 browser test files · quickdraw all runs them too\n"
+
+		json = run_mixed(project, "--no-history", "--format", "json")
+		assert_equal ran(json), ["ModelTest › model"]
+		assert_equal json.events.last.fetch("browser_files_left_out"), 2
+
+		agent = run_mixed(project, "--no-history", "--format", "agent")
+		assert_includes agent.stdout, "Left out 2 browser test files · quickdraw all runs them too.\nPASSED: 1 test"
+
+		github = run_mixed(project, "--no-history", env: { "GITHUB_ACTIONS" => "true" })
+		assert_includes github.stdout, "::notice title=Browser tests left out::Left out 2 browser test files · quickdraw all runs them too.\n"
+
+		# A directory isn't naming its browser tests.
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test")), ["ModelTest › model"]
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test/browser")), []
+	end
+
+	test "browser runs only browser tests, all runs every test, and a named browser test runs", timeout: 30 do
+		project = mixed
+
+		browser = run_mixed(project, "browser", "--no-history", "--format", "json")
+		assert(browser.success?) { browser.output }
+		assert_equal ran(browser), ["ATest › a", "BTest › b"]
+		assert_equal browser.events.last.fetch("browser_files_left_out"), 0
+		assert_equal ran(run_mixed(project, "browser", "--no-history", "--format", "json", "test/browser/a.test.rb", "test/model.test.rb")), ["ATest › a"]
+
+		all = run_mixed(project, "all", "--no-history", "--format", "json")
+		assert_equal ran(all), ["ATest › a", "BTest › b", "ModelTest › model"]
+		assert_equal all.events.last.fetch("browser_files_left_out"), 0
+
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test/browser/a.test.rb", "test/model.test.rb")), ["ATest › a", "ModelTest › model"]
+		assert_equal ran(run_mixed(project, "--no-history", "--format", "json", "test/browser/b.test.rb:1")), ["BTest › b"]
+
+		help = project.run("browser", "--help")
+		assert_includes help.stdout, "Usage: quickdraw browser [options] [files, directories, globs or file:line …]\n       quickdraw browser install [chromium|firefox|webkit …]"
+	end
+
+	test "--failed reruns failing browser tests, and their rerun commands run them", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+
+		project = mixed("", "test/browser/b.test.rb" => "class BTest < Quickdraw::Test; test('b') { assert false }; end\n")
+
+		failed = run_mixed(project, "browser", "--retry", "0", "--format", "human")
+		refute failed.success?
+		assert_includes failed.output, "↻ quickdraw test/browser/b.test.rb:1"
+		assert_match failed.output, /^  Rerun failures  quickdraw browser --failed\n  Same order      quickdraw browser --seed \d+$/
+
+		assert_includes project.run("last").stdout, "Rerun the failures with: quickdraw browser --failed"
+
+		assert_equal ran(run_mixed(project, "--failed", "--format", "json")), ["BTest › b"]
+		assert_equal ran(run_mixed(project, "--format", "json", "test/browser/b.test.rb:1")), ["BTest › b"]
+	end
+
+	test "config.browser's by_default: true runs browser tests in a plain run", timeout: 30 do
+		result = run_mixed(mixed(", by_default: true"), "--no-history", "--format", "json")
+
+		assert_equal ran(result), ["ATest › a", "BTest › b", "ModelTest › model"]
+		assert_equal result.events.last.fetch("browser_files_left_out"), 0
+
+		invalid = run_mixed(mixed(", by_default: 'yes'"), "--no-history")
+		refute invalid.success?
+		assert_includes invalid.output, "ArgumentError: config.browser’s by_default must be true or false, not \"yes\"."
+	end
+
+	test "browser runs nothing, and fails, without config.browser", timeout: 20 do
+		refusal = "Quickdraw didn’t run any tests: `quickdraw browser` runs config.browser’s tests, and config/quickdraw.rb doesn’t call config.browser."
+		result = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n").run("browser", "--no-history")
+
+		refute result.success?
+		assert_includes result.stderr, refusal
+
+		empty = project.run("browser", "--no-history", "--format", "json")
+		assert_equal empty.status.exitstatus, 1
+		assert_equal empty.events.last.fetch("passed"), false
+
+		broken = project("config/quickdraw.rb" => "raise 'config is broken'\n", "a.test.rb" => "").run("browser", "--no-history")
+		refute broken.success?
+		assert_includes broken.output, "config is broken"
+		refute_includes broken.output, refusal
+	end
+
+	test "watch mode runs a changed browser test file, though a plain run leaves it out", timeout: 40 do
+		skip "Watch mode needs fork" unless Process.respond_to?(:fork)
+
+		project = mixed
+		steps = [-> { File.write(File.join(project.directory, "test/browser/a.test.rb"), "class ATest < Quickdraw::Test; test('a again') { assert true }; end\n") }]
+		taken = 0
+
+		# With a directory, so the change doesn't narrow the run to it.
+		result = project.run("-p", "1", "--no-history", "--watch", "test", env: { "QUICKDRAW_PLAYWRIGHT" => nil, "QUICKDRAW_BROWSERS_PATH" => tmpdir }, tty: [40, 120], timeout: 30) do |output, keyboard|
+			watching = output.scan(/^Watching/).size
+			next if watching == 0 || watching == taken
+
+			taken = watching
+			(step = steps[watching - 1]) ? step.call : keyboard.write("q")
+		end
+
+		assert_equal Integration.summaries(result.stdout).map { |summary| summary[/\A\d+ tests?/] }, ["1 test", "2 tests"]
+		assert_includes result.stdout, "✓ test/browser/a.test.rb"
+		refute_includes result.stdout, "test/browser/b.test.rb"
+	end
+
+	# A package.json for a Playwright that needs Node 20, with nothing else.
+	def playwright_fixture
+		tmpdir.tap { |path| File.write(File.join(path, "package.json"), '{ "version": "9.9.9", "engines": { "node": ">=20" } }') }
+	end
+
+	RAILS_APP = {
+		"config/quickdraw.rb" => <<~RUBY,
+			Quickdraw.configure do |config|
+				config.rails
+				config.browser("test/system/**/*.test.rb", timeout: 2) { Rails.application }
+			end
+		RUBY
+		"config/application.rb" => <<~RUBY,
+			require "rails"
+			require "active_record/railtie"
+			require "action_controller/railtie"
+
+			class Shop < Rails::Application
+				config.load_defaults 8.1
+				config.root = File.expand_path("..", __dir__)
+				config.eager_load = false
+				config.logger = Logger.new(nil)
+				config.secret_key_base = "secret"
+			end
+		RUBY
+		"config/environment.rb" => "require_relative \"application\"\nRails.application.initialize!\n",
+		"config/routes.rb" => "Rails.application.routes.draw { resources :users, only: [:index, :create] }\n",
+		"config/database.yml" => "test:\n  adapter: sqlite3\n  database: db/test.sqlite3\n",
+		"db/schema.rb" => "ActiveRecord::Schema[8.1].define(version: 1) { create_table(:users) { |t| t.string :name } }\n",
+		"app/models/user.rb" => "class User < ActiveRecord::Base; end\n",
+		"app/controllers/users_controller.rb" => <<~RUBY,
+			class UsersController < ActionController::Base
+				skip_forgery_protection
+
+				def index
+					render html: "<h1>\#{User.count} users</h1><ul>\#{User.pluck(:name).map { "<li>\#{_1}</li>" }.join}</ul>".html_safe
+				end
+
+				def create
+					User.create!(name: params[:name])
+					head :created
+				end
+			end
+		RUBY
+	}.freeze
+end

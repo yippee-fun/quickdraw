@@ -2,241 +2,223 @@
 
 module Quickdraw
 	module Diff
-		class << self
-			# Computes a diff between two strings.
-			# @param old_text [String] The original/baseline text (e.g., expected)
-			# @param new_text [String] The changed text (e.g., actual)
-			# @return [String] Formatted diff with - for removals and + for additions
-			def diff(old_text, new_text)
-				old_lines = old_text.to_s.lines(chomp: true)
-				new_lines = new_text.to_s.lines(chomp: true)
+		MAX_MATCHES = 1_000_000
 
-				changes = patience_diff(old_lines, new_lines)
-				format_changes(changes)
+		# Above a diff of expected (old) against actual (new) text.
+		LEGEND = "\e[31m- Expected\e[0m  \e[32m+ Actual\e[0m"
+
+		extend self
+
+		# Computes a diff between two strings.
+		# @param old_text [String] The original/baseline text (e.g., expected)
+		# @param new_text [String] The changed text (e.g., actual)
+		# @return [String] Formatted diff with - for removals and + for additions
+		def diff(old_text, new_text)
+			old_lines = old_text.to_s.lines(chomp: true)
+			new_lines = new_text.to_s.lines(chomp: true)
+
+			changes = patience_diff(old_lines, new_lines)
+			format_changes(changes)
+		end
+
+		# Patience Diff Algorithm
+		# 1. Find unique lines that appear in both sequences
+		# 2. Find the longest common subsequence of those unique lines
+		# 3. Recursively diff between the matched unique lines
+		private def patience_diff(old_lines, new_lines)
+			return additions(new_lines, 0) if old_lines.empty?
+			return deletions(old_lines, 0) if new_lines.empty?
+
+			prefix = 0
+			prefix += 1 while prefix < old_lines.size && prefix < new_lines.size && old_lines[prefix] == new_lines[prefix]
+			suffix = 0
+			suffix += 1 while suffix < old_lines.size - prefix && suffix < new_lines.size - prefix && old_lines[-1 - suffix] == new_lines[-1 - suffix]
+
+			if prefix > 0 || suffix > 0
+				middle = patience_diff(old_lines[prefix...(old_lines.size - suffix)], new_lines[prefix...(new_lines.size - suffix)])
+				return old_lines.first(prefix).map { |line| [:equal, line] } + middle + old_lines.last(suffix).map { |line| [:equal, line] }
 			end
 
-			private
+			# Find unique lines in both sequences
+			unique_old = find_unique_lines(old_lines)
+			unique_new = find_unique_lines(new_lines)
 
-			# Patience Diff Algorithm
-			# 1. Find unique lines that appear in both sequences
-			# 2. Find the longest common subsequence of those unique lines
-			# 3. Recursively diff between the matched unique lines
-			def patience_diff(old_lines, new_lines)
-				return additions(new_lines, 0) if old_lines.empty?
-				return deletions(old_lines, 0) if new_lines.empty?
+			# Find common unique lines (these are our anchors)
+			common_unique = unique_old.keys & unique_new.keys
 
-				# Find unique lines in both sequences
-				unique_old = find_unique_lines(old_lines)
-				unique_new = find_unique_lines(new_lines)
+			if common_unique.empty?
+				# No unique common lines - fall back to LCS on all lines
+				lcs_diff(old_lines, new_lines)
+			else
+				# Build list of matching positions for unique lines
+				matches = common_unique.map { |line| [unique_old[line], unique_new[line]] }
+				matches.sort_by!(&:first)
 
-				# Find common unique lines (these are our anchors)
-				common_unique = unique_old.keys & unique_new.keys
+				# Find longest increasing subsequence of new positions
+				anchors = longest_increasing_subsequence(matches)
 
-				if common_unique.empty?
-					# No unique common lines - fall back to LCS on all lines
-					lcs_diff(old_lines, new_lines)
-				else
-					# Build list of matching positions for unique lines
-					matches = common_unique.map { |line| [unique_old[line], unique_new[line]] }
-					matches.sort_by!(&:first)
+				# Recursively diff between anchors
+				diff_with_anchors(old_lines, new_lines, anchors)
+			end
+		end
 
-					# Find longest increasing subsequence of new positions
-					anchors = longest_increasing_subsequence(matches)
+		private def find_unique_lines(lines)
+			counts = Hash.new(0)
+			positions = {}
 
-					# Recursively diff between anchors
-					diff_with_anchors(old_lines, new_lines, anchors)
-				end
+			lines.each_with_index do |line, idx|
+				counts[line] += 1
+				positions[line] = idx
 			end
 
-			def find_unique_lines(lines)
-				counts = Hash.new(0)
-				positions = {}
+			# Keep only lines that appear exactly once
+			positions.select { |line, _| counts[line] == 1 }
+		end
 
-				lines.each_with_index do |line, idx|
-					counts[line] += 1
-					positions[line] = idx
-				end
+		private def longest_increasing_subsequence(matches)
+			return matches if matches.length <= 1
 
-				# Keep only lines that appear exactly once
-				positions.select { |line, _| counts[line] == 1 }
+			# Standard LIS algorithm using binary search
+			n = matches.length
+			# tails[i] = smallest ending value of all increasing subsequences of length i+1
+			tails = []
+			# predecessors[i] = index of predecessor of matches[i] in the LIS
+			predecessors = Array.new(n)
+			# indices[i] = index in matches of the element at tails[i]
+			indices = []
+
+			matches.each_with_index do |(old_pos, new_pos), i|
+				# Binary search for position in tails
+				pos = tails.bsearch_index { |t| t >= new_pos } || tails.length
+
+				tails[pos] = new_pos
+				indices[pos] = i
+				predecessors[i] = (pos > 0) ? indices[pos - 1] : nil
 			end
 
-			def longest_increasing_subsequence(matches)
-				return matches if matches.length <= 1
-
-				# Standard LIS algorithm using binary search
-				n = matches.length
-				# tails[i] = smallest ending value of all increasing subsequences of length i+1
-				tails = []
-				# predecessors[i] = index of predecessor of matches[i] in the LIS
-				predecessors = Array.new(n)
-				# indices[i] = index in matches of the element at tails[i]
-				indices = []
-
-				matches.each_with_index do |(old_pos, new_pos), i|
-					# Binary search for position in tails
-					pos = tails.bsearch_index { |t| t >= new_pos } || tails.length
-
-					tails[pos] = new_pos
-					indices[pos] = i
-					predecessors[i] = (pos > 0) ? indices[pos - 1] : nil
-				end
-
-				# Reconstruct LIS
-				result = []
-				idx = indices[tails.length - 1]
-				while idx
-					result.unshift(matches[idx])
-					idx = predecessors[idx]
-				end
-
-				result
+			# Reconstruct LIS
+			result = []
+			idx = indices[tails.length - 1]
+			while idx
+				result.unshift(matches[idx])
+				idx = predecessors[idx]
 			end
 
-			def diff_with_anchors(old_lines, new_lines, anchors)
-				changes = []
-				old_pos = 0
-				new_pos = 0
+			result
+		end
 
-				anchors.each do |(anchor_old, anchor_new)|
-					# Diff the section before this anchor
-					old_section = old_lines[old_pos...anchor_old]
-					new_section = new_lines[new_pos...anchor_new]
+		private def diff_with_anchors(old_lines, new_lines, anchors)
+			changes = []
+			old_pos = 0
+			new_pos = 0
 
-					changes.concat(patience_diff(old_section, new_section))
+			anchors.each do |(anchor_old, anchor_new)|
+				# Diff the section before this anchor
+				old_section = old_lines[old_pos...anchor_old]
+				new_section = new_lines[new_pos...anchor_new]
 
-					# Add the anchor as unchanged
-					changes << [:equal, old_lines[anchor_old]]
-
-					old_pos = anchor_old + 1
-					new_pos = anchor_new + 1
-				end
-
-				# Diff remaining section after last anchor
-				old_section = old_lines[old_pos..]
-				new_section = new_lines[new_pos..]
 				changes.concat(patience_diff(old_section, new_section))
 
-				changes
+				# Add the anchor as unchanged
+				changes << [:equal, old_lines[anchor_old]]
+
+				old_pos = anchor_old + 1
+				new_pos = anchor_new + 1
 			end
 
-			# Fallback to standard LCS-based diff
-			def lcs_diff(old_lines, new_lines)
-				lcs = longest_common_subsequence(old_lines, new_lines)
-				changes = []
+			# Diff remaining section after last anchor
+			old_section = old_lines[old_pos..]
+			new_section = new_lines[new_pos..]
+			changes.concat(patience_diff(old_section, new_section))
 
-				old_pos = 0
-				new_pos = 0
+			changes
+		end
 
-				lcs.each do |(old_idx, new_idx)|
-					# Deletions before this match
-					while old_pos < old_idx
-						changes << [:delete, old_lines[old_pos]]
-						old_pos += 1
-					end
+		# Fallback to standard LCS-based diff
+		private def lcs_diff(old_lines, new_lines)
+			lcs = longest_common_subsequence(old_lines, new_lines)
+			changes = []
 
-					# Additions before this match
-					while new_pos < new_idx
-						changes << [:insert, new_lines[new_pos]]
-						new_pos += 1
-					end
+			old_pos = 0
+			new_pos = 0
 
-					# The match itself
-					changes << [:equal, old_lines[old_pos]]
-					old_pos += 1
-					new_pos += 1
-				end
-
-				# Remaining deletions
-				while old_pos < old_lines.length
+			lcs.each do |(old_idx, new_idx)|
+				# Deletions before this match
+				while old_pos < old_idx
 					changes << [:delete, old_lines[old_pos]]
 					old_pos += 1
 				end
 
-				# Remaining additions
-				while new_pos < new_lines.length
+				# Additions before this match
+				while new_pos < new_idx
 					changes << [:insert, new_lines[new_pos]]
 					new_pos += 1
 				end
 
-				changes
+				# The match itself
+				changes << [:equal, old_lines[old_pos]]
+				old_pos += 1
+				new_pos += 1
 			end
 
-			def longest_common_subsequence(old_lines, new_lines)
-				return [] if old_lines.empty? || new_lines.empty?
+			# Remaining deletions
+			while old_pos < old_lines.length
+				changes << [:delete, old_lines[old_pos]]
+				old_pos += 1
+			end
 
-				# Build a hash of new_lines positions for quick lookup
-				new_positions = Hash.new { |h, k| h[k] = [] }
-				new_lines.each_with_index { |line, idx| new_positions[line] << idx }
+			# Remaining additions
+			while new_pos < new_lines.length
+				changes << [:insert, new_lines[new_pos]]
+				new_pos += 1
+			end
 
-				# Find matches
-				matches = []
-				old_lines.each_with_index do |line, old_idx|
-					new_positions[line].each do |new_idx|
-						matches << [old_idx, new_idx]
-					end
+			changes
+		end
+
+		private def longest_common_subsequence(old_lines, new_lines)
+			return [] if old_lines.empty? || new_lines.empty?
+
+			new_positions = {}
+			new_lines.each_with_index { |line, idx| (new_positions[line] ||= []) << idx }
+
+			# Many repeated lines would make a quadratic number of matches.
+			return [] if old_lines.sum { |line| new_positions[line]&.size || 0 } > MAX_MATCHES
+
+			# Each old line's matches in descending order, so the increasing
+			# subsequence takes at most one of them.
+			matches = []
+			old_lines.each_with_index do |line, old_idx|
+				new_positions[line]&.reverse_each { |new_idx| matches << [old_idx, new_idx] }
+			end
+
+			longest_increasing_subsequence(matches)
+		end
+
+		private def additions(lines, _start_pos)
+			lines.map { |line| [:insert, line] }
+		end
+
+		private def deletions(lines, _start_pos)
+			lines.map { |line| [:delete, line] }
+		end
+
+		private def format_changes(changes)
+			return "" if changes.all? { |(type, _)| type == :equal }
+
+			lines = []
+			changes.each do |(type, content)|
+				case type
+				when :equal
+					lines << "  #{content}"
+				when :delete
+					lines << "\e[31m- #{content}\e[0m"
+				when :insert
+					lines << "\e[32m+ #{content}\e[0m"
 				end
-
-				return [] if matches.empty?
-
-				# Sort by old position, then by new position
-				matches.sort!
-
-				# Find LIS by new position
-				lis_matches(matches)
 			end
 
-			def lis_matches(matches)
-				return matches if matches.length <= 1
-
-				n = matches.length
-				tails = []
-				indices = []
-				predecessors = Array.new(n)
-
-				matches.each_with_index do |(old_pos, new_pos), i|
-					pos = tails.bsearch_index { |t| t >= new_pos } || tails.length
-
-					tails[pos] = new_pos
-					indices[pos] = i
-					predecessors[i] = (pos > 0) ? indices[pos - 1] : nil
-				end
-
-				result = []
-				idx = indices[tails.length - 1]
-				while idx
-					result.unshift(matches[idx])
-					idx = predecessors[idx]
-				end
-
-				result
-			end
-
-			def additions(lines, _start_pos)
-				lines.map { |line| [:insert, line] }
-			end
-
-			def deletions(lines, _start_pos)
-				lines.map { |line| [:delete, line] }
-			end
-
-			def format_changes(changes)
-				return "" if changes.all? { |(type, _)| type == :equal }
-
-				lines = []
-				changes.each do |(type, content)|
-					case type
-					when :equal
-						lines << "  #{content}"
-					when :delete
-						lines << "\e[31m- #{content}\e[0m"
-					when :insert
-						lines << "\e[32m+ #{content}\e[0m"
-					end
-				end
-
-				lines.join("\n")
-			end
+			lines.join("\n")
 		end
 	end
 end

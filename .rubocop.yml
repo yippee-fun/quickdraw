@@ -2,4 +2,11 @@ inherit_from:
   - "https://www.goodcop.style/tabs.yml"
 
 AllCops:
-  TargetRubyVersion: 3.1
+  TargetRubyVersion: 3.3
+
+# Skip, Interrupted and Discard must get past a test's own `rescue => error`.
+Lint/InheritException:
+  Exclude:
+    - lib/quickdraw.rb
+    - lib/quickdraw/basic_test.rb
+    - lib/quickdraw/choices.rb
