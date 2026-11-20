@@ -2,11 +2,12 @@
 
 require_relative "../support/integration"
 
-# Browser tests need Puma installed (outside Quickdraw's bundle), Node, and
-# Playwright's package with each browser installed for it. QUICKDRAW_PLAYWRIGHT
-# points at the package, PLAYWRIGHT_BROWSERS_PATH at its browsers and
-# QUICKDRAW_NODE at Node. A browser's tests are skipped, with the reason, where
-# it can't run.
+# Browser tests need Node, and Playwright's package with each browser
+# installed for it, which `qt browser install chromium firefox webkit` sets
+# up. QUICKDRAW_PLAYWRIGHT can point at another package,
+# PLAYWRIGHT_BROWSERS_PATH at its browsers, and QUICKDRAW_NODE at Node. A
+# browser that can't run here fails its tests, saying why, rather than
+# skipping them, which would hide that they never ran.
 class BrowserTest < Quickdraw::Test
 	include Integration
 
@@ -47,19 +48,23 @@ class BrowserTest < Quickdraw::Test
 		)
 	end
 
-	# Skips the test if `browser` can't run here: if Puma, Node, Playwright or
-	# the browser is missing. Other problems fail the test.
+	# Fails at once, after the first test to find out, if `browser` can't run
+	# here because Puma, Node, Playwright or the browser is missing.
 	def run_browser(browser, project, *arguments)
-		skip UNAVAILABLE[browser] if UNAVAILABLE[browser]
+		unavailable(browser) if UNAVAILABLE[browser]
 
 		run_quickdraw(project, *arguments).tap do |result|
 			UNAVAILABLE[browser] = result.output[/Quickdraw::Browser::(?:Unavailable|MissingGem): (.*(?:Playwright isn’t installed|Executable doesn't exist|Failed to launch the browser process|couldn’t run `|needs puma).*)/, 1]
-			skip UNAVAILABLE[browser] if UNAVAILABLE[browser]
+			unavailable(browser) if UNAVAILABLE[browser]
 		end
 	end
 
+	def unavailable(browser)
+		raise "#{browser} can’t run here, so its tests didn’t: #{UNAVAILABLE.fetch(browser)}"
+	end
+
 	# Before a slow project, since finding out from a quick one is quicker.
-	def skip_unless_browser(browser)
+	def require_browser(browser)
 		run_browser(browser, app(browser, "test/browser/page.test.rb" => "class PageTest < Quickdraw::Test; include Quickdraw::Browser; test('opens') { page; assert true }; end\n"), "-p", "1")
 	end
 
@@ -264,7 +269,7 @@ class BrowserTest < Quickdraw::Test
 
 	test "the page sees the test's records, which roll back", timeout: 60 do
 		skip "Rails isn’t in the bundle" unless $LOAD_PATH.any? { |path| File.exist?(File.join(path, "rails.rb")) }
-		skip_unless_browser("chromium")
+		require_browser("chromium")
 
 		result = run_browser("chromium", project(**RAILS_APP, "test/system/users.test.rb" => <<~RUBY), "-p", "2")
 			class UsersTest < Quickdraw::Test

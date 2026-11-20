@@ -21,6 +21,8 @@ if RUBY_ENGINE == "ruby"
 		# For the debugger integration tests.
 		gem "debug"
 		gem "pry"
+		# For the browser integration tests, which serve their app with it.
+		gem "puma"
 	end
 end
 

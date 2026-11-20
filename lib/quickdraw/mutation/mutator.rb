@@ -180,7 +180,8 @@ class Quickdraw::Mutation::Mutator
 			last = [node.rparen_loc, node.arguments&.location, (node.block.location if Prism::BlockArgumentNode === node.block)].compact.max_by(&:end_offset)
 			add(span(node.keyword_loc.start_offset, last.end_offset), "super()", "super(…) → super()", statement_line)
 		in Prism::ForwardingSuperNode
-			add(node.keyword_loc, "super()", "super → super()", statement_line) if forwarded_parameters.any?
+			# Prism 1 has no keyword_loc here.
+			add(span(node.location.start_offset, node.location.start_offset + "super".bytesize), "super()", "super → super()", statement_line) if forwarded_parameters.any?
 		in Prism::YieldNode[arguments: Prism::ArgumentsNode]
 			add(node.location, "yield", "removed the yield arguments", statement_line)
 		in Prism::LocalVariableOperatorWriteNode | Prism::InstanceVariableOperatorWriteNode | Prism::ClassVariableOperatorWriteNode | Prism::GlobalVariableOperatorWriteNode | Prism::IndexOperatorWriteNode | Prism::CallOperatorWriteNode if ARITHMETIC.key?(node.binary_operator)

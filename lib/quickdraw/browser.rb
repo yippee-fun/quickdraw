@@ -151,7 +151,10 @@ module Quickdraw::Browser
 		@ready ||= @bridge.call("ready")
 	rescue Error => error
 		install = "Run `#{Quickdraw::Reporters.command} browser install #{@browser_name}` to install it." if error.message.include?("Executable doesn't exist")
-		@failure = Unavailable.new(["Quickdraw couldn’t launch #{@browser_name} with Playwright #{Executables.playwright_version(@playwright)} (#{@playwright}): #{error.message.lines.first.strip}", install].compact.join(" "))
+		reason = error.message.lines.first.strip
+		# Playwright's messages don't always end a sentence, which the hint would run on from.
+		reason = "#{reason}." unless reason.end_with?(".", "!", "?")
+		@failure = Unavailable.new(["Quickdraw couldn’t launch #{@browser_name} with Playwright #{Executables.playwright_version(@playwright)} (#{@playwright}): #{reason}", install].compact.join(" "))
 		raise @failure
 	end
 
