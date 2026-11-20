@@ -31,7 +31,6 @@ class Quickdraw::Outcome
 		@skipped = 0
 		@pending = 0
 		@load_errors = 0
-		@without_assertions = 0
 		@not_run = 0
 		@unloaded_files = 0
 		@browser_files_left_out = 0
@@ -42,7 +41,7 @@ class Quickdraw::Outcome
 		@interrupted = false
 	end
 
-	attr_reader :tests, :assertions, :flaky, :quarantined, :failed, :errored, :skipped, :pending, :load_errors, :without_assertions
+	attr_reader :tests, :assertions, :flaky, :quarantined, :failed, :errored, :skipped, :pending, :load_errors
 	# Set once config is read (see Coordinator#apply_settings).
 	attr_accessor :allow_flaky
 	# `not_run` counts tests in loaded files. Files never loaded (e.g. after
@@ -89,7 +88,7 @@ class Quickdraw::Outcome
 		in "failed" then @failed += 1
 		in "skipped" then @skipped += 1
 		in "pending" then @pending += 1
-		in "passed" then @without_assertions += 1 if result["assertions"] == 0
+		in "passed" then nil
 		end
 	end
 

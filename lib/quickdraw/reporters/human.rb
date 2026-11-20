@@ -521,7 +521,6 @@ class Quickdraw::Reporters::Human
 			(red("#{pluralize(failed_to_load, 'file')} failed to load") if failed_to_load > 0),
 			(yellow("#{outcome.not_run} not run") if outcome.not_run > 0),
 			(yellow("#{pluralize(outcome.unloaded_files, 'file')} not loaded") if outcome.unloaded_files > 0),
-			(yellow("#{outcome.without_assertions} without assertions") if outcome.without_assertions > 0),
 			format("%.2fs", outcome.duration),
 		].compact.join(dim(" · "))
 	end

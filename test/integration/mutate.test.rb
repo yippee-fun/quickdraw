@@ -509,7 +509,10 @@ class MutateTest < Quickdraw::Test
 				require_relative "../lib/pricing"
 
 				class PricingTest < Quickdraw::Test
-					test("kills its worker when mutated") { Process.kill(:KILL, Process.ppid) unless Shop::Pricing.new.discount(200) == 20 }
+					test("kills its worker when mutated") do
+						Process.kill(:KILL, Process.ppid) unless Shop::Pricing.new.discount(200) == 20
+						assert true
+					end
 				end
 			RUBY
 		)
