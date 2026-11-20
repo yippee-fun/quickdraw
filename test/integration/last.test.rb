@@ -42,6 +42,7 @@ class LastTest < Quickdraw::Test
 		assert_equal missing.exit_status, 1
 		assert_includes missing.stderr, "The last run had no problem at test/math.test.rb:3."
 		match { project.run("last", "--nope") => { exit_status: 2, stderr: /Usage: \S+ last \[PATH\[:LINE\] \| --list\]/ } }
+		match { project.run("last", "") => { exit_status: 2, stderr: /Usage: / } }
 	end
 
 	test "says when no run has been recorded", timeout: 20 do

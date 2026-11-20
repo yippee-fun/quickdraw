@@ -41,11 +41,11 @@ class Quickdraw::Reporters::JUnit
 		@suites.each do |file, cases|
 			time = cases.sum { |_test, result| result["duration"] || 0 }
 			xml << %(  <testsuite name="#{attribute(file)}" #{counts(cases)} time="#{format('%.6f', time)}">\n)
+			xml << %(    <properties><property name="seed" value="#{@seed}"/></properties>\n)
 			cases.each { |test, result| xml << test_case(file, test, result) }
 			xml << "  </testsuite>\n"
 		end
 
-		xml << %(  <properties><property name="seed" value="#{@seed}"/></properties>\n)
 		xml << "</testsuites>\n"
 
 		@io.write(xml)
@@ -87,6 +87,7 @@ class Quickdraw::Reporters::JUnit
 			body = [
 				plain(error["message"]),
 				*user_backtrace(error["backtrace"]).map { |frame| relative(frame) },
+				*error["details"]&.then { |details| relative_paths(plain(details)) },
 				*result["errors"].drop(1).map { |other| "#{other['name']}: #{plain(other['message'])}" },
 				*failure_texts,
 				*flaky_text,

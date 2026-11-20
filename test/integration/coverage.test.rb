@@ -84,6 +84,36 @@ class CoverageTest < Quickdraw::Test
 		assert_includes agent.stdout, "- Uncovered changed lines: lib/calculator.rb:13\n"
 	end
 
+	test "finds changed lines whatever prefixes git is configured to give diffs", timeout: 20 do
+		project = calculator
+		project.commit("Calculator")
+		project.git("config", "diff.mnemonicPrefix", "true")
+		project.write("lib/calculator.rb" => CALCULATOR.sub("def unused = :never", "def unused = :never\n\tdef subtract(a, b) = a - b"))
+
+		result = project.run("-p", "1", "--no-history", "--coverage")
+
+		assert_includes result.stdout, "Changed lines: 0 of 1 covered\n    ✗ lib/calculator.rb:13\n"
+	end
+
+	test "names methods the same in every worker, whatever their class's inspect says", timeout: 20 do
+		project = project(
+			"lib/model.rb" => <<~'RUBY',
+				class Model
+					def self.inspect = "Model #{object_id}"
+					def self.find = Class.new { def call = :found }.new.call
+				end
+			RUBY
+			"test/a.test.rb" => "require_relative '../lib/model'\nclass A < Quickdraw::Test; test('a') { assert_equal Model.find, :found }; end\n",
+			"test/b.test.rb" => "require_relative '../lib/model'\nclass B < Quickdraw::Test; test('b') { assert_equal Model.find, :found }; end\n",
+		)
+
+		project.run("-p", "2", "--no-history", "--coverage")
+		lcov = File.read(File.join(project.directory, ".quickdraw/coverage/lcov.info"))
+
+		assert_includes lcov, "FNDA:2,#<Class:Model>#find\n"
+		assert_includes lcov, "FNDA:2,#<Class>#call\n"
+	end
+
 	test "finds changed lines in files whose names git quotes or ends with a tab", timeout: 20 do
 		project = project(
 			"config/quickdraw.rb" => "require_relative '../lib/with space'\nrequire_relative '../lib/quote\"d'\n",

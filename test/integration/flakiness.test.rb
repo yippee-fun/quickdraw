@@ -54,7 +54,7 @@ class FlakinessTest < Quickdraw::Test
 	end
 
 	test "flaky says when nothing was flaky", timeout: 30 do
-		result = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n").run("flaky", "--runs", "2", "-p", "1")
+		result = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n").run("flaky", "--runs=2", "-p", "1")
 
 		assert result.success?
 		assert_includes result.stdout, "PASSED No flaky tests in 2 runs\n"
@@ -140,7 +140,7 @@ class FlakinessTest < Quickdraw::Test
 		RUBY
 		project.run("-p", "1")
 
-		result = project.run("bisect", "a.test.rb:3")
+		result = project.run("bisect", File.join(project.directory, "a.test.rb:3"))
 
 		assert_equal result.status.exitstatus, 1
 		assert_includes result.stdout, "It fails on its own too"

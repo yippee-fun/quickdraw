@@ -37,8 +37,16 @@ module Quickdraw::CoverageCollector
 			files[relative] = {
 				"lines" => data[:lines],
 				"branches" => data[:branches],
-				"methods" => data[:methods]&.to_h { |(owner, name, *location), count| [[owner_name(owner), name.to_s, *location], count] },
+				"methods" => data[:methods]&.then { |methods| method_counts(methods) },
 			}
+		end
+	end
+
+	# Summed, since anonymous classes made by the same code have the same name.
+	private def method_counts(methods)
+		methods.each_with_object({}) do |((owner, name, *location), count), counts|
+			key = [owner_name(owner), name.to_s, *location]
+			counts[key] = counts.fetch(key, 0) + count
 		end
 	end
 
@@ -77,8 +85,14 @@ module Quickdraw::CoverageCollector
 		end
 	end
 
-	# Without the anonymous module each test file is loaded in.
+	# Since classes such as Active Record models override inspect.
+	MODULE_INSPECT = Module.instance_method(:inspect)
+
+	# Without the anonymous module each test file is loaded in, or anonymous
+	# modules' addresses, which differ in each worker.
 	private def owner_name(owner)
-		Quickdraw.utf8(Quickdraw.plain_string(owner.inspect)).gsub(/#<Module:0x\h+>::/, "")
+		attached = owner.attached_object if owner.singleton_class?
+		name = (Module === attached) ? "#<Class:#{MODULE_INSPECT.bind_call(attached)}>" : MODULE_INSPECT.bind_call(owner)
+		Quickdraw.utf8(Quickdraw.plain_string(name)).gsub(/#<Module:0x\h+>::/, "").gsub(/:0x\h+/, "")
 	end
 end

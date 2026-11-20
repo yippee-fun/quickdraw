@@ -11,4 +11,6 @@ output = StringIO.new
 status = Quickdraw::Commands::Counterpart.new(ARGV, io: output).call
 exit(status) unless status == 0
 
-exec(*Shellwords.split(ENV.fetch("EDITOR", "zed")), output.string.chomp)
+editor = Shellwords.split(ENV.fetch("EDITOR", ""))
+editor = ["zed"] if editor.empty?
+exec(*editor, output.string.chomp)

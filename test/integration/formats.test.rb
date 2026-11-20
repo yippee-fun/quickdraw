@@ -88,6 +88,32 @@ class FormatsTest < Quickdraw::Test
 		match { failure => { status: "failed", line: 4, failures: [{ path: "shapes.test.rb", line: 5 }] } }
 	end
 
+	test "sends each JSON event as it happens, through a pipe", timeout: 20 do
+		project = project("waits.test.rb" => <<~RUBY)
+			class Waits < Quickdraw::Test
+				test("for the start event to be read") { sleep 0.01 until File.exist?("started"); assert true }
+			end
+		RUBY
+
+		result = project.run("-p", "1", "--no-history", "--format", "json") do |output, _input|
+			File.write(File.join(project.directory, "started"), "") if output.include?(%("event":"start"))
+		end
+
+		assert(result.success?) { result.output }
+	end
+
+	test "keeps JSON valid when a test's name or backtrace isn't valid UTF-8", timeout: 20 do
+		require "json"
+		result = project("names.test.rb" => <<~'RUBY').run("-p", "1", "--no-history", "--format", "json")
+			class Names < Quickdraw::Test
+				test("caf\xE9".b) { raise RuntimeError, "bad", ["lib/caf\xE9.rb:1"] }
+			end
+		RUBY
+
+		event = JSON.parse(result.stdout.lines[1], symbolize_names: true)
+		match { event => { event: "test", name: "Names › caf�", errors: [{ backtrace: ["lib/caf�.rb:1"] }] } }
+	end
+
 	test "keeps the JSON stream valid when tests print, sending their output to stderr", timeout: 20 do
 		require "json"
 		result = project("noisy.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--no-capture", "--format", "json")
@@ -174,6 +200,7 @@ class FormatsTest < Quickdraw::Test
 		xml = File.read(path)
 
 		assert_includes xml, %(<testsuites name="quickdraw" tests="3" failures="1" errors="1")
+		assert_match xml, %r{<testsuite name="shapes\.test\.rb" [^>]*>\n    <properties><property name="seed" value="\d+"/></properties>\n    <testcase }
 		assert_includes xml, %(<testcase name="passes" classname="Shapes" file="shapes.test.rb" line="12")
 		assert_includes xml, %(<failure message="Expected 7 Actual 6">)
 		assert_includes xml, %(<error type="NoMethodError")

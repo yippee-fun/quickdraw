@@ -26,7 +26,7 @@ class Quickdraw::Commands::Bisect
 			return 2
 		end
 
-		order = failure_order(match[:path].delete_prefix("./"), Integer(match[:line], 10))
+		order = failure_order(File.expand_path(match[:path]).delete_prefix("#{Dir.pwd}/"), Integer(match[:line], 10))
 
 		case order
 		in String => message
@@ -52,7 +52,7 @@ class Quickdraw::Commands::Bisect
 			return 1
 		end
 
-		unless failed?(replay, before, test)
+		if before.empty? || !failed?(replay, before, test)
 			@io.puts "#{label('INCONCLUSIVE', 43)} It passed when replayed after the same tests, so it may depend on timing, or on what other workers do at the same time."
 			return 1
 		end

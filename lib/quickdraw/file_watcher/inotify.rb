@@ -70,6 +70,9 @@ class Quickdraw::FileWatcher::Inotify
 		end
 
 		changes
+	rescue Quickdraw::FileWatcher::Unavailable
+		@io.close
+		raise
 	end
 
 	private def start

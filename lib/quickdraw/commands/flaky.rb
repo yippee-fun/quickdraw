@@ -43,6 +43,12 @@ class Quickdraw::Commands::Flaky
 		runs.times do |run|
 			seed = Random.new_seed % 100_000
 			status = run_tests(seed, scan)
+
+			if status.signaled?
+				warn "Run #{run + 1} was killed by SIG#{Signal.signame(status.termsig)}."
+				return 128 + status.termsig
+			end
+
 			# A usage error, or Ctrl-C.
 			return status.exitstatus if status.exitstatus in 2 | 130
 
@@ -61,10 +67,16 @@ class Quickdraw::Commands::Flaky
 		report(runs, outcomes)
 	end
 
-	# Removes --runs N from the arguments, or prints why it can't.
+	# Removes --runs N or --runs=N from the arguments, or prints why it can't.
 	private def take_runs
-		index = @args.index("--runs") or return DEFAULT_RUNS
-		_, value = @args.slice!(index, 2)
+		options = @args.take_while { |argument| argument != "--" }
+		index = options.index { |argument| argument.match?(/\A--runs(?:=|\z)/) } or return DEFAULT_RUNS
+
+		value = case @args.delete_at(index)
+		in "--runs" then @args.delete_at(index)
+		in argument then argument.delete_prefix("--runs=")
+		end
+
 		runs = Integer(value.to_s, 10, exception: false)
 		return runs if runs&.positive?
 
@@ -82,7 +94,11 @@ class Quickdraw::Commands::Flaky
 			Quickdraw::CLI.new(@args.dup.insert(@args.index("--") || @args.size, "--seed", seed.to_s, "--retry", "0")).call
 		end
 
-		Process.wait2(pid).last
+		# So Ctrl-C only stops the run, which exits with 130.
+		previous = trap("INT", "IGNORE")
+		status = Process.wait2(pid).last
+		trap("INT", previous)
+		status
 	end
 
 	private def report(runs, outcomes)
