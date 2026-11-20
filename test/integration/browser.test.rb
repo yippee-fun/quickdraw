@@ -3,7 +3,7 @@
 require_relative "../support/integration"
 
 # Browser tests need Node, and Playwright's package with each browser
-# installed for it, which `qt browser install chromium firefox webkit` sets
+# installed for it, which `qd browser install chromium firefox webkit` sets
 # up. QUICKDRAW_PLAYWRIGHT can point at another package,
 # PLAYWRIGHT_BROWSERS_PATH at its browsers, and QUICKDRAW_NODE at Node. A
 # browser that can't run here fails its tests, saying why, rather than

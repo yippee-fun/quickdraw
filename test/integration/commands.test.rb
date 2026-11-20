@@ -108,14 +108,14 @@ class CommandsTest < Quickdraw::Test
 
 		script = <<~BASH
 			source #{completions('bash')}
-			COMP_WORDS=(qt --fa); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
-			COMP_WORDS=(qt --format j); COMP_CWORD=2; _quickdraw; echo "${COMPREPLY[@]}"
-			COMP_WORDS=(qt doc); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
-			COMP_WORDS=(qt brow); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
-			COMP_WORDS=(qt browser ins); COMP_CWORD=2; _quickdraw; echo "${COMPREPLY[@]}"
-			COMP_WORDS=(qt browser install fire); COMP_CWORD=3; _quickdraw; echo "${COMPREPLY[@]}"
-			COMP_WORDS=(qt --no-cap); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
-			COMP_WORDS=(qt --cap); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd --fa); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd --format j); COMP_CWORD=2; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd doc); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd brow); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd browser ins); COMP_CWORD=2; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd browser install fire); COMP_CWORD=3; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd --no-cap); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
+			COMP_WORDS=(qd --cap); COMP_CWORD=1; _quickdraw; echo "${COMPREPLY[@]}"
 		BASH
 
 		assert_equal IO.popen(["bash", "-c", script], &:read), "--failed --fail-fast\njson junit\ndoctor\nbrowser\ninstall\nfirefox\n--no-capture\n--capture\n"
@@ -124,9 +124,9 @@ class CommandsTest < Quickdraw::Test
 	test "fish completes options, formats and commands", timeout: 20 do
 		skip "fish isn’t installed" unless shell?("fish")
 
-		script = "source #{completions('fish')}; complete -C 'qt --format j'; complete -C 'quickdraw hist'; complete -C 'qt all --fail-'; " \
-			"complete -C 'qt browser ins'; complete -C 'qt browser install fire'; complete -C 'qt browser --name install --fail-'; " \
-			"complete -C 'qt --no-cap'; complete -C 'qt --cap'"
+		script = "source #{completions('fish')}; complete -C 'qd --format j'; complete -C 'quickdraw hist'; complete -C 'qd all --fail-'; " \
+			"complete -C 'qd browser ins'; complete -C 'qd browser install fire'; complete -C 'qd browser --name install --fail-'; " \
+			"complete -C 'qd --no-cap'; complete -C 'qd --cap'"
 		output = IO.popen(["fish", "-c", script], &:read)
 
 		assert_equal output.lines.map { |line| line.split("\t").first.chomp },
@@ -147,12 +147,12 @@ class CommandsTest < Quickdraw::Test
 		zpty -w z "PS1='>'; autoload -Uz compinit; compinit -u -D; source ${(q)1}; echo RE''ADY"
 		zpty -r z output '*READY*'
 		for typed in ${@:2}; do
-			zpty -w -n z "qt $typed"$'\t'
+			zpty -w -n z "qd $typed"$'\t'
 			output=""
 			repeat 100 {
 				sleep 0.05
 				while zpty -r -t z chunk; do output+=$chunk; done
-				[[ $output == *"qt $typed"?*" " ]] && break
+				[[ $output == *"qd $typed"?*" " ]] && break
 			}
 			print -r -- "${output##*>}"
 			zpty -w -n z $'\C-u'
@@ -165,7 +165,7 @@ class CommandsTest < Quickdraw::Test
 
 		output = IO.popen(["zsh", "-f", "-c", ZSH_COMPLETER, "zsh", completions("zsh"), "--fail-f", "--no-cap", "--cap", "--al"], &:read)
 
-		assert_equal output.scan(/qt (\S+)/).flatten, ["--fail-fast", "--no-capture", "--capture", "--allow-flaky"]
+		assert_equal output.scan(/qd (\S+)/).flatten, ["--fail-fast", "--no-capture", "--capture", "--allow-flaky"]
 	end
 
 	test "completions without a shell explains how to install them", timeout: 20 do

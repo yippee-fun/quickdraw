@@ -17,7 +17,7 @@ class Quickdraw::Configuration
 	# group's. Its tests' names, results and history say which.
 	#
 	# A `browser` group's tests, such as config.browser's, are left out of a
-	# plain run unless named (see Coordinator#selected?). `qt browser` runs only them.
+	# plain run unless named (see Coordinator#selected?). `qd browser` runs only them.
 	Group = Data.define(:name, :patterns, :gemfile, :setup, :cores, :file_seconds, :browser, :variant) do
 		def match?(path) = patterns.any? { |pattern| File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }
 	end
@@ -125,7 +125,7 @@ class Quickdraw::Configuration
 	# browser, each running all of them. The block returns the Rack app they
 	# test, such as Rails.application, which each worker serves. See
 	# Quickdraw::Browser.prepare for the options. With `by_default: true`, a
-	# plain run includes them, as `qt all` does.
+	# plain run includes them, as `qd all` does.
 	def browser(*patterns, gemfile: nil, by_default: false, **, &app)
 		raise ArgumentError, "config.browser’s by_default must be true or false, not #{by_default.inspect}." unless by_default in true | false
 

@@ -1,7 +1,7 @@
 [
 	{
 		"label": "quickdraw",
-		"command": "bundle exec qt",
+		"command": "bundle exec qd",
 		"args": ["$ZED_RELATIVE_FILE"],
 		"tags": ["ruby-test"]
 	},

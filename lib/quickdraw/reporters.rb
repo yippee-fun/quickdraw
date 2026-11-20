@@ -51,7 +51,7 @@ module Quickdraw::Reporters
 	# How to run Quickdraw again, for rerun commands.
 	def self.command
 		program = File.basename($PROGRAM_NAME)
-		program = "quickdraw" unless program in "qt" | "quickdraw"
+		program = "quickdraw" unless program in "qd" | "quickdraw"
 		ENV.key?("BUNDLE_GEMFILE") ? "bundle exec #{program}" : program
 	end
 

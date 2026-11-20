@@ -38,9 +38,9 @@ jobs:
         if: ${{ !startsWith(matrix.ruby-version, 'jruby') && !startsWith(matrix.ruby-version, 'truffleruby') }}
         run: |
           npx --yes "playwright@$(bundle exec ruby -rquickdraw -e 'print Quickdraw::Browser::Executables::PLAYWRIGHT_VERSION')" install-deps chromium firefox webkit
-          bundle exec qt browser install chromium firefox webkit
+          bundle exec qd browser install chromium firefox webkit
       - name: Quickdraw tests
-        run: bundle exec qt
+        run: bundle exec qd
   rubocop:
     runs-on: ubuntu-latest
     strategy:

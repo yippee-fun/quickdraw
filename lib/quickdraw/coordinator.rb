@@ -380,7 +380,7 @@ class Quickdraw::Coordinator
 		@lines_checked = {}
 		# Display paths of files that didn't load, or run, in every group they're in.
 		@partly_run = {}
-		# Whether --browser asked for a browser config doesn't have, or `qt
+		# Whether --browser asked for a browser config doesn't have, or `qd
 		# browser` for browser tests when config has none.
 		@refused = false
 		# Whether every group config defines booted, for the coverage map.

@@ -21,7 +21,7 @@ Gem::Specification.new do |spec|
 
 	spec.files = Dir["lib/**/*", "exe/*", "README.md", "CHANGELOG.md", "LICENSE.txt"]
 	spec.bindir = "exe"
-	spec.executables = ["quickdraw", "qt", "qc"]
+	spec.executables = ["quickdraw", "qd", "qc"]
 
 	spec.add_dependency "phlex", "~> 2.4"
 

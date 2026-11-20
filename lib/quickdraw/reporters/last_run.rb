@@ -10,7 +10,7 @@ class Quickdraw::Reporters::LastRun
 	PATH = ".quickdraw/last-run.json"
 
 	# `command` is how the run was started, shown when it's read, and `rerun`
-	# runs its tests again, such as `qt browser`. `backtrace` is whether the
+	# runs its tests again, such as `qd browser`. `backtrace` is whether the
 	# agent format showed whole backtraces.
 	def initialize(command:, rerun: Quickdraw::Reporters.command, backtrace: false, path: PATH)
 		@command = command

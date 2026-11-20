@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 # Shell completion scripts, generated from the CLI's own options and commands,
-# for both `quickdraw` and `qt`.
+# for both `quickdraw` and `qd`.
 class Quickdraw::Commands::Completions
-	PROGRAMS = ["quickdraw", "qt"].freeze
+	PROGRAMS = ["quickdraw", "qd"].freeze
 	# Options that can be given more than once.
 	REPEATABLE = ["--name", "--exclude", "--browser", "--format"].freeze
 	# Commands that run tests, so take the options.

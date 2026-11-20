@@ -30,7 +30,7 @@ class Quickdraw::Reporters::Human
 		def initialize = super(0, 0.0, Hash.new(0))
 	end
 
-	# `command` runs the run's tests again, such as `qt browser`.
+	# `command` runs the run's tests again, such as `qd browser`.
 	def initialize(io: $stdout, backtrace: false, timings: false, live: false, command: Quickdraw::Reporters.command)
 		@io = io
 		@command = command

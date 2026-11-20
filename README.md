@@ -89,14 +89,14 @@ class ParserTest < Quickdraw::Test
 end
 ```
 
-`qt fuzz` fuzzes it, on every worker at once:
+`qd fuzz` fuzzes it, on every worker at once:
 
 ```sh
-qt fuzz                          # the tests fuzz defines, in every test file that mentions fuzz
-qt fuzz test/parser.test.rb      # in a file, or a directory
-qt fuzz test/sorting.test.rb:12  # any test that checks a property, by line
-qt fuzz --seconds 300            # for longer (the default is 30 seconds a test)
-qt fuzz --forget test/parser.test.rb  # forget what fuzzing found there, after changing a property
+qd fuzz                          # the tests fuzz defines, in every test file that mentions fuzz
+qd fuzz test/parser.test.rb      # in a file, or a directory
+qd fuzz test/sorting.test.rb:12  # any test that checks a property, by line
+qd fuzz --seconds 300            # for longer (the default is 30 seconds a test)
+qd fuzz --forget test/parser.test.rb  # forget what fuzzing found there, after changing a property
 ```
 
 ```
@@ -114,7 +114,7 @@ ParserTest › parses anything  test/parser.test.rb:3
   Edges: 75 by 0.2s, 92 by 0.8s.
 ```
 
-- **Finds:** failed assertions and errors, as properties do; cases that crash the process (a segfault, `exit!`), or raise past the property (`exit`); and cases that hang, running longer than `--timeout` (a second, by default), with where in your code each hung. Each is shrunk as a property's are, and saved with the property's failing cases, so `qt` replays it first until it passes. A case that crashes or hangs while its generators run has no input to show or replay, so it's reported without one. Whatever one is found, fuzzing carries on looking for others.
+- **Finds:** failed assertions and errors, as properties do; cases that crash the process (a segfault, `exit!`), or raise past the property (`exit`); and cases that hang, running longer than `--timeout` (a second, by default), with where in your code each hung. Each is shrunk as a property's are, and saved with the property's failing cases, so `qd` replays it first until it passes. A case that crashes or hangs while its generators run has no input to show or replay, so it's reported without one. Whatever one is found, fuzzing carries on looking for others.
 - **Guided by:** which edges between lines of your project's methods a case runs (not gems', tests' or Quickdraw's), and roughly how many times (1, 2–3, 4–7…), as AFL does. A case that reaches a new edge, or a new count, joins the corpus, kept in `.quickdraw/fuzz/`, which later runs start from, and every worker shares.
 - **New cases:** made by changing a kept case's choices rather than its value, so they keep its shape: a choice replaced or nudged, a value (an array's item, a string's character) deleted, duplicated or swapped for one from another case, or the end made afresh. A tenth are fresh. A `dictionary:` on `string` or `bytes` mixes in words a format uses, which random characters would rarely spell.
 - **Which property:** a test's first `check`. Its others run as usual.
@@ -124,19 +124,19 @@ ParserTest › parses anything  test/parser.test.rb:3
 ## Running tests
 
 ```sh
-qt                         # every **/*.test.rb file, except browser tests
-qt all                     # every test, browser tests too
-qt browser                 # only browser tests
-qt test/models             # a directory
-qt test/user.test.rb:12    # the test at line 12
-qt -n /admin/i -x slow     # tests whose names match /admin/i, but not "slow"
-qt --failed                # what failed last time
-qt --changed               # tests affected by uncommitted changes
-qt --changed --base main   # or by everything since this branched from main
-qt --watch                 # run again when files change
+qd                         # every **/*.test.rb file, except browser tests
+qd all                     # every test, browser tests too
+qd browser                 # only browser tests
+qd test/models             # a directory
+qd test/user.test.rb:12    # the test at line 12
+qd -n /admin/i -x slow     # tests whose names match /admin/i, but not "slow"
+qd --failed                # what failed last time
+qd --changed               # tests affected by uncommitted changes
+qd --changed --base main   # or by everything since this branched from main
+qd --watch                 # run again when files change
 ```
 
-`quickdraw` and `qt` are the same command. `qt --help` lists every option. `qt all` and `qt browser` take the same options and paths (see Browser testing for which runs include browser tests).
+`quickdraw` and `qd` are the same command. `qd --help` lists every option. `qd all` and `qd browser` take the same options and paths (see Browser testing for which runs include browser tests).
 
 - **Workers:** Quickdraw chooses the number of workers from previous runs, exploring until it finds the fastest. Pass `-p N` to choose, `--max` for every core, or `--efficiency` for an Apple silicon Mac's efficiency cores. `--elastic` adds workers during a run while its tests mostly wait (on IO, the network or `sleep`) and the CPU is idle, which speeds up the first run of tests like that, before there's history to go on. It never adds workers to tests that keep the CPU busy, or when memory is short.
 - **Order:** tests run in a random order. The seed is printed after each run, and `--seed N` repeats it.
@@ -158,8 +158,8 @@ FAILED  6 tests · 4 assertions · 1 failed · 1 skipped · 1 pending · 0.04s
 
   ✗ test/models/user.test.rb:3 UserTest › greets
 
-  Rerun failures  qt --failed
-  Same order      qt --seed 56282
+  Rerun failures  qd --failed
+  Same order      qd --seed 56282
 
   Skipped  Mail server isn't running (1)
   Pending  test/calculator.test.rb:4 CalculatorTest › divides
@@ -172,22 +172,22 @@ AI coding agents, which are detected automatically, get a short report instead, 
 FAILED test/cart.test.rb:12 CartTest › totals: Expected 30 · Actual 3
 
 FAILED: 5,030 tests, 3,816 passed, 9 failed, 1,205 errored in 41.20s (seed 1234)
-Details: qt last test/user.test.rb:40 (or a whole file). All problems: qt last --list
-Rerun the failures with: qt --failed
+Details: qd last test/user.test.rb:40 (or a whole file). All problems: qd last --list
+Rerun the failures with: qd --failed
 ```
 
 Every run is kept, so after you see a failure you can tell an agent the tests failed, and it can read what happened, however the run was shown:
 
 ```sh
-qt last                        # the result, a line per problem
-qt last test/cart.test.rb:12   # a problem in full: the failing line, message, backtrace and output
-qt last --list                 # every problem, a line each
+qd last                        # the result, a line per problem
+qd last test/cart.test.rb:12   # a problem in full: the failing line, message, backtrace and output
+qd last --list                 # every problem, a line each
 ```
 
 Runs with `--no-history` aren't kept, so their agent report shows the first problem in full instead. `--format` chooses a format: `human`, `agent`, `json` or `junit`. Repeat it to write more than one, with all but one going to a file:
 
 ```sh
-qt --format human --format junit:reports/junit.xml
+qd --format human --format junit:reports/junit.xml
 ```
 
 Under GitHub Actions, failures are annotated and a summary is written for the job.
@@ -223,7 +223,7 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
 
 - A test that fails is retried, first in the worker it failed in, then in a fresh worker, one that has loaded no other test files. If a retry passes, it's reported as flaky, and where it passed says what kind:
   - passing again in the same worker means it fails some of the time on its own, from timing, randomness or the network;
-  - failing again there but passing in a fresh worker means it likely depends on a test that ran before it, which `qt bisect` can find.
+  - failing again there but passing in a fresh worker means it likely depends on a test that ran before it, which `qd bisect` can find.
 
   Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times in fresh workers, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
 - **Reporting flakes**, from CI, say. `config.on_flaky` is called with each flaky test once the tests have finished, in the process that booted your config, so your app and its error reporting are loaded:
@@ -236,29 +236,29 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
 
   A flake has a `key` that stays the same from run to run, for grouping; its `path`, `line` and `name`; its `kind` (`:nondeterministic`, `:order_dependent`, or `:unknown` if its worker crashed); each of its `attempts`, with where it ran, its status, duration, failures and errors; the run's `seed` and a `rerun` command; and the `commit`, `branch` and CI build's `ci_url` (on GitHub Actions, Buildkite, GitLab or CircleCI). `--flakes FILE` writes the same as JSON, for a pipeline that isn't in Ruby.
 - **Quarantine:** with `--quarantine`, a test that was flaky in the last 50 runs still runs, and its failures are still shown and recorded, but it doesn't fail the run, so a known flaky test doesn't block a merge while someone fixes it. It's quarantined until 50 runs have gone by without it being flaky. In JUnit reports it's skipped, and on GitHub Actions it's a warning. In CI, quarantine needs the history from earlier runs, so cache `.quickdraw/` (see On pull requests).
-- `qt history` lists recent runs, the slowest tests, and flaky tests: those that both passed and failed on the same code.
-- `qt flaky --runs 20` runs the tests 20 times in different orders and lists the ones that sometimes fail. Like `qt`, it leaves browser tests out: `qt flaky browser` runs only them, and `qt flaky all` everything.
-- `qt bisect test/user.test.rb:12` takes the last run where that test failed and replays the tests that ran before it in the same worker, in halves, to find which one it depends on.
+- `qd history` lists recent runs, the slowest tests, and flaky tests: those that both passed and failed on the same code.
+- `qd flaky --runs 20` runs the tests 20 times in different orders and lists the ones that sometimes fail. Like `qd`, it leaves browser tests out: `qd flaky browser` runs only them, and `qd flaky all` everything.
+- `qd bisect test/user.test.rb:12` takes the last run where that test failed and replays the tests that ran before it in the same worker, in halves, to find which one it depends on.
 
 ## Coverage
 
-`qt --coverage` measures which lines, branches and methods your tests run, across every worker. It shows totals, changed lines that no test ran, the least covered files and files no test loaded. It also writes these to `.quickdraw/coverage/`:
+`qd --coverage` measures which lines, branches and methods your tests run, across every worker. It shows totals, changed lines that no test ran, the least covered files and files no test loaded. It also writes these to `.quickdraw/coverage/`:
 
 - `index.html`, a report with a page for each file;
 - `lcov.info`, for editors and coverage services;
 - `coverage.json`.
 
-A coverage run also records which source files each test file runs. `qt --changed` uses that to run only the tests affected by your uncommitted changes. Until there's been a coverage run, it runs each changed file's tests by name. Coverage only measures the tests that run, so `qt all --coverage` maps browser tests too. Like `qt`, `qt --changed` leaves out browser tests, except those whose own files changed; `qt all --changed` runs every affected test.
+A coverage run also records which source files each test file runs. `qd --changed` uses that to run only the tests affected by your uncommitted changes. Until there's been a coverage run, it runs each changed file's tests by name. Coverage only measures the tests that run, so `qd all --coverage` maps browser tests too. Like `qd`, `qd --changed` leaves out browser tests, except those whose own files changed; `qd all --changed` runs every affected test.
 
 ## Mutation testing
 
-Coverage says which code your tests run, not whether they check it. `qt mutate` changes your code in small ways, one at a time, and runs the tests that run each change. If none fails, the change survives, and the tests don't notice that line being wrong:
+Coverage says which code your tests run, not whether they check it. `qd mutate` changes your code in small ways, one at a time, and runs the tests that run each change. If none fails, the change survives, and the tests don't notice that line being wrong:
 
 ```sh
-qt mutate                      # the lines changed since the last commit
-qt mutate --base origin/main   # the lines changed since this branched from main
-qt mutate lib/cart.rb          # a file, or a directory
-qt mutate lib/cart.rb:12-20    # some of its lines
+qd mutate                      # the lines changed since the last commit
+qd mutate --base origin/main   # the lines changed since this branched from main
+qd mutate lib/cart.rb          # a file, or a directory
+qd mutate lib/cart.rb:12-20    # some of its lines
 ```
 
 ```
@@ -278,11 +278,11 @@ Mutation score 90% · 18 killed · 2 survived
   - Calls: methods such as `select` to `reject`, `first` to `last`, `map` to `each` or `is_a?` to `instance_of?`; dropping a call that changes its receiver (`name.strip` to `name`), a block, an argument the method doesn't need, or `&.`'s check for nil; `fetch(key)` to `[key]`; `super(a)` and `super` to `super()`, and `yield(a)` to `yield`.
   - Control flow: removing a statement, a `when` or `in` branch, a `return`, `next` or `break` value, or a modifier `rescue`; doing nothing in a `rescue` or `ensure`; and replacing a method's body with `nil`.
   - Not changes that can't make a difference, such as `x + 0` to `x - 0`, `map` to `each` where the value isn't used, or dropping `to_s` in interpolation, and not changes that could only raise, such as removing an argument the method requires, or a block `tap` needs.
-- **Which tests:** the test files that run a file, from the last `qt --coverage` run, or else its counterpart by name. Those run once unchanged, tracing which lines of the changed methods each test runs, so each change runs only the tests that reach it, fastest first, and stops at the first failure. Tests that fail without changes don't count, and changes no test reaches aren't run, but are listed by line.
+- **Which tests:** the test files that run a file, from the last `qd --coverage` run, or else its counterpart by name. Those run once unchanged, tracing which lines of the changed methods each test runs, so each change runs only the tests that reach it, fastest first, and stops at the first failure. Tests that fail without changes don't count, and changes no test reaches aren't run, but are listed by line.
 - **Safely:** your files never change. Config boots once, and each change is made by redefining its method in a process forked for it, which exits when its tests finish. A change that makes tests run three times as long as they did (plus half a second) is taken to loop forever, and counts as noticed.
 - **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs. On GitHub Actions, each surviving change, and each test that fails `--unique-kills`, is also an error annotation on its line, so it shows in the pull request's diff.
-- **Only what changed runs again:** a mutant's outcome is kept in `.quickdraw/mutants.json`, and reused while nothing it depends on has changed: its file, the test files that run it, the files those tests ran in the last `qt --coverage` run, `Gemfile.lock` and `config/quickdraw.rb`. So after you add a test for a survivor, only the mutants that test file runs are tried again. `--no-cache` runs every mutant.
-- **Survivors** have ids that stay the same while their method's code does, since they don't include line numbers. For agents, each survivor is one line with its id, and `qt mutate --show ID` shows its change and the tests that ran it (`--show all` lists them all again).
+- **Only what changed runs again:** a mutant's outcome is kept in `.quickdraw/mutants.json`, and reused while nothing it depends on has changed: its file, the test files that run it, the files those tests ran in the last `qd --coverage` run, `Gemfile.lock` and `config/quickdraw.rb`. So after you add a test for a survivor, only the mutants that test file runs are tried again. `--no-cache` runs every mutant.
+- **Survivors** have ids that stay the same while their method's code does, since they don't include line numbers. For agents, each survivor is one line with its id, and `qd mutate --show ID` shows its change and the tests that ran it (`--show all` lists them all again).
 - **Which tests do the work:** `--matrix` runs every test that reaches each change, rather than stopping at the first failure, and lists **blind** tests, which ran changed code and noticed none of the changes, so they run code without checking it, and **redundant** tests, which only noticed changes another test noticed too. Since each change only runs the tests that reached its line, a blind test really did run the changed code. Redundancy is judged one test at a time, so remove redundant tests one at a time. It takes longer, since every test runs, but doesn't change the score.
 - **Equivalent changes:** some changes can't make a difference, such as `>` to `>=` where the two are never equal. Mark one with a comment on its line, naming the change as the output does and saying why, and it's left out of the score and listed as marked equivalent. A mark without a name covers every change on its line. Quickdraw warns about a mark with no reason, or one that matches no change.
 
@@ -292,7 +292,7 @@ Mutation score 90% · 18 killed · 2 survived
 
 ### On pull requests
 
-Mutation testing a whole suite is slow, but a pull request only needs its own changes tested. On CI, `qt mutate` with `--base` mutates just the lines the pull request changes, and runs just the tests that run them, which the coverage map from a `qt --coverage` run on the main branch says.
+Mutation testing a whole suite is slow, but a pull request only needs its own changes tested. On CI, `qd mutate` with `--base` mutates just the lines the pull request changes, and runs just the tests that run them, which the coverage map from a `qd --coverage` run on the main branch says.
 
 `--unique-kills` also checks the tests the pull request adds or changes: each must be the only test to notice some change, so every test earns its place. To judge them, it also runs the changes they reach outside the pull request's lines, which don't count towards the score. A test that checks something that can't be changed this way, such as a log line or a rendered page, can opt out with `test("renders the receipt", mutation: false) { … }`.
 
@@ -321,20 +321,20 @@ jobs:
           key: quickdraw-${{ github.sha }}
           restore-keys: quickdraw-
       - if: github.event_name == 'push'
-        run: bundle exec qt --coverage
+        run: bundle exec qd --coverage
       - if: github.event_name == 'pull_request'
-        run: bundle exec qt mutate --base origin/${{ github.base_ref }} --unique-kills
+        run: bundle exec qd mutate --base origin/${{ github.base_ref }} --unique-kills
 ```
 
-On a pull request in GitHub Actions, `--base` defaults to the branch it merges into, so `qt mutate --unique-kills` alone does the same.
+On a pull request in GitHub Actions, `--base` defaults to the branch it merges into, so `qd mutate --unique-kills` alone does the same.
 
 ## Profiling
 
-`qt --profile` samples tests as they run and lists the methods that take the most test time, and how many tests they run in. A method that takes a large share across most tests is a cost they share, such as a slow factory or setup hook, which you can fix once. `qt -t` lists the slowest tests and files.
+`qd --profile` samples tests as they run and lists the methods that take the most test time, and how many tests they run in. A method that takes a large share across most tests is a cost they share, such as a slow factory or setup hook, which you can fix once. `qd -t` lists the slowest tests and files.
 
 ## Timeline
 
-`qt --timeline` shows where workers' time went, for when they're less busy than they could be:
+`qd --timeline` shows where workers' time went, for when they're less busy than they could be:
 
 ```
 Timeline .quickdraw/timeline.html
@@ -464,14 +464,14 @@ Quickdraw.configure do |config|
 end
 ```
 
-Browser tests are slow, so `qt` leaves them out, unless you name them, and says how many files it left out. `qt browser` runs only them, and `qt all` runs everything; both take the same options and paths as `qt`. A plain `qt` still runs browser tests that are:
+Browser tests are slow, so `qd` leaves them out, unless you name them, and says how many files it left out. `qd browser` runs only them, and `qd all` runs everything; both take the same options and paths as `qd`. A plain `qd` still runs browser tests that are:
 
-- named by file, as in `qt test/system/signup.test.rb` or `test/system/signup.test.rb:4`, which is how a failure's rerun command names it. A directory or glob that includes browser tests doesn't count, so `qt test` leaves them out;
+- named by file, as in `qd test/system/signup.test.rb` or `test/system/signup.test.rb:4`, which is how a failure's rerun command names it. A directory or glob that includes browser tests doesn't count, so `qd test` leaves them out;
 - failing, with `--failed`;
 - in a browser `--browser firefox` asks for;
 - changed: with `--changed`, when its own file changed (not when it only runs changed code), and in watch mode, when it or its source file changed.
 
-`config.browser(…, by_default: true)` makes `qt` run them too, as `qt all` does. The summary, and `qt last`, say `Left out 5 browser test files · qt all runs them too`; JSON's `finish` event has `browser_files_left_out`, and on GitHub Actions it's a notice. `qt mutate`, `qt fuzz` and `qt bisect` are unchanged: the first two skip every group's tests, and `bisect` replays the test you give it. A `config.group(…, browser: true)` is treated as browser tests too.
+`config.browser(…, by_default: true)` makes `qd` run them too, as `qd all` does. The summary, and `qd last`, say `Left out 5 browser test files · qd all runs them too`; JSON's `finish` event has `browser_files_left_out`, and on GitHub Actions it's a notice. `qd mutate`, `qd fuzz` and `qd bisect` are unchanged: the first two skip every group's tests, and `bisect` replays the test you give it. A `config.group(…, browser: true)` is treated as browser tests too.
 
 Browser tests run in a group of their own (see Configuration). Each worker's browser needs a core of its own, so a browser test's worker counts as two of the run's cores (`config.browser(…, cores: 1)` to count it as one), and since browser tests are usually the slowest, they get workers first, before history says how long they take, rather than holding up the end of the run.
 
@@ -481,9 +481,9 @@ To run every browser test in several browsers, give `browsers:` instead of `brow
 config.browser("test/system/**/*.test.rb", browsers: [:chromium, :firefox, :webkit]) { Rails.application }
 ```
 
-Each test's name ends with the browser it ran in (`SignupTest › signs up [firefox]`), as do file lines, and JSON gives it as `variant`. Each browser's results are separate in history, so durations, flakiness, retries and quarantine are per browser, and `--failed` reruns a failure only in the browser it failed in. `qt test/system/signup.test.rb:4` runs that test in every browser; `--browser firefox` (repeatable) runs browser tests in just that one, as a failure's rerun command does; a browser config doesn't have runs nothing and fails. A failure's screenshot, HTML and console log go in `.quickdraw/browser/firefox/` and so on. `Quickdraw::Browser.browser_name` is the worker's browser.
+Each test's name ends with the browser it ran in (`SignupTest › signs up [firefox]`), as do file lines, and JSON gives it as `variant`. Each browser's results are separate in history, so durations, flakiness, retries and quarantine are per browser, and `--failed` reruns a failure only in the browser it failed in. `qd test/system/signup.test.rb:4` runs that test in every browser; `--browser firefox` (repeatable) runs browser tests in just that one, as a failure's rerun command does; a browser config doesn't have runs nothing and fails. A failure's screenshot, HTML and console log go in `.quickdraw/browser/firefox/` and so on. `Quickdraw::Browser.browser_name` is the worker's browser.
 
-`qt browser install` installs Playwright and config's browsers (or the ones you name: `qt browser install firefox webkit`), and `qt doctor` checks they're there. Tests never download anything.
+`qd browser install` installs Playwright and config's browsers (or the ones you name: `qd browser install firefox webkit`), and `qd doctor` checks they're there. Tests never download anything.
 
 ```ruby
 class SignupTest < Quickdraw::Test
@@ -505,15 +505,15 @@ end
 - **Waiting assertions:** `assert_text` and `refute_text` (a String or Regexp, `within:` a selector or locator), and `assert_selector` and `refute_selector` (with `text:` or `count:`) wait, in Node, for the page to match. A browser test that calls `sleep` gets a warning, and the summary counts them.
 - **Failures:** a failed or errored test's screenshot, HTML and console log are saved in `.quickdraw/browser/`, and their paths are shown with it. A test that fails only for making no assertions has none, as its page has closed by then.
 - **Options:** `browser: "firefox"` or `"webkit"` (or `browsers:`, above), `headless: false`, `timeout:` in seconds for actions and assertions (5 by default), `port:` for a fixed port (plus the worker's number) rather than any free one, and `launch:` and `context:` options for Playwright's `launch` and `newContext`.
-- **Where Playwright comes from:** the project's own `node_modules/playwright-core` or `node_modules/playwright` if there is one, else the one `qt browser install` put in your cache directory (or `QUICKDRAW_BROWSERS_PATH`, such as a directory CI caches). `QUICKDRAW_PLAYWRIGHT` names another package, and `QUICKDRAW_NODE` another Node. Browsers go where Playwright keeps them (`PLAYWRIGHT_BROWSERS_PATH`).
+- **Where Playwright comes from:** the project's own `node_modules/playwright-core` or `node_modules/playwright` if there is one, else the one `qd browser install` put in your cache directory (or `QUICKDRAW_BROWSERS_PATH`, such as a directory CI caches). `QUICKDRAW_PLAYWRIGHT` names another package, and `QUICKDRAW_NODE` another Node. Browsers go where Playwright keeps them (`PLAYWRIGHT_BROWSERS_PATH`).
 
 ## Commands
 
-- `qt init` sets a project up, with config and an example test.
-- `qt doctor` checks that the machine and project are ready, including for browser tests, and how long config takes to boot.
-- `qt all` runs every test, and `qt browser` only browser tests, which `qt` leaves out (see Browser testing).
-- `qt browser install` installs what `config.browser`'s tests need (see Browser testing). `qt browser --help` documents both.
-- `qt counterpart lib/user.rb` prints a source file's test, or a test's source file.
-- `qt mutate` finds code the tests run but don't check (see Mutation testing).
-- `qt fuzz` runs properties for longer, guided by the code their cases reach (see Fuzzing).
-- `qt completions zsh` prints shell completions, for bash, zsh or fish.
+- `qd init` sets a project up, with config and an example test.
+- `qd doctor` checks that the machine and project are ready, including for browser tests, and how long config takes to boot.
+- `qd all` runs every test, and `qd browser` only browser tests, which `qd` leaves out (see Browser testing).
+- `qd browser install` installs what `config.browser`'s tests need (see Browser testing). `qd browser --help` documents both.
+- `qd counterpart lib/user.rb` prints a source file's test, or a test's source file.
+- `qd mutate` finds code the tests run but don't check (see Mutation testing).
+- `qd fuzz` runs properties for longer, guided by the code their cases reach (see Fuzzing).
+- `qd completions zsh` prints shell completions, for bash, zsh or fish.

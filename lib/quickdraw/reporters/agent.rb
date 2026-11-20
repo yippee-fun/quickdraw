@@ -22,7 +22,7 @@ class Quickdraw::Reporters::Agent
 	# `kept` says, once the run finishes, whether it was kept for `quickdraw
 	# last`, which has the details. `replay` is for `quickdraw last`, which
 	# has only the results with problems, so not a profile or coverage.
-	# `command` runs the run's tests again, such as `qt browser`.
+	# `command` runs the run's tests again, such as `qd browser`.
 	def initialize(io: $stdout, backtrace: false, kept: nil, replay: false, command: Quickdraw::Reporters.command)
 		@io = io
 		@command = command
