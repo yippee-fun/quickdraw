@@ -87,7 +87,10 @@ class Quickdraw::Watch
 	# came during the last run make one run too.
 	private def changed(line)
 		paths = line.chomp.split("\0")
-		paths.concat(@file_watcher.gets.chomp.split("\0")) while @file_watcher.wait_readable(0)
+		# At its end, the next select finds the watcher stopped.
+		while @file_watcher.wait_readable(0) && (more = @file_watcher.gets)
+			paths.concat(more.chomp.split("\0"))
+		end
 		# What the default selection leaves out, such as installed gems, never runs.
 		paths = paths.uniq.grep_v(Quickdraw::CLI::IGNORED_DIRECTORIES).grep_v(WRITTEN_BY_TESTS)
 		return if paths.empty?

@@ -42,8 +42,8 @@ class Quickdraw::Reporters::GitHubActions
 		@problems.first(ANNOTATION_LIMIT).each { |problem| annotate(*problem) }
 
 		@leaks.first(LEAK_LIMIT).each do |path, test, leaks|
-			message = leaks.map { |leak| leak["message"] }.join("\n")
-			@io.puts "::warning file=#{property(path)},line=#{test['line']},title=#{property("#{name_of(test)} left state behind")}::#{data(message)}"
+			message = leaks.map { |leak| plain(leak["message"]) }.join("\n")
+			@io.puts "::warning file=#{property(path)},line=#{test['line']},title=#{property("#{plain(name_of(test))} left state behind")}::#{data(message)}"
 		end
 
 		write_summary(outcome) if @summary_path && !@summary_path.empty?
@@ -51,7 +51,7 @@ class Quickdraw::Reporters::GitHubActions
 
 	private def annotate(path, test, result)
 		file, line = location(path, test, result)
-		title = test ? name_of(test) : "#{with_variant(path, result['variant'])} could not be loaded"
+		title = test ? plain(name_of(test)) : "#{with_variant(path, result['variant'])} could not be loaded"
 
 		if result["quarantined"]
 			@io.puts "::warning file=#{property(file)},line=#{line},title=#{property("#{title} (quarantined)")}::#{data("#{message(result)}\n\n#{QUARANTINED}")}"
@@ -95,7 +95,7 @@ class Quickdraw::Reporters::GitHubActions
 		if @problems.any?
 			lines << ""
 			@problems.each do |path, test, result|
-				lines << "- `#{test ? "#{path}:#{test['line']}" : path}` #{test ? name_of(test) : with_variant('could not be loaded', result['variant'])}#{' (quarantined)' if result['quarantined']}#{' (flaky)' if result['passed_on_retry'] && !result['quarantined']}"
+				lines << "- `#{test ? "#{path}:#{test['line']}" : path}` #{test ? plain(name_of(test)).gsub(/\s*\n\s*/, ' ') : with_variant('could not be loaded', result['variant'])}#{' (quarantined)' if result['quarantined']}#{' (flaky)' if result['passed_on_retry'] && !result['quarantined']}"
 			end
 		end
 

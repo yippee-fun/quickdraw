@@ -610,7 +610,7 @@ class Quickdraw::Reporters::Human
 	end
 
 	private def clean(text)
-		@color ? text.scrub : plain(text)
+		@color ? Quickdraw.utf8(text) : plain(text)
 	end
 
 	# Dark text on a coloured background, or just the text without colour.

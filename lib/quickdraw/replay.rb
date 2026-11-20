@@ -140,8 +140,12 @@ class Quickdraw::Replay
 		end
 
 		header = report.read(4)
-		data = report.read(header.unpack1("N")) if header&.bytesize == 4
-		Marshal.load(data) if data
+		return unless header&.bytesize == 4
+
+		size = header.unpack1("N")
+		data = report.read(size)
+		# Short if the loader died while writing.
+		Marshal.load(data) if data&.bytesize == size
 	ensure
 		report.close
 	end

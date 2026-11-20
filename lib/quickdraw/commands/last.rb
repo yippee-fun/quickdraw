@@ -32,7 +32,8 @@ class Quickdraw::Commands::Last
 		in "--list" then agent.print_list
 		in /\A-/ then return usage
 		in target
-			path, line = target.match(/\A(.+?)(?::(\d+))?\z/).captures
+			match = target.match(/\A(.+?)(?::(\d+))?\z/) or return usage
+			path, line = match.captures
 
 			if agent.print_details(relative(File.expand_path(path)), line&.to_i) == 0
 				warn "The last run had no problem at #{target}."

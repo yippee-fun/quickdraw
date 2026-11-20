@@ -24,7 +24,7 @@ module Quickdraw::Changes
 	# deleted after line n, and no others, count as n + 0.5.
 	def lines(base: nil, deletions: false)
 		untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", "*.rb") or return
-		diff = git("diff", since(base), "--relative", "--unified=0", "--no-color", "--no-ext-diff", "--", "*.rb")
+		diff = git("diff", since(base), "--relative", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--", "*.rb")
 		# Before the first commit, staged files are new in full.
 		untracked = "#{untracked}#{staged('*.rb')}" unless diff
 		diff ||= ""

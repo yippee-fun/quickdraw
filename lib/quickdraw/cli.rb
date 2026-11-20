@@ -739,10 +739,14 @@ class Quickdraw::CLI
 	# sqlite3 must not reach it.
 	private def failing
 		result = Quickdraw.isolate do
-			history = Quickdraw::History.new(HISTORY_PATH)
+			next [[], []] unless Quickdraw::History.exist?(HISTORY_PATH)
+
+			history = Quickdraw::History.new(HISTORY_PATH, read_only: true)
 			[history.failing_tests, history.unloadable_files]
 		rescue Quickdraw::History::Error => error
 			error.message
+		ensure
+			history&.close
 		end
 
 		case result

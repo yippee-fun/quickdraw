@@ -116,6 +116,7 @@ class ConcurrencyTest < Quickdraw::Test
 
 		assert_equal unshareable.sort, [
 			"Quickdraw::Config",
+			"Quickdraw::CoverageCollector::MODULE_INSPECT",
 			"Quickdraw::Fuzz::Edges::INSTANCE_METHOD",
 			"Quickdraw::Fuzz::Edges::INSTANCE_METHODS",
 			"Quickdraw::Fuzz::Edges::PRIVATE_INSTANCE_METHODS",

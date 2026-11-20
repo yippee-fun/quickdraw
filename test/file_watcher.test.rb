@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require_relative "../lib/quickdraw/file_watcher"
 
 class FileWatcherTest < Quickdraw::Test
 	# Starts the watcher on `directory`, and returns it and its warnings.
@@ -83,6 +84,30 @@ class FileWatcherTest < Quickdraw::Test
 			end
 
 			assert_equal changed, ["a.rb", "lib/sedatives", "lib/tmp/a.rb"]
+		end
+	end
+
+	test "ignores names that aren't valid UTF-8 as it would valid ones" do
+		ignores = Quickdraw::FileWatcher::Ignores.new([])
+
+		refute ignores === "lib/caf\xE9.rb"
+		assert ignores === "tmp/caf\xE9.rb"
+		assert ignores === "lib/.caf\xE9.rb.swp"
+	end
+
+	{ "from the OS" => false, "by polling" => true }.each do |how, poll|
+		test "reports names that aren't valid UTF-8, #{how}", timeout: 20 do
+			directory = tmpdir
+
+			begin
+				write(directory, "lib/caf\xE9.rb")
+			rescue Errno::EILSEQ
+				skip "This file system only allows UTF-8 names."
+			end
+
+			watcher, = start(directory, poll:)
+
+			assert_equal changes(watcher, ["lib/caf�.rb"]) { write(directory, "lib/caf\xE9.rb", "1") }, ["lib/caf�.rb"]
 		end
 	end
 

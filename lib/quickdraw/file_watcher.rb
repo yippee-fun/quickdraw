@@ -20,9 +20,12 @@ module Quickdraw::FileWatcher
 		| (?:\..*\d+\.new|\.kate-swp|\.goutputstream-.{6}|___jb_(?:bak|old)___|\.swpx|\.sw[px]|\.mutagen-temporary.*|\.DS_Store|\.tmp|~)\z
 	/x
 
-	# Directories end with a slash.
+	# Directories end with a slash. Names needn't be valid UTF-8.
 	Ignores = Data.define(:paths) do
-		def ===(path) = SKIPPED.match?(path) || SCRATCH.match?(File.basename(path)) || paths.include?(path)
+		def ===(path)
+			path = path.scrub
+			SKIPPED.match?(path) || SCRATCH.match?(File.basename(path)) || paths.include?(path)
+		end
 	end
 
 	def run(ignored)
@@ -38,7 +41,7 @@ module Quickdraw::FileWatcher
 			changes = batch(watcher)
 
 			if changes.any?
-				puts changes.uniq.join("\0")
+				puts changes.map(&:scrub).uniq.join("\0")
 			elsif Process.ppid != parent
 				return
 			end

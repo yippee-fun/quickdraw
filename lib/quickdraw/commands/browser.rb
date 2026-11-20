@@ -127,7 +127,11 @@ class Quickdraw::Commands::Browser
 				in Net::HTTPSuccess
 					return block ? response.read_body(&block) : response.body
 				in Net::HTTPRedirection if redirects > 0
-					return fetch(URI.join(url, response["location"]).to_s, redirects: redirects - 1, &block)
+					location = response["location"] or raise Failure, "Couldn’t download #{url}: #{response.code} #{response.message} without a Location."
+					target = URI.join(url, location)
+					raise Failure, "Couldn’t download #{url}: it redirects to #{target}, which isn’t HTTPS." if uri.scheme == "https" && target.scheme != "https"
+
+					return fetch(target.to_s, redirects: redirects - 1, &block)
 				else
 					raise Failure, "Couldn’t download #{url}: #{response.code} #{response.message}."
 				end

@@ -24,7 +24,7 @@ class Quickdraw::Reporters::JSON
 			"event" => "test",
 			"path" => path,
 			"line" => test["line"],
-			"name" => name_of(test),
+			"name" => plain(name_of(test)),
 			"variant" => test["variant"],
 			"status" => Quickdraw::Outcome.status(result),
 			"skip_reason" => result.dig("skipped", "reason"),
@@ -34,7 +34,7 @@ class Quickdraw::Reporters::JSON
 			"failures" => result["failures"].map { |failure| failure.merge("message" => plain(failure["message"]), "path" => relative(failure["path"])) },
 			"errors" => result["errors"].map { |error| serialize_error(error) },
 			"output" => result["output"]&.then { |output| plain(output) },
-			"leaks" => result["leaks"],
+			"leaks" => result["leaks"]&.map { |leak| leak.merge("message" => plain(leak["message"])) },
 			"passed_on_retry" => result["passed_on_retry"],
 			"quarantined" => !!result["quarantined"],
 			"flake" => result["flake"],
@@ -81,12 +81,13 @@ class Quickdraw::Reporters::JSON
 		{
 			"name" => error["name"],
 			"message" => plain(error["message"]),
-			"backtrace" => user_backtrace(error["backtrace"]).map { |frame| relative(frame) },
+			"backtrace" => user_backtrace(error["backtrace"]).map { |frame| relative(Quickdraw.utf8(frame)) },
 			"details" => error["details"]&.then { |details| relative_paths(plain(details)) },
 		}.compact
 	end
 
 	private def emit(event)
 		@io.puts ::JSON.generate(event)
+		@io.flush
 	end
 end
