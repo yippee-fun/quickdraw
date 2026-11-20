@@ -420,6 +420,64 @@ class BrowserTest < Quickdraw::Test
 		assert_includes result.output, "Quickdraw::Browser::MissingGem: The browser group’s setup failed: config.browser needs puma, to serve the app, which isn’t installed. Add it to the Gemfile’s test group."
 	end
 
+	OLD_PUMA = {
+		"fake/puma.rb" => "require 'puma/const'\n",
+		"fake/puma/const.rb" => "module Puma; module Const; PUMA_VERSION = '6.6.1'; end; end\n",
+	}.freeze
+
+	def old_puma_env(project) = { "RUBYOPT" => "-I#{File.join(project.directory, 'fake')}" }
+
+	test "says when Puma is older than 7", timeout: 20 do
+		project = app("chromium", **OLD_PUMA, "test/browser/page.test.rb" => <<~RUBY)
+			class PageTest < Quickdraw::Test
+				include Quickdraw::Browser
+				test("opens") { page }
+			end
+		RUBY
+
+		result = run_quickdraw(project, "-p", "1", env: old_puma_env(project))
+
+		refute result.success?
+		assert_includes result.output, "Quickdraw::Browser::MissingGem: The browser group’s setup failed: config.browser needs Puma 7 or later, to serve the app, but this is Puma 6.6.1. Update it in the Gemfile."
+
+		doctor = project.run("doctor", env: old_puma_env(project))
+
+		assert_equal doctor.status.exitstatus, 1
+		assert_match doctor.stdout, /^  ✗ Browser +config\.browser needs Puma 7 or later, to serve the app, but this is Puma 6\.6\.1\.\n +Update it in the Gemfile\.$/
+	end
+
+	test "a page call a Timeout interrupts leaves the page working, and the test's error stands", timeout: 40 do
+		result = run_browser("chromium", app("chromium", "test/browser/interrupt.test.rb" => <<~RUBY), "-p", "1", "--seed", "1", "--retry", "0")
+			require "timeout"
+
+			class InterruptTest < Quickdraw::Test
+				include Quickdraw::Browser
+
+				def slow_evaluate = Timeout.timeout(0.1) { page.evaluate("new Promise((resolve) => setTimeout(resolve, 1000))") }
+
+				test("carries on") do
+					visit "/"
+					assert_raises(Timeout::Error) { slow_evaluate }
+					assert_equal page.evaluate("1 + 1"), 2
+				end
+
+				test("errors") do
+					visit "/"
+					slow_evaluate
+				end
+
+				test("next") do
+					visit "/"
+					assert_text "Hello"
+				end
+			end
+		RUBY
+
+		match { result => { summary: /\A3 tests · \d+ assertions · 1 errored/ } }
+		assert_includes result.output, "Timeout::Error: execution expired"
+		refute_includes result.output, "answered"
+	end
+
 	test "doctor says what browser tests are missing", timeout: 20 do
 		config = { "a.test.rb" => "", "config/quickdraw.rb" => "Quickdraw.configure { |config| config.browser('test/browser/**/*.test.rb', browser: 'webkit') }\n" }
 		without = project(**config).run("doctor", env: { "QUICKDRAW_PLAYWRIGHT" => nil, "QUICKDRAW_BROWSERS_PATH" => tmpdir })

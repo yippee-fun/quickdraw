@@ -15,6 +15,8 @@ module Quickdraw::Rails
 	autoload :JobHelpers, "quickdraw/rails/job_helpers"
 	autoload :MailerHelpers, "quickdraw/rails/mailer_helpers"
 
+	MINIMUM_RAILS = "7.2"
+
 	def setup(config, environment:, fixtures:, fixture_paths:)
 		config.before_forking { boot(environment, fixtures:, fixture_paths:) }
 		config.after_forking { start_worker }
@@ -43,6 +45,11 @@ module Quickdraw::Rails
 	def boot(environment, fixtures:, fixture_paths:)
 		ENV["RAILS_ENV"] ||= "test"
 		require File.expand_path(environment)
+
+		# For pin_connection! and lease_connection.
+		if ::Rails.gem_version < Gem::Version.new(MINIMUM_RAILS)
+			raise "config.rails needs Rails #{MINIMUM_RAILS} or later, and this is Rails #{::Rails.gem_version}."
+		end
 
 		unless defined?(ActiveRecord::Base)
 			raise "Fixtures need Active Record." if fixtures

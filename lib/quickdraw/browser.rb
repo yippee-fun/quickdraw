@@ -37,8 +37,8 @@ module Quickdraw::Browser
 	# Raised in each browser test when the worker's browser couldn't start.
 	class Unavailable < StandardError; end
 
-	# Raised when the browser group boots without Puma, which isn't one of
-	# Quickdraw's dependencies, since only browser tests need it.
+	# Raised when the browser group boots without Puma 7 or later, which isn't
+	# one of Quickdraw's dependencies, since only browser tests need it.
 	class MissingGem < StandardError; end
 
 	# Each browser test's worker has a browser beside it, which needs a core of
@@ -83,6 +83,15 @@ module Quickdraw::Browser
 	# Why browser tests can't serve the app, and how to fix it, as two sentences.
 	MISSING_PUMA = ["config.browser needs puma, to serve the app, which isn’t installed.", "Add it to the Gemfile’s test group."].freeze
 
+	# Server needs rack.response_finished, which Puma calls from 7.0.
+	MINIMUM_PUMA = "7"
+
+	# Why the loaded Puma can't serve the app, as two sentences, or nil.
+	def self.old_puma
+		version = Puma::Const::PUMA_VERSION
+		["config.browser needs Puma #{MINIMUM_PUMA} or later, to serve the app, but this is Puma #{version}.", "Update it in the Gemfile."] if Gem::Version.new(version) < Gem::Version.new(MINIMUM_PUMA)
+	end
+
 	# In the browser group's loader, once config has booted, so the app has too.
 	def self.prepare(app:, browser: "chromium", headless: true, timeout: 5, port: 0, launch: {}, context: {}, artifacts: ARTIFACTS)
 		browser = browser.to_s
@@ -94,6 +103,9 @@ module Quickdraw::Browser
 			rescue LoadError
 				raise MissingGem, MISSING_PUMA.join(" ")
 			end
+
+			old_puma = self.old_puma
+			raise MissingGem, old_puma.join(" ") if old_puma
 
 			# Before the app boots. Puma would default it to development.
 			ENV["RACK_ENV"] ||= "test"

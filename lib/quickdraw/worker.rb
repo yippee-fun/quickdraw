@@ -669,16 +669,35 @@ class Quickdraw::Worker
 	# Another thread's debugger waits its turn. Not a Mutex, as the debug gem
 	# gives the terminal back from another thread.
 	def take_terminal(holder)
-		@terminal_turn.pop
-		@watchdog&.pause
-		@channel.write([:debugging])
-		message = @channel.read
-		raise "Expected the coordinator to give this worker the terminal, but got #{message.inspect}." unless message == [:debug]
+		Thread.handle_interrupt(Object => :never) do
+			# Interrupts are taken between waits, so never with the turn, which
+			# an interruptible pop can take on some engines before raising.
+			until @terminal_turn.pop(timeout: 0.1)
+				Thread.handle_interrupt(Object => :immediate) { nil } if Thread.pending_interrupt?
+			end
 
-		# Capture is off while a file loads, and stays off.
-		@capture_after_debugger = @capture&.capturing?
-		@capture&.stop
-		@terminal_holder = holder
+			begin
+				@watchdog&.pause
+				@channel.write([:debugging])
+				message = @channel.read
+				raise "Expected the coordinator to give this worker the terminal, but got #{message.inspect}." unless message == [:debug]
+			rescue Exception
+				@watchdog&.resume
+				@terminal_turn << true
+				raise
+			end
+
+			# Capture is off while a file loads, and stays off.
+			@capture_after_debugger = @capture&.capturing?
+			@capture&.stop
+			@terminal_holder = holder
+
+			# Given back first, as the debug gem's caller has no ensure.
+			if Thread.pending_interrupt?
+				give_back_terminal
+				Thread.handle_interrupt(Object => :immediate) { nil }
+			end
+		end
 	end
 
 	def give_back_terminal

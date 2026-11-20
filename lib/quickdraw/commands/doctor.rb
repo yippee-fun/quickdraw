@@ -151,8 +151,12 @@ class Quickdraw::Commands::Doctor
 	# and each browser.
 	private def readiness
 		# A group with a Gemfile of its own has gems this bundle doesn't.
-		if @browser[:app] && !@browser[:gemfile] && Gem.find_files("puma.rb").empty?
-			return [Check.new(:problem, "Browser", *Quickdraw::Browser::MISSING_PUMA)]
+		if @browser[:app] && !@browser[:gemfile]
+			return [Check.new(:problem, "Browser", *Quickdraw::Browser::MISSING_PUMA)] if Gem.find_files("puma.rb").empty?
+
+			require "puma/const"
+			old_puma = Quickdraw::Browser.old_puma
+			return [Check.new(:problem, "Browser", *old_puma)] if old_puma
 		end
 
 		playwright = Quickdraw::Browser::Executables.playwright
