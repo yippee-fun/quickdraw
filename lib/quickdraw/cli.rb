@@ -23,6 +23,9 @@ class Quickdraw::CLI
 			exit(command.new(@args.drop(1)).call)
 		end
 
+		# Before parsing takes the options out, for the last run's report.
+		@command_line = [Quickdraw::Reporters.command, *@args.map { |argument| argument.match?(%r{\A[\w./:=@%+,-]+\z}) ? argument : argument.inspect }].join(" ")
+
 		# optparse, etc and anything else needed to parse options load in a
 		# throwaway process so they don’t leak into the processes that run tests.
 		options = Quickdraw.isolate { parse }
@@ -565,8 +568,8 @@ class Quickdraw::CLI
 			whole_files:,
 			profile: options[:profile],
 			coverage: options[:coverage],
-			# A live display gets what loading prints too, so it isn't written over.
-			capture: (options[:capture] && reporter.live?) ? :loading : options[:capture],
+			# What loading prints goes through the reporter, so it isn't mixed into its lines.
+			capture: (options[:capture] && reporter.shows_loading_output?) ? :loading : options[:capture],
 			leaks: (options[:leaks].to_sym unless options[:leaks] == "off"),
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
@@ -587,12 +590,15 @@ class Quickdraw::CLI
 			io = path ? File.open(path, "w") : $stdout
 
 			case format
-			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings], live: options[:capture])
+			in "human" then Quickdraw::Reporters::Human.new(io:, backtrace: options[:backtrace], timings: options[:timings])
 			in "agent" then Quickdraw::Reporters::Agent.new(io:, backtrace: options[:backtrace])
 			in "json" then Quickdraw::Reporters::JSON.new(io:)
 			in "junit" then Quickdraw::Reporters::JUnit.new(io:)
 			end
 		end
+
+		# For `quickdraw last`, which needs the history's directory.
+		reporters << Quickdraw::Reporters::LastRun.new(command: @command_line) if options[:history]
 
 		# Annotations go to the terminal.
 		reporters << Quickdraw::Reporters::GitHubActions.new if Quickdraw::Reporters::GitHubActions.active? && !machine_readable?(options)

@@ -2,7 +2,7 @@
 
 # Lets a test stop in a debugger during a parallel run. Before the debugger
 # reads from the terminal, the worker asks the coordinator for it, which gives
-# it to one worker at a time and pauses the live display; the worker stops
+# it to one worker at a time and holds the reporter's output; the worker stops
 # capturing output and pauses the test's timeout until the debugger is done.
 #
 # irb and pry return once they exit, so they hold the terminal for the call.

@@ -41,7 +41,7 @@ class ElasticWorkersTest < Quickdraw::Test
 	# whatever the starting count, which follows the machine's cores.
 	test "adds workers in new slots while tests wait and CPU is idle", timeout: 40 do
 		project = waiting(files: 8, tests: 40)
-		result = run_with_iostat(project, "--no-history", "--elastic", "--timeline")
+		result = run_with_iostat(project, "--no-history", "--elastic", "--timeline", "--timings")
 
 		assert result.success?
 		workers, started, added = result.stdout.match(/^    Workers  (\d+) \((\d+) default, (\d+) added as tests waited\)/).captures.map { |count| Integer(count) }

@@ -15,46 +15,37 @@ module Integration
 		def success? = status.success?
 	end
 
+	# A run's verdict, then its counts, from the human summary.
+	VERDICT = /^(?:PASSED|FAILED|INTERRUPTED)  (.*)$/
+
 	# Each run's summary (see .summary), for watch mode's many runs.
 	def self.summaries(output)
-		output.delete("\r").split(/^(?= +Test files  )/).filter_map { |part| summary(part) }
+		output.delete("\r").scan(VERDICT).map { |(counts)| normalize(counts) }
 	end
 
-	# The order and wording of the counts in a Result's summary.
-	SUMMARY_COUNTS = ["failed", "flaky (allowed)", "flaky", "skipped", "pending", "errored", "not run"].freeze
-
-	# From the last summary's Tests, Test files, Assertions and Duration rows,
-	# or nil. The live block uses the same labels, but has no Assertions row.
+	# The last summary's counts, or nil: "3 tests · 3 assertions · 1 failed · 0.07s".
 	def self.summary(output)
-		# Terminals end lines with \r\n.
-		output = output.delete("\r")
-		start = output.rindex(/^ +Test files  /) or return
-		output = output[start..]
-		return unless output.match?(/^ +Assertions  /)
+		counts = output.delete("\r").scan(VERDICT).last or return
+		normalize(counts.first)
+	end
 
-		tests_row = output[/^ +Tests  (.*\(\d+\))$/, 1] or return
-		files_row = output[/^ +Test files  (.*)$/, 1]
-		tests = Integer(tests_row[/\((\d+)\)\z/, 1])
-		# Files that failed to load count as errored, as they did in one line.
-		errored = tests_row[/(\d+) errored/, 1].to_i + files_row[/(\d+) failed to load/, 1].to_i
+	# Files that failed to load count as errored, as they did before the
+	# summary listed them apart.
+	def self.normalize(counts)
+		parts = counts.delete(",").split(" · ")
+		failed_to_load = parts.find { |part| part.end_with?("failed to load") }
+		return parts.join(" · ") unless failed_to_load
 
-		counts = SUMMARY_COUNTS.filter_map do |name|
-			count = (name == "errored") ? (errored if errored > 0) : tests_row[/(\d+) #{Regexp.escape(name)}(?= ·| \(|\z)/, 1]
-			"#{count} #{name}" if count
+		parts.delete(failed_to_load)
+		files = Integer(failed_to_load[/\A\d+/])
+
+		if (index = parts.index { |part| part.end_with?(" errored") })
+			parts[index] = "#{Integer(parts[index][/\A\d+/]) + files} errored"
+		else
+			parts.insert(parts.index { |part| part.match?(/not run|not loaded|without assertions|\A[\d.]+s\z/) }, "#{files} errored")
 		end
 
-		unloaded = files_row[/(\d+) not loaded/, 1]
-		without = tests_row[/(\d+) without assertions/, 1]
-		assertions = Integer(output[/^ +Assertions  ([\d,]+)$/, 1].delete(","))
-
-		[
-			"#{tests} #{(tests == 1) ? 'test' : 'tests'}",
-			"#{assertions} #{(assertions == 1) ? 'assertion' : 'assertions'}",
-			*counts.uniq { |count| count.sub(" (allowed)", "") },
-			("#{unloaded} #{(unloaded == '1') ? 'file' : 'files'} not loaded" if unloaded),
-			("#{without} without assertions" if without),
-			output[/^ +Duration  ([\d.]+s)/, 1],
-		].compact.join(" · ")
+		parts.join(" · ")
 	end
 
 	class Project

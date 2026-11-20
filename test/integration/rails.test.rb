@@ -188,7 +188,7 @@ class RailsTest < Quickdraw::Test
 	end
 
 	test "counts each test's queries and factories", timeout: 30 do
-		result = app("test/counts.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "human", timeout: 30)
+		result = app("test/counts.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "human", "--timings", timeout: 30)
 			class CountsTest < Quickdraw::Test
 				2.times do |i|
 					test("queries \#{i}") do

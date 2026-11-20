@@ -120,17 +120,6 @@ class Quickdraw::Commands::History
 		[run.git_sha[0, 7], branch].compact.join(" ")
 	end
 
-	private def ago(elapsed)
-		elapsed = elapsed.clamp(0..)
-
-		case elapsed
-		in ...60 then "#{elapsed.floor}s ago"
-		in ...3600 then "#{(elapsed / 60).floor}m ago"
-		in ...86_400 then "#{(elapsed / 3600).floor}h ago"
-		else "#{(elapsed / 86_400).floor}d ago"
-		end
-	end
-
 	private def seconds(value)
 		Quickdraw::Timer::Duration.new(value * 1_000_000_000).to_s
 	end

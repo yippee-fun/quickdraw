@@ -56,8 +56,8 @@ class HistoryTest < Quickdraw::Test
 	test "estimates the worker count, then tunes it from history", timeout: 30 do
 		project = project("a.test.rb" => "class A < Quickdraw::Test; 10.times { |i| test(i.to_s) { assert true } }; end\n")
 
-		assert_includes project.run.output, "(estimated)"
-		assert_match project.run.output, /Workers  \d+ \((tuned|exploring)\)/
-		assert_includes project.run("-p", "2").output, "Workers  2 (manual)"
+		assert_includes project.run("--timings").output, "(estimated)"
+		assert_match project.run("--timings").output, /Workers  \d+ \((tuned|exploring)\)/
+		assert_includes project.run("-p", "2", "--timings").output, "Workers  2 (manual)"
 	end
 end

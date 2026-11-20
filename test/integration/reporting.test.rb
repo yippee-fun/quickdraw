@@ -5,25 +5,30 @@ require_relative "../support/integration"
 class ReportingTest < Quickdraw::Test
 	include Integration
 
-	test "exits successfully with a summary and a rerun command when everything passes", timeout: 20 do
-		result = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n").run("-p", "1", "--no-history", "--seed", "7")
+	test "exits successfully with a summary, and shows rerun commands only when the run fails", timeout: 20 do
+		passed = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n").run("-p", "1", "--seed", "7")
 
-		assert result.success?
-		match { result => { summary: /\A1 test · 1 assertion · / } }
-		assert_match result.output, /^    Workers  1 \(manual\)/
-		assert_match result.output, /^       Seed  7 · (bundle exec )?quickdraw --seed 7$/
+		assert passed.success?
+		match { passed => { summary: /\A1 test · 1 assertion · / } }
+		assert_match passed.output, /^PASSED  /
+		refute_includes passed.output, "--seed"
+
+		failed = project("a.test.rb" => "class A < Quickdraw::Test; test('a') { assert false }; end\n").run("-p", "1", "--seed", "7")
+
+		refute failed.success?
+		assert_match failed.output, /^  Rerun failures  (bundle exec )?quickdraw --failed\n  Same order      (bundle exec )?quickdraw --seed 7$/
 	end
 
-	test "compares the tests' time with the last run of the same tests", timeout: 30 do
+	test "compares the tests' time with the last run of the same tests with --timings", timeout: 30 do
 		project = project("a.test.rb" => "class A < Quickdraw::Test; 2.times { |i| test(\"t\#{i}\") { sleep Float(ENV['NAP']); assert true } }; end\n")
 
 		project.run("-p", "1", env: { "NAP" => "0.05" })
-		slower = project.run("-p", "1", "--format", "human", env: { "NAP" => "0.2" })
-		faster = project.run("-p", "1", "--format", "human", env: { "NAP" => "0.05" })
+		slower = project.run("-p", "1", "--format", "human", "--timings", env: { "NAP" => "0.2" })
+		faster = project.run("-p", "1", "--format", "human", "--timings", env: { "NAP" => "0.05" })
 
 		assert_match slower.output, /tests \d+% slower than the last run$/
 		assert_match faster.output, /tests \d+% faster than the last run$/
-		refute_match project.run("-p", "1", "--format", "human", "--no-history", env: { "NAP" => "0.2" }).output, /than the last run/
+		refute_match project.run("-p", "1", "--format", "human", "--timings", "--no-history", env: { "NAP" => "0.2" }).output, /than the last run/
 	end
 
 	test "reports failures with the failing line, then exits unsuccessfully", timeout: 20 do
@@ -66,8 +71,8 @@ class ReportingTest < Quickdraw::Test
 		RUBY
 
 		assert result.success?
-		assert_includes result.output, "○ pending  A › to write later  a.test.rb:2"
-		assert_includes result.output, "↷ skipped  A › skips — needs a network  a.test.rb:3"
+		assert_includes result.output, "  Pending  a.test.rb:2 A › to write later\n"
+		assert_includes result.output, "  Skipped  needs a network (1)\n"
 		match { result => { summary: /\A3 tests · 1 assertion · 1 skipped · 1 pending/ } }
 	end
 
@@ -80,11 +85,28 @@ class ReportingTest < Quickdraw::Test
 
 		human = project.run("-p", "1", "--no-history")
 		assert human.success?
-		assert_includes human.output, "↷ skipped  A › skips — caf�  a.test.rb:2"
+		assert_includes human.output, "  Skipped  caf� (1)\n"
 
 		json = project.run("-p", "1", "--no-history", "--format", "json")
 		assert json.success?
 		assert_includes json.output, %("skip_reason":"caf�")
+	end
+
+	test "groups skips by reason, the most common first, counting those without one", timeout: 20 do
+		project = project("a.test.rb" => <<~RUBY)
+			class A < Quickdraw::Test
+				test("a") { skip "needs a network" }
+				test("b") { skip "needs a network" }
+				test("c") { skip "" }
+				test("d") { skip }
+				test("e") { skip "needs a printer\\nand paper" }
+			end
+		RUBY
+
+		result = project.run("-p", "1", "--no-history")
+
+		assert result.success?
+		assert_includes result.output, "  Skipped  needs a network (2) · no reason given (2) · needs a printer (1)\n"
 	end
 
 	test "doesn't construct pending tests, and reports a constructor's error as the test's", timeout: 20 do
@@ -99,7 +121,7 @@ class ReportingTest < Quickdraw::Test
 			end
 		RUBY
 
-		assert_includes result.output, "○ pending  A › to write later  a.test.rb:6"
+		assert_includes result.output, "  Pending  a.test.rb:6 A › to write later\n"
 		assert_includes result.output, "✗ a.test.rb:7 A › runs"
 		assert_includes result.output, "RuntimeError: no fixtures"
 		match { result => { summary: /\A2 tests · 0 assertions · 1 pending · 1 errored/ } }

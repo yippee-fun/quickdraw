@@ -137,8 +137,8 @@ class Quickdraw::Worker
 	# `timeouts` is false where the worker shares a process with the coordinator,
 	# since timing out exits the worker's process. `profile` samples tests.
 	# `capture` attributes what tests print to them (see Capture), and with
-	# :loading also sends what loading a file prints, for a live display to show
-	# above itself rather than have it written over. `leaks` is :warn or :fail
+	# :loading also sends what loading a file prints, for the reporter to print
+	# whole, rather than mixed into its lines. `leaks` is :warn or :fail
 	# to check for state tests leave behind (see Leaks), or nil.
 	def initialize(channel, test_files, seed, timeouts: true, profile: false, coverage: false, capture: false, leaks: nil)
 		raise ArgumentError, "leaks must be :warn, :fail or nil, not #{leaks.inspect}" unless leaks in :warn | :fail | nil

@@ -140,11 +140,39 @@ qt --watch                 # run again when files change
 
 ## Output
 
-The output suits whoever is running the tests. On a terminal, failures print as they happen, and beneath them a live block shows the files being run and how many files and tests are done. It only shows counts, never estimates, so the total number of tests appears once every file has loaded. AI coding agents, which are detected automatically, get compact, complete problem reports instead. `--format` chooses one: `human`, `agent`, `json` or `junit`. Repeat it to write more than one, with all but one going to a file:
+The output suits whoever is running the tests. For people, each test file gets a line as it finishes, with its count, time and any problems, which follow in full. Nothing is redrawn, so it reads the same in a terminal as in a CI log. The summary at the end leads with PASSED or FAILED and the counts, lists each problem on a line, says how to rerun them, and notes skips and anything slow in a line each. `--timings` adds the slowest tests and files, where test time goes, and how busy the workers were.
+
+```
+✓ test/calculator.test.rb   3 tests · 220.0μs · 1 pending
+✗ test/models/user.test.rb  3 tests · 325.0μs · 1 failed · 1 skipped
+
+FAIL greets  UserTest · test/models/user.test.rb:3
+…
+
+FAILED  6 tests · 4 assertions · 1 failed · 1 skipped · 1 pending · 0.04s
+
+  ✗ test/models/user.test.rb:3 UserTest › greets
+
+  Rerun failures  qt --failed
+  Same order      qt --seed 56282
+
+  Skipped  Mail server isn't running (1)
+  Pending  test/calculator.test.rb:4 CalculatorTest › divides
+```
+
+AI coding agents, which are detected automatically, get compact, complete problem reports instead. `--format` chooses one: `human`, `agent`, `json` or `junit`. Repeat it to write more than one, with all but one going to a file:
 
 ```sh
 qt --format human --format junit:reports/junit.xml
 ```
+
+Every run also keeps its agent report, so after you see a failure you can tell an agent the tests failed, and it can read what happened with one command, however the run was shown:
+
+```sh
+qt last
+```
+
+It starts with the command that was run and how long ago. Runs with `--no-history` aren't kept.
 
 Under GitHub Actions, failures are annotated and a summary is written for the job.
 

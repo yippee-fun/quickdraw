@@ -180,7 +180,7 @@ class BrowserTest < Quickdraw::Test
 			end
 
 			test "warns about and counts sleeps", timeout: 40 do
-				result = run_browser(browser, app(browser, "test/browser/page.test.rb" => <<~RUBY), "-p", "1", "--format", "human")
+				result = run_browser(browser, app(browser, "test/browser/page.test.rb" => <<~RUBY), "-p", "1", "--format", "human", "--timings")
 					class PageTest < Quickdraw::Test
 						include Quickdraw::Browser
 

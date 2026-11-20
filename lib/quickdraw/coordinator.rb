@@ -27,8 +27,8 @@ class Quickdraw::Coordinator
 	# whose tests are stuck where the watchdog can't stop them, in seconds.
 	LIVENESS_INTERVAL = 1
 
-	# How often reporters get a tick while nothing else happens, for live displays.
-	TICK_INTERVAL = 0.1
+	# How long the coordinator waits for a message before checking on workers anyway.
+	POLL_INTERVAL = 0.1
 
 	# How long past a test's timeout to wait for its watchdog before killing it.
 	TIMEOUT_GRACE = 5
@@ -340,7 +340,6 @@ class Quickdraw::Coordinator
 	def call
 		started_at = Time.now
 		@forking = Process.respond_to?(:fork)
-		@progress = -> { progress }
 		# A retry needs a fresh worker, which needs fork.
 		@retries = 0 unless @forking
 		@test_files = @unloaded.map(&:first)
@@ -386,7 +385,7 @@ class Quickdraw::Coordinator
 		@slot_count = @processes
 		@workers_added_at = []
 
-		@reporter.start(processes: @processes, worker_choice: @worker_choice, seed: @seed, estimate:)
+		@reporter.start(processes: @processes, worker_choice: @worker_choice, seed: @seed, paths: @display_paths.values, estimate:)
 		reporting_started_at = now
 
 		unless @interrupted
@@ -399,7 +398,7 @@ class Quickdraw::Coordinator
 
 		until @workers.empty? && @leaving.empty? && @loaders.each_value.none?(&:report)
 			reports = @loaders.each_value.filter_map(&:report)
-			readable, = IO.select([*@workers.keys, *@leaving.keys, *reports, interrupt_reader], nil, nil, TICK_INTERVAL)
+			readable, = IO.select([*@workers.keys, *@leaving.keys, *reports, interrupt_reader], nil, nil, POLL_INTERVAL)
 
 			if @interrupted
 				abandon_workers
@@ -430,7 +429,6 @@ class Quickdraw::Coordinator
 
 			dispatch
 			add_workers if @elastic&.due?
-			@reporter.tick(@progress)
 		end
 
 		# No more workers will start, so loaders can exit once their workers have.
@@ -446,7 +444,8 @@ class Quickdraw::Coordinator
 
 		@outcome.interrupted = @interrupted
 		@outcome.coverage = @coverage
-		@outcome.recorded = !@history.nil?
+		# An interrupted run isn't saved (see #save_history).
+		@outcome.recorded = !@history.nil? && !@interrupted
 		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
 		@outcome.unloaded_files = @unloaded.size
 		@outcome.files = @display_paths.size
@@ -475,8 +474,7 @@ class Quickdraw::Coordinator
 		interrupt_writer&.close
 	end
 
-	# Above a live display, through it, so it isn't written over; with a format
-	# other programs read on the terminal, to stderr.
+	# With a format other programs read, to stderr.
 	private def write_timeline
 		@timeline.finish
 
@@ -488,7 +486,7 @@ class Quickdraw::Coordinator
 
 		io = @test_output_to_stderr ? $stderr : $stdout
 		summary = "\n#{@timeline.summary(color: io.tty? && !ENV.key?('NO_COLOR')).join("\n")}\n"
-		@reporter.live? ? @reporter.printed(summary) : io.print(summary)
+		io.print(summary)
 	end
 
 	# Results already sent are kept. Tests still running are counted as not run,
@@ -1125,6 +1123,8 @@ class Quickdraw::Coordinator
 		file.reported!
 		@outcome.record(result)
 		@reporter.result(file.display_path, file.tests[index], result)
+		# Its last final result, after any retries.
+		@reporter.finished_file(file.display_path) if file.reported == file.size
 		@stopping = true if @fail_fast && failed?(result)
 
 		if @history
@@ -1179,6 +1179,9 @@ class Quickdraw::Coordinator
 			errors = [*attempt.result["errors"], crash.merge("message" => "When retried in a fresh worker: #{crash['message']}")]
 			report(attempt.file, attempt.index, attempt.result.merge("errors" => errors), attempt.placement)
 		elsif (path = worker.loading)
+			# What it printed before crashing, which may say why.
+			@reporter.printed(output) if output && @capture == :loading
+
 			if (file = @files[path])
 				# It loaded elsewhere but crashed this worker, so don't let it take more.
 				file.unstealable = true
@@ -1342,28 +1345,6 @@ class Quickdraw::Coordinator
 		end
 
 		candidates.max_by { |_file, worth| worth }&.first
-	end
-
-	# For live displays (see Reporters::Progress). A file is running from when
-	# its first test starts until each has its final result, after any retries,
-	# including between batches, so it doesn't flicker in and out of the list.
-	private def progress
-		in_flight = [
-			*@workers.each_value.filter_map { |worker| worker.batch&.first || worker.retrying&.file },
-			*@pending_retries.map(&:file),
-		].to_h { |file| [file, true] }
-
-		running = @files.each_value.select { |file| in_flight.key?(file) || file.reported.between?(1, file.size - 1) }
-		done = @files.each_value.count { |file| !in_flight.key?(file) && file.reported >= file.size }
-		# Only a file loading for the first time can add tests.
-		discovering = @unloaded.any? || @workers.each_value.any? { |worker| worker.loading && !@files.key?(worker.loading) }
-
-		Quickdraw::Reporters::Progress.new(
-			files: @display_paths.size,
-			files_done: @load_errors.size + done,
-			tests: (@selected unless discovering),
-			running: running.map { |file| [file.display_path, file.reported, file.size] },
-		)
 	end
 
 	private def orphaned?(file)

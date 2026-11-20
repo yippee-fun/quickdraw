@@ -14,12 +14,14 @@ module Quickdraw::Commands
 	autoload :Mutate, "quickdraw/commands/mutate"
 	autoload :Browser, "quickdraw/commands/browser"
 	autoload :Fuzz, "quickdraw/commands/fuzz"
+	autoload :Last, "quickdraw/commands/last"
 
 	# Name, constant, arguments and summary, in the order --help lists them.
 	LIST = [
 		["init", :Init, "", "Create config/quickdraw.rb and an example test"],
 		["doctor", :Doctor, "", "Check that this machine and project are ready to run tests"],
 		["browser", :Browser, " install", "Install the browser, and any driver, that browser tests need"],
+		["last", :Last, "", "The last run’s results, for an AI agent that didn’t see it"],
 		["history", :History, "", "Recent runs, and the slowest and flakiest tests"],
 		["flaky", :Flaky, " [--runs N] …", "Run tests many times in different orders to find flaky ones"],
 		["bisect", :Bisect, " PATH:LINE", "Find the tests a failing test depends on running before it"],
@@ -70,6 +72,17 @@ module Quickdraw::Commands
 		# A test as runs show it: its name, then its class and location, dimmed.
 		private def test_heading(path, line, class_name, description)
 			"#{bold(description || "line #{line}")}  #{dim([class_name, "#{path}:#{line}"].compact.join(' · '))}"
+		end
+
+		private def ago(elapsed)
+			elapsed = elapsed.clamp(0..)
+
+			case elapsed
+			in ...60 then "#{elapsed.floor}s ago"
+			in ...3600 then "#{(elapsed / 60).floor}m ago"
+			in ...86_400 then "#{(elapsed / 3600).floor}h ago"
+			else "#{(elapsed / 86_400).floor}d ago"
+			end
 		end
 
 		private def style(text, code)

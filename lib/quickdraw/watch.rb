@@ -64,7 +64,8 @@ class Quickdraw::Watch
 	ensure
 		trap("INT", previous_handler || "DEFAULT") if @wake_reader
 		release_keyboard
-		Process.kill("TERM", @listener.pid) if @listener && !@listener.closed?
+		# Its group, which has the file watching process listen starts.
+		Process.kill("TERM", -@listener.pid) if @listener && !@listener.closed?
 		@loaders&.stop
 	end
 

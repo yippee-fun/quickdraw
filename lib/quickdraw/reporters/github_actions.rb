@@ -18,7 +18,7 @@ class Quickdraw::Reporters::GitHubActions
 		@leaks = []
 	end
 
-	def start(processes:, worker_choice:, seed:, estimate: nil)
+	def start(processes:, worker_choice:, seed:, paths:, estimate: nil)
 		@seed = seed
 	end
 
@@ -31,8 +31,8 @@ class Quickdraw::Reporters::GitHubActions
 		@problems << [path, nil, { "errors" => [error], "failures" => [] }]
 	end
 
-	def tick(_progress) = nil
-	def live? = false
+	def finished_file(_path) = nil
+	def shows_loading_output? = false
 	def pause = nil
 	def resume = nil
 

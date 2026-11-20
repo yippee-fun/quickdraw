@@ -45,7 +45,7 @@ class CoverageTest < Quickdraw::Test
 		assert_includes result.stdout, "Coverage 71% of lines · 50% of branches · 66% of methods"
 		assert_match result.stdout, %r{^ +71%  lib/calculator\.rb  missing 6, 12$}
 		assert_includes result.stdout, "! Never loaded by a test: lib/orphan.rb"
-		refute_includes result.stdout, "test/calculator.test.rb"
+		refute_includes result.stdout[/^Coverage .*/m], "test/calculator.test.rb"
 	end
 
 	test "counts code that ran while config booted once, not once per worker", timeout: 20 do

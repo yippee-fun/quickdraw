@@ -142,7 +142,8 @@ class CLITest < Quickdraw::Test
 		RUBY
 
 		assert_equal result.status.exitstatus, 130
-		assert_includes result.output, "Interrupted."
+		assert_match result.output, /^INTERRUPTED  /
+		assert_includes result.output, "Interrupted  Tests that were running or hadn’t started count as not run.\n"
 		assert_includes result.output, "tore down"
 		refute_includes result.output, "Quickdraw::Interrupted"
 		match { result => { summary: /not run/ } }
@@ -163,20 +164,18 @@ class CLITest < Quickdraw::Test
 		match { result => { summary: /\A0 tests · 0 assertions · 1 not run/ } }
 	end
 
-	test "on a terminal, shows what's running below the output, then clears it for the summary", timeout: 20 do
-		project = project("a.test.rb" => "class A < Quickdraw::Test; 3.times { |i| test(i.to_s) { sleep 0.2; assert true } }; end\n")
-		result = project.run("-p", "1", tty: [20, 80])
+	test "on a terminal, prints a line for each file, lined up, and redraws nothing", timeout: 20 do
+		result = project(
+			"a.test.rb" => "class A < Quickdraw::Test; 3.times { |i| test(i.to_s) { sleep 0.2; assert true } }; end\n",
+			"models/b.test.rb" => "class B < Quickdraw::Test; test('b') { assert true }; end\n",
+		).run("-p", "1", tty: [20, 80])
 
-		# Each redraw starts by moving up over the last, so not at a line's start.
-		assert_match result.stdout, %r{ \S a\.test\.rb  [0-2]/3\r\n}
-		assert_match result.stdout, / Test files  0 of 1 done\r\n/
-		# Cleared, and the cursor shown again, before the summary.
-		assert_operator result.stdout.rindex("\e[J\e[?25h"), :<, result.stdout.rindex(/^ Test files  1 passed/)
-
-		refute_includes project.run("-p", "1", "--no-capture", tty: [20, 80]).stdout, "of 1 done"
+		assert_match result.stdout, /^✓ a\.test\.rb         3 tests · /
+		assert_match result.stdout, %r{^✓ models/b\.test\.rb  1 test · }
+		refute_includes result.stdout, "\e["
 	end
 
-	test "on a terminal, shows what loading a file prints above what's running, once", timeout: 20 do
+	test "on a terminal, prints what loading a file prints whole, once", timeout: 20 do
 		project = project(
 			"a.test.rb" => "class A < Quickdraw::Test; test('waits') { sleep 0.3; assert true }; end\n",
 			"b.test.rb" => "puts 'loading b'\nwarn 'warning from b'\nclass B < Quickdraw::Test; test('b') { assert true }; end\n",
@@ -186,11 +185,10 @@ class CLITest < Quickdraw::Test
 
 		assert_equal output.scan("loading b").size, 1
 		assert_equal output.scan("warning from b").size, 1
-		# Printed after erasing the live block, rather than written over it.
-		assert_match output, /\e\[\d+A\e\[J(?:\e\[\?25h)?loading b\r\nwarning from b\r\n/
+		assert_match output, /^loading b\r\nwarning from b\r\n/
 	end
 
-	test "reports a problem as it happens, then lists them all at the end", timeout: 20 do
+	test "reports a problem once its file finishes, then lists them all at the end", timeout: 20 do
 		result = project(
 			"fails.test.rb" => "class A < Quickdraw::Test; test('fails') { assert false }; end\n",
 			"slow.test.rb" => "class B < Quickdraw::Test; test('slow') { sleep 0.5; puts 'slow finished'; assert true }; end\n",
@@ -198,6 +196,6 @@ class CLITest < Quickdraw::Test
 
 		failure = result.stdout.index("FAIL fails  A · fails.test.rb:1")
 		assert_operator failure, :<, result.stdout.index("slow finished")
-		assert_match result.stdout, /1 problem ⎯+\n  ✗ fails\.test\.rb:1 A › fails\n/
+		assert_match result.stdout, /^FAILED  .*\n\n  ✗ fails\.test\.rb:1 A › fails\n/
 	end
 end

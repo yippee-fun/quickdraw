@@ -2,20 +2,21 @@
 
 # Reporters render a run. Each receives every event:
 #
-#   start(processes:, worker_choice:, seed:, estimate:)
+#   start(processes:, worker_choice:, seed:, paths:, estimate:)
 #   result(path, test, result)
+#   finished_file(path)         once each of its tests has its final result
 #   load_failed(path, error)
-#   tick(progress)              many times a second, for live displays
+#   pause / resume              around a debugger having the terminal
 #   finish(outcome)
 #
-# and answers `live?`: whether it keeps a live display on the terminal. If
-# so, it also gets what loading test files printed, to show above the display:
+# and answers `shows_loading_output?`: whether it shows what loading test
+# files printed, in order with its own output. If so, it gets it from:
 #
 #   printed(output)
 #
-# `estimate` is how many tests the run is expected to have and how long it's
-# expected to take, from the last run of the same tests, or nil. `progress`
-# returns a Progress when called, which costs a little, so only when needed.
+# `paths` are the test files the run will load. `estimate` is how many tests
+# the run is expected to have and how long it's expected to take, from the
+# last run of the same tests, or nil.
 #
 # They run in the coordinator, after the loader has forked, so they may load
 # libraries (such as json) as long as they do it lazily, not at construction.
@@ -26,6 +27,7 @@ module Quickdraw::Reporters
 	autoload :GitHubActions, "quickdraw/reporters/github_actions"
 	autoload :JUnit, "quickdraw/reporters/junit"
 	autoload :Multiple, "quickdraw/reporters/multiple"
+	autoload :LastRun, "quickdraw/reporters/last_run"
 
 	# Environment variables set by AI coding agents, which get the agent format
 	# unless another is asked for.
@@ -34,12 +36,6 @@ module Quickdraw::Reporters
 	# From the last run of the same tests: how many there were, how long the run
 	# took, and the total of their durations.
 	Estimate = Data.define(:tests, :duration, :test_time)
-
-	# Where a run is, all of it known rather than estimated: how many test files
-	# it runs and how many are done, the number of tests once every file has
-	# loaded (nil until then), and the files being run as [path, tests done,
-	# tests selected].
-	Progress = Data.define(:files, :files_done, :tests, :running)
 
 	def self.agent?
 		AGENT_VARIABLES.any? { |name| ENV[name] && !ENV[name].empty? }

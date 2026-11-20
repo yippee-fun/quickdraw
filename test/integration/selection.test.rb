@@ -129,7 +129,7 @@ class SelectionTest < Quickdraw::Test
 		RUBY
 
 		refute result.success?
-		assert_includes result.output, "Stopped after the first problem (--fail-fast)."
+		assert_includes result.output, "Fail fast  Stopped after the first problem.\n"
 		assert_match result.summary, /not run/
 	end
 end
