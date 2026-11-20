@@ -22,6 +22,7 @@
 # libraries (such as json) as long as they do it lazily, not at construction.
 module Quickdraw::Reporters
 	autoload :Human, "quickdraw/reporters/human"
+	autoload :StatusLine, "quickdraw/reporters/status_line"
 	autoload :Agent, "quickdraw/reporters/agent"
 	autoload :JSON, "quickdraw/reporters/json"
 	autoload :GitHubActions, "quickdraw/reporters/github_actions"
