@@ -22,6 +22,7 @@ class BrowserTest < Quickdraw::Test
 			case env["PATH_INFO"]
 			in "/"
 				[200, { "content-type" => "text/html" }, [<<~HTML]]
+					<!DOCTYPE html>
 					<h1>Hello</h1>
 					<button onclick="setTimeout(() => document.body.append('Done'), 100)">Go</button>
 					<script>console.log("Hi from the page")</script>
@@ -30,6 +31,8 @@ class BrowserTest < Quickdraw::Test
 				raise "Boom from the app"
 			in "/stream"
 				[200, { "content-type" => "text/html" }, Enumerator.new { |body| body << "<h1>Streaming</h1>"; raise "Boom while streaming" }]
+			in "/favicon.ico"
+				[404, {}, []]
 			end
 		end
 	RUBY
@@ -178,7 +181,7 @@ class BrowserTest < Quickdraw::Test
 
 				refute result.success?
 				assert_includes result.output, "RuntimeError: Boom from the app"
-				assert_includes result.output, "app.rb:10"
+				assert_includes result.output, "app.rb:11"
 				assert_includes result.output, "RuntimeError: Boom while streaming"
 				assert_match result.output, %r{Screenshot: \.quickdraw/browser/test-browser-page-4-visits-\w+\.png}
 			end

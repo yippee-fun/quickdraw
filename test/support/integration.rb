@@ -136,9 +136,7 @@ module Integration
 				"SEED" => nil,
 				"QUICKDRAW_WORKER" => nil,
 				"TEST_ENV_NUMBER" => nil,
-				"GITHUB_ACTIONS" => nil,
-				"GITHUB_BASE_REF" => nil,
-				"GITHUB_STEP_SUMMARY" => nil,
+				**ENV.keys.grep(/\AGITHUB_/).to_h { |name| [name, nil] },
 				"POSIXLY_CORRECT" => nil,
 				# Bundler resolves the Gemfile in every process, which takes about
 				# 120ms. The load path it set up for this one does the same job.
