@@ -45,7 +45,7 @@ class Quickdraw::Commands::Bisect
 		@io.puts "#{beside_label('BISECT')}#{dim("failed after #{pluralize(before.size, 'test')} in its worker · seed #{seed}")}"
 		@io.puts
 
-		replay = Quickdraw::Replay.new([test, *before].map(&:path).uniq, seed:, slot:, attempts: (2 * before.size.bit_length) + 2, variant: @tests.fetch(test)[:variant])
+		replay = Quickdraw::Replay.new([test, *before].map(&:path).uniq, seed:, slot:, attempts: (4 * before.size.bit_length) + 2, variant: @tests.fetch(test)[:variant])
 
 		if failed?(replay, [], test)
 			@io.puts "#{label('FAILS ALONE', 41)} It fails on its own too, so it doesn’t depend on the tests before it."
@@ -57,16 +57,7 @@ class Quickdraw::Commands::Bisect
 			return 1
 		end
 
-		suspects = before
-
-		while suspects.size > 1
-			first, second = suspects.each_slice((suspects.size / 2.0).ceil).to_a
-
-			suspects = if failed?(replay, first, test) then first
-			elsif failed?(replay, second, test) then second
-			else break
-			end
-		end
+		suspects = reduce(replay, test, before, before)
 
 		indent = beside_label("FOUND")
 		@io.puts "#{label('FOUND', 42)} #{suspects.one? ? 'It fails after this test:' : 'It fails after these tests, together:'}"
@@ -81,6 +72,26 @@ class Quickdraw::Commands::Bisect
 		1
 	ensure
 		replay&.stop
+	end
+
+	# The fewest of `suspects` that, run in their original order with `kept`,
+	# make the test fail. When neither half does alone, tests in both are
+	# needed: the second half is reduced with all of the first, then the first
+	# with what's left of the second. Out of replays, it stops where it is.
+	private def reduce(replay, test, suspects, before, kept = [])
+		return suspects if suspects.size <= 1 || replay.attempts_left < 2
+
+		first, second = suspects.each_slice((suspects.size / 2.0).ceil).to_a
+		in_order = -> (tests) { before & (kept + tests) }
+
+		if failed?(replay, in_order.(first), test)
+			reduce(replay, test, first, before, kept)
+		elsif failed?(replay, in_order.(second), test)
+			reduce(replay, test, second, before, kept)
+		else
+			needed_second = reduce(replay, test, second, before, kept + first)
+			reduce(replay, test, first, before, kept + needed_second) + needed_second
+		end
 	end
 
 	# The test couldn't be replayed, so whether it fails can't be known.
