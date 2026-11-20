@@ -85,6 +85,17 @@ class Quickdraw::Configuration
 		end
 	end
 
+	# Leaves files matching any of `patterns` (globs relative to the project),
+	# or under directories matching them, out of --coverage's reports:
+	# `config.exclude_from_coverage("fixtures", "lib/generated/**/*.rb")`.
+	def exclude_from_coverage(*patterns)
+		unless patterns.any? && patterns.all?(String)
+			raise ArgumentError, "exclude_from_coverage needs globs, such as \"fixtures\", not #{patterns.inspect}."
+		end
+
+		(@settings[:excluded_from_coverage] ||= []).concat(patterns.map { |pattern| pattern.delete_prefix("./").chomp("/") })
+	end
+
 	# Called with each test that failed, then passed when retried (a Flake),
 	# once the run's tests have finished, in the process that booted config:
 	# `config.on_flaky { |flake| Sentry.capture_message("Flaky: #{flake.name}", fingerprint: [flake.key]) }`.

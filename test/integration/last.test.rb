@@ -101,7 +101,9 @@ class LastTest < Quickdraw::Test
 		end
 		match { adds => { event: "result", path: "test/math.test.rb", test: { line: 2 }, result: { failures: [{ message: /Expected.*2/m }] }, rerun: %r{ test/math\.test\.rb:2\z} } }
 		match { divides => { event: "result", result: { errors: [{ name: "ZeroDivisionError", message: "divided by 0", backtrace: [*, /math\.test\.rb:3/, *] }] }, rerun: %r{ test/math\.test\.rb:3\z} } }
-		match { finish => { event: "finish", finished_at: Float, outcome: { "@failed": 1, "@errored": 1 } } }
+		match { finish => { event: "finish", finished_at: Float, outcome: Hash } }
+		# JRuby can't parse quoted keys in a pattern.
+		assert_equal finish[:outcome].values_at(:@failed, :@errored), [1, 1]
 		# Without fork, what tests print isn't captured.
 		assert_equal adds.dig(:result, :output), "adding\n" if Process.respond_to?(:fork)
 	end

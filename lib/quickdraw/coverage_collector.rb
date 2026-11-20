@@ -20,25 +20,31 @@ module Quickdraw::CoverageCollector
 	def start
 		require "coverage"
 		@root = "#{Dir.pwd}/"
-		::Coverage.start(lines: true, branches: true, methods: true)
+		::Coverage.start(lines: true, branches: true, methods: true, eval: true)
 	end
 
 	# Coverage since it started or was last taken, as { path => { "lines" =>,
 	# "branches" =>, "methods" => } }, with paths relative to the project.
 	def take
 		::Coverage.result(stop: false, clear: true).each_with_object({}) do |(path, data), files|
-			# A file loaded by a relative path has a relative key.
+			# Code evaluated without a file, such as "(eval at lib/a.rb:3)" or "(erb)".
+			next if path.start_with?("(")
+
+			# A file loaded by a relative path has a relative key, so code
+			# evaluated in it can have another key for the same file.
 			path = File.expand_path(path, @root)
 			next if !path.start_with?(@root) || path.start_with?(*QUICKDRAW)
 
 			relative = path.delete_prefix(@root)
 			next if EXCLUDED.match?(relative) || relative == Quickdraw::Loader::CONFIG_PATH
 
-			files[relative] = {
-				"lines" => data[:lines],
-				"branches" => data[:branches],
-				"methods" => data[:methods]&.then { |methods| method_counts(methods) },
-			}
+			merge(files, {
+				relative => {
+					"lines" => data[:lines],
+					"branches" => data[:branches],
+					"methods" => data[:methods]&.then { |methods| method_counts(methods) },
+				},
+			})
 		end
 	end
 
@@ -58,7 +64,14 @@ module Quickdraw::CoverageCollector
 				next
 			end
 
-			existing["lines"] = existing["lines"].zip(data["lines"]).map { |left, right| (left || right) && ((left || 0) + (right || 0)) }
+			# Code evaluated with a file's name can give it fewer lines than another process saw.
+			lefts = existing["lines"]
+			rights = data["lines"]
+			existing["lines"] = Array.new([lefts.size, rights.size].max) do |index|
+				left = lefts[index]
+				right = rights[index]
+				(left || right) && ((left || 0) + (right || 0))
+			end
 
 			data["branches"]&.each do |branch, targets|
 				merged = ((existing["branches"] ||= {})[branch] ||= {})

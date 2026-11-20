@@ -7,7 +7,7 @@ class Quickdraw::CoverageHTML::Layout < Phlex::HTML
 		@title = title
 	end
 
-	def view_template(&)
+	def view_template(&content)
 		doctype
 
 		html(lang: "en") do
@@ -18,7 +18,7 @@ class Quickdraw::CoverageHTML::Layout < Phlex::HTML
 				style { raw(safe(STYLES)) }
 			end
 
-			body { main(&) }
+			body { main(&content) }
 		end
 	end
 end

@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
 	spec.summary = "A Ruby test framework that uses every core."
 	spec.homepage = "https://github.com/joeldrapper/quickdraw"
 	spec.license = "MIT"
-	spec.required_ruby_version = ">= 3.3"
+	spec.required_ruby_version = ">= 3.3.1"
 
 	spec.metadata = {
 		"source_code_uri" => spec.homepage,

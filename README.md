@@ -12,7 +12,7 @@ Quickdraw is a fast test framework for Ruby, built to use every core.
 - Failures show as they happen, with diffs, the failing line and a command to rerun them. The output adapts to people, CI and AI coding agents.
 - It finds flaky tests, works out which earlier test a failure depends on, measures coverage, and profiles where test time goes.
 
-It supports Ruby 3.3 and later.
+It supports Ruby 3.3.1 and later.
 
 ## Writing tests
 
