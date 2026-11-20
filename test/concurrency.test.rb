@@ -82,6 +82,11 @@ class ConcurrencyTest < Quickdraw::Test
 			Quickdraw::Inspector,
 			Quickdraw::History,
 			Quickdraw::Mutation::Mutator,
+			Quickdraw::Mutation::Planner,
+			Quickdraw::Mutation::Plan,
+			Quickdraw::Mutation::Marks,
+			Quickdraw::Mutation::Report,
+			Quickdraw::Mutation::Survivors,
 			Quickdraw::Browser::Bridge,
 		]
 

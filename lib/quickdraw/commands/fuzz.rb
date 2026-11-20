@@ -519,10 +519,6 @@ class Quickdraw::Commands::Fuzz
 		TEXT
 	end
 
-	private def list(items)
-		items.first(3).join(", ") + ((items.size > 3) ? " and #{items.size - 3} more" : "")
-	end
-
 	private def now
 		Process.clock_gettime(Process::CLOCK_MONOTONIC)
 	end
