@@ -178,6 +178,7 @@ class Quickdraw::Worker
 		@coverage_totals = {}
 		@files = {}
 		@file_seeds = {}
+		Quickdraw::Seed.install
 		@class_names = {}
 		# Failures threads made after the tests that started them finished, as
 		# leaks, for the test running when they're found.
@@ -630,9 +631,10 @@ class Quickdraw::Worker
 
 	# Seeded by test rather than by process, so `rand` in a test gives the same
 	# values for a given run seed whichever worker runs it, and when a mutant
-	# runs it. In 32 bits, which Ruby seeds about 3x as fast.
+	# runs it. In 32 bits, which Ruby seeds about 3x as fast, and only once the
+	# test reads `rand` (see Seed).
 	private def seed(path, index)
-		Kernel.srand(test_seed(path, index))
+		Quickdraw::Seed.later(test_seed(path, index))
 	end
 
 	private def test_seed(path, index)

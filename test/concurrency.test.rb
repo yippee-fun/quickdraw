@@ -123,6 +123,7 @@ class ConcurrencyTest < Quickdraw::Test
 			"Quickdraw::Inspector::DATA_TO_H",
 			"Quickdraw::Inspector::PUBLIC_SEND",
 			"Quickdraw::Inspector::STRUCT_EACH_PAIR",
+			"Quickdraw::Seed::SRAND",
 			"Quickdraw::Spy::CURRENT_THREAD",
 		]
 	end
