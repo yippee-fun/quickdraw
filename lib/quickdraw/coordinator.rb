@@ -30,6 +30,11 @@ class Quickdraw::Coordinator
 	# How long to wait for teardown after Ctrl-C before reporting, in seconds.
 	INTERRUPT_GRACE = 3
 
+	# Seconds of work per worker from which workers run tests with YJIT. Tests
+	# that keep running the same Ruby code repay compiling within 0.1s, but
+	# others never do, so shorter runs, with little to gain, go without.
+	YJIT_FROM = 2.0
+
 	class TestFile
 		# A file runs once in each group it's in (see Configuration::Group), as a
 		# TestFile for each. `group` is the group's name, or nil for none, and
@@ -310,14 +315,14 @@ class Quickdraw::Coordinator
 	# asked for, or config's by_default includes them.
 	#
 	# Run settings config can set too (`capture`, `leaks`, `retries`,
-	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic`, `yjit`, `defer_gc`
-	# and `processes`) are nil unless the command line gave them, and config's apply then (see
-	# #apply_settings).
+	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic`, `yjit`
+	# and `processes`) are nil unless the command line gave them, and config's
+	# apply then (see #apply_settings).
 	def initialize(
 		files:, processes:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
 		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil,
-		yjit: nil, defer_gc: nil, browser_tests: :default, named_files: {}
+		yjit: nil, browser_tests: :default, named_files: {}
 	)
 		raise ArgumentError, "browser_tests must be :default, :only or :all, not #{browser_tests.inspect}." unless browser_tests in :default | :only | :all
 
@@ -327,7 +332,6 @@ class Quickdraw::Coordinator
 		@timeline = Quickdraw::Timeline.new if timeline
 		@elastic_allowed = elastic
 		@yjit = yjit
-		@defer_gc = defer_gc
 		@warm_loaders = warm_loaders
 		@repeatable = repeatable
 		@retry_count = retries
@@ -699,7 +703,6 @@ class Quickdraw::Coordinator
 		@outcome.allow_flaky = @allow_flaky.nil? ? settings.fetch(:allow_flaky, false) : @allow_flaky
 		@elastic_allowed = settings.fetch(:elastic, false) if @elastic_allowed.nil?
 		@yjit = settings[:yjit] if @yjit.nil?
-		@defer_gc = settings[:defer_gc] if @defer_gc.nil?
 		@configured_processes = settings[:processes] unless @processes
 		@processes ||= @configured_processes
 		@browser_by_default = settings.fetch(:browser_by_default, false)
@@ -707,10 +710,6 @@ class Quickdraw::Coordinator
 
 		if !@forking && (@retry_count || settings[:retries])&.positive?
 			warn "Retries need fork, which this platform doesn’t support, so failures aren’t retried."
-		end
-
-		if !@forking && @defer_gc
-			warn "Deferring GC needs fork, which this platform doesn’t support, so it isn’t deferred."
 		end
 
 		if !@forking && @leaks.nil? && settings[:leaks] == :fail
@@ -817,7 +816,7 @@ class Quickdraw::Coordinator
 
 	private def start_workers
 		allocation = @scheduler.allocate(@processes)
-		tune(allocation.sum { |_group, workers| workers })
+		@loaders.each_value { |loader| loader.command("yjit") } if yjit?(allocation.sum { |_group, workers| workers })
 
 		allocation.each do |group, workers|
 			workers.times { start_worker(@loaders.fetch(group), @free_slots.shift) }
@@ -970,12 +969,16 @@ class Quickdraw::Coordinator
 		test_time * (1 - (@runs&.waiting_share || 0.0)) / workers if test_time&.positive? && workers > 0
 	end
 
-	# Before the `workers` start, so they start tuned (see Runtime).
-	private def tune(workers)
-		return unless @forking
+	# Whether the `workers` run tests with YJIT: as the run or config said, or
+	# else when history expects each to have enough work to repay compiling.
+	private def yjit?(workers)
+		return false unless @forking && Quickdraw::Platform.yjit_supported?
+		# Ruby runs one JIT at a time.
+		return false if defined?(RubyVM::ZJIT) && RubyVM::ZJIT.enabled?
+		return @yjit unless @yjit.nil?
 
-		tunings = Quickdraw::Runtime.choose(expected_work(workers), yjit: @yjit, defer_gc: @defer_gc)
-		@loaders.each_value { |loader| loader.command("tune #{tunings.join(' ')}") } if tunings.any?
+		work = expected_work(workers)
+		!work.nil? && work >= YJIT_FROM
 	end
 
 	# Workers that died without closing their pipes, because a process they or

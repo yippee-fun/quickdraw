@@ -76,9 +76,9 @@ class Quickdraw::Configuration
 		@settings[:flakes] = path
 	end
 
-	# As --allow-flaky, --quarantine, --no-capture (capture = false), --elastic,
-	# --[no-]yjit and --[no-]defer-gc.
-	[:allow_flaky, :quarantine, :capture, :elastic, :yjit, :defer_gc].each do |name|
+	# As --allow-flaky, --quarantine, --no-capture (capture = false), --elastic
+	# and --[no-]yjit.
+	[:allow_flaky, :quarantine, :capture, :elastic, :yjit].each do |name|
 		define_method(:"#{name}=") do |value|
 			raise ArgumentError, "config.#{name} must be true or false, not #{value.inspect}." unless value in true | false
 

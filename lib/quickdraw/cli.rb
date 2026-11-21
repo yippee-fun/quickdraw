@@ -388,10 +388,6 @@ class Quickdraw::CLI
 				options[:yjit] = it
 			end
 
-			parser.on("--[no-]defer-gc", "Put off each worker’s first GC, or don’t (default: put off, when run history expects little work)") do |it|
-				options[:defer_gc] = it
-			end
-
 			parser.separator ""
 			parser.separator bold("Other")
 
@@ -664,7 +660,6 @@ class Quickdraw::CLI
 			timeline: options[:timeline],
 			elastic: options[:elastic],
 			yjit: options[:yjit],
-			defer_gc: options[:defer_gc],
 			variants: (options[:browsers] if options[:browsers].any?),
 			browser_tests:,
 			named_files:,

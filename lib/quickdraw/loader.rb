@@ -12,7 +12,7 @@ class Quickdraw::Loader
 	#
 	#   start COUNT          start workers on the first COUNT channels
 	#   fork CHANNEL SLOT    start a worker on CHANNEL in SLOT
-	#   tune TUNING...       tune workers started from now on (see Runtime)
+	#   yjit                 enable YJIT in workers started from now on
 	#
 	# A worker's slot is its QUICKDRAW_WORKER number, so a worker started in a
 	# slot takes over the per-worker resources (such as a database) of the one
@@ -50,7 +50,7 @@ class Quickdraw::Loader
 		@link = link
 		@running = {}
 		@statuses = []
-		@tunings = []
+		@yjit = false
 	end
 
 	# Starts a loader in a new process and returns its pid, taking the same
@@ -217,7 +217,7 @@ class Quickdraw::Loader
 		@directory = directory
 		@running = {}
 		@statuses = []
-		@tunings = []
+		@yjit = false
 		@control = open_pipe("control", File::RDONLY | File::NONBLOCK)
 		@report = open_pipe("report", File::WRONLY | File::NONBLOCK)
 		@finished = open_pipe("finished", File::WRONLY | File::NONBLOCK)
@@ -327,10 +327,8 @@ class Quickdraw::Loader
 			Integer(count).clamp(0, @channels.size).times { |index| start(index, index, test_files) }
 		in ["fork", channel, slot]
 			start(Integer(channel), Integer(slot), test_files)
-		in ["tune", *tunings]
-			raise ArgumentError, "Unknown tunings: #{tunings.inspect}" unless (tunings - Quickdraw::Runtime::TUNINGS).empty?
-
-			@tunings = tunings
+		in ["yjit"]
+			@yjit = true
 		in ["flakes", size]
 			report_flakes(@control.read(Integer(size)))
 		end
@@ -460,8 +458,7 @@ class Quickdraw::Loader
 		# Before the callbacks, so processes they start aren't blamed on tests.
 		Quickdraw::Leaks::ProcessStarts.watch if leaks
 		Quickdraw::Config.after_forking_callbacks.each(&:call)
-		# After the callbacks, which can turn GC off themselves.
-		Quickdraw::Runtime.apply(@tunings)
+		RubyVM::YJIT.enable if @yjit
 		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:, variant:).call
 	end
 
