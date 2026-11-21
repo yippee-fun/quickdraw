@@ -947,38 +947,24 @@ class Quickdraw::Coordinator
 		choice = Quickdraw::WorkerTuner.new(cores:, max: capacity).choose(
 			# --failed runs a different subset each time, so its timings aren't comparable.
 			runs: (@only_keys || !@runs) ? [] : @runs.recent_runs,
-			expected:,
+			expected: @plan&.expected(@unloaded.map { |_path, display_path| display_path }.uniq) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil),
 			waiting_share: @runs&.waiting_share,
 		)
 
 		[choice.processes, choice.reason]
 	end
 
-	# What history expects of the files this run loads.
-	private def expected
-		@plan&.expected(@unloaded.map { |_path, display_path| display_path }.uniq) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil)
-	end
-
-	# How long history expects each of `workers` to keep a core busy running
-	# tests, in seconds: from the selection's last run, or else its files'
-	# tests, unless only some of them run. Nil if history can't say.
-	private def expected_work(workers)
-		test_time = estimate&.test_time
-		test_time ||= expected.test_time unless @only_keys || @filter.any?
-
-		test_time * (1 - (@runs&.waiting_share || 0.0)) / workers if test_time&.positive? && workers > 0
-	end
-
 	# Whether the `workers` run tests with YJIT: as the run or config said, or
-	# else when history expects each to have enough work to repay compiling.
+	# else when the selection's last run kept a core busy for long enough per
+	# worker to repay compiling.
 	private def yjit?(workers)
 		return false unless @forking && Quickdraw::Platform.yjit_supported?
 		# Ruby runs one JIT at a time.
-		return false if defined?(RubyVM::ZJIT) && RubyVM::ZJIT.enabled?
+		return false if [:ZJIT, :RJIT].any? { |jit| RubyVM.const_defined?(jit) && RubyVM.const_get(jit).enabled? }
 		return @yjit unless @yjit.nil?
 
-		work = expected_work(workers)
-		!work.nil? && work >= YJIT_FROM
+		last = estimate or return false
+		last.test_time * (1 - @runs.waiting_share) / workers >= YJIT_FROM
 	end
 
 	# Workers that died without closing their pipes, because a process they or

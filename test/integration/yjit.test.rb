@@ -15,7 +15,7 @@ class YJITIntegrationTest < Quickdraw::Test
 	RUBY
 
 	def state(project, *, **)
-		project.run("-p", "1", "--no-capture", *, env: { "RUBY_YJIT_ENABLE" => nil }, **).stdout[/^yjit=.*$/]
+		project.run("-p", "1", "--no-capture", *, env: { "RUBY_YJIT_ENABLE" => nil, "RUBY_ZJIT_ENABLE" => nil }, **).stdout[/^yjit=.*$/]
 	end
 
 	test "the command line and config choose YJIT", timeout: 30 do
@@ -54,5 +54,18 @@ class YJITIntegrationTest < Quickdraw::Test
 		assert_equal state(busy, timeout: 30), "yjit=false"
 		assert_equal state(busy, timeout: 30), "yjit=true"
 		assert_equal state(busy, "--no-yjit", timeout: 30), "yjit=false"
+
+		# A selection that hasn't run, though its files have.
+		assert_equal state(busy, "--name", "state"), "yjit=false"
+	end
+
+	test "doesn't count time spent waiting as work", timeout: 60 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+		skip "Workers enable YJIT as they fork" unless Process.respond_to?(:fork)
+		skip "This Ruby has no YJIT" unless Quickdraw::Platform.yjit_supported?
+
+		waiting = project("state.test.rb" => STATE, "waiting.test.rb" => "class Waiting < Quickdraw::Test\n\ttest('waits') { sleep #{Quickdraw::Coordinator::YJIT_FROM + 0.3}; assert true }\nend\n")
+		assert_equal state(waiting, timeout: 30), "yjit=false"
+		assert_equal state(waiting, timeout: 30), "yjit=false"
 	end
 end
