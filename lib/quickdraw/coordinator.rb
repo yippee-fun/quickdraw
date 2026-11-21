@@ -1206,7 +1206,10 @@ class Quickdraw::Coordinator
 			end
 		else
 			display_path = display_path(path)
-			keys = (Quickdraw::History.keys(display_path, tests) if @history)
+			if @history
+				keys = Quickdraw::History.keys(display_path, tests)
+				@history.add_file(display_path, keys, tests)
+			end
 			indices = @filter.selected_indices(path, tests)
 
 			# Once, though it loads in each group it's in.
@@ -1278,11 +1281,10 @@ class Quickdraw::Coordinator
 		file, indices = worker.batch
 		display_path = file.display_path
 		tests = file.tests
-		keys = file.keys
 		variant = file.variant
 		process = worker.process
 		slot = worker.slot
-		has_history = !@history.nil?
+		seq_start = nil
 		i = 0
 
 		while i < n
@@ -1299,41 +1301,18 @@ class Quickdraw::Coordinator
 			allocations = values[i + 7]
 			assertions = values[i + 8]
 			sequence = worker.next_sequence
+			seq_start ||= sequence
 
 			file.record(duration)
 			file.reported!
 			@outcome.record_passed(assertions)
-			test = tests[index]
-			@reporter.passed_result(display_path, test, duration, setup, body, teardown, cpu, gc, allocations, assertions)
+			@reporter.passed_result(display_path, tests[index], duration, setup, body, teardown, cpu, gc, allocations, assertions)
 			@reporter.finished_file(display_path, variant) if file.reported == file.size
-
-			if has_history
-				@records << Quickdraw::History::Record.new(
-					key: keys[index],
-					path: display_path,
-					line: test["line"],
-					class_name: test["class_name"],
-					description: test["description"],
-					variant: test["variant"],
-					status: "passed",
-					duration:,
-					stats: [setup, body, teardown, cpu, gc, allocations],
-					assertions:,
-					details: nil,
-					worker: process,
-					slot:,
-					sequence:,
-				)
-
-				if @records.size >= HISTORY_BATCH
-					@history.add(@records)
-					@records = []
-				end
-			end
 
 			i += 9
 		end
 
+		@history.add_binary(display_path, process, slot, seq_start, payload) if @history && seq_start
 		worker.batch = nil if indices.empty?
 	end
 

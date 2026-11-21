@@ -13,6 +13,7 @@ class Quickdraw::HistoryProcess
 		@path = path
 		# Without fork, records added as the run goes.
 		@records = []
+		@files = {}
 		# What #add couldn't write yet.
 		@unsent = "".b
 		return unless Process.respond_to?(:fork)
@@ -46,6 +47,31 @@ class Quickdraw::HistoryProcess
 		@channel&.close
 	end
 
+	# Sends a file's test metadata once so binary passing batches can reference
+	# tests by index instead of serializing full History::Record objects.
+	def add_file(path, keys, tests)
+		meta = tests.map { |test| [test["line"], test["class_name"], test["description"], test["variant"]] }
+		unless @channel
+			@files[path] = [keys, meta]
+			return
+		end
+		return unless @unsent
+
+		send_async([:file_meta, path, keys, meta])
+	end
+
+	# Forwards a worker's binary-packed passing result batch straight to the
+	# background process so the coordinator allocates zero History::Records.
+	def add_binary(path, worker, slot, seq_start, payload)
+		unless @channel
+			unpack_binary(@records, @files.fetch(path), path, worker, slot, seq_start, payload)
+			return
+		end
+		return unless @unsent
+
+		send_async([:passed_bin, path, worker, slot, seq_start, payload])
+	end
+
 	# Sends History::Records as the run goes, so there are fewer to send when it
 	# ends. Never waits, so a busy or stopped history process can't hold up the
 	# run; what doesn't fit in the pipe goes with the next, or at the end.
@@ -54,7 +80,11 @@ class Quickdraw::HistoryProcess
 		# The process has gone, so saving will fail.
 		return unless @unsent
 
-		@unsent << Quickdraw::Channel.encode([:records, records])
+		send_async([:records, records])
+	end
+
+	private def send_async(message)
+		@unsent << Quickdraw::Channel.encode(message)
 		written = @channel.writer.write_nonblock(@unsent, exception: false)
 		@unsent = @unsent.byteslice(written..) if Integer === written
 	rescue Errno::EPIPE
@@ -95,9 +125,14 @@ class Quickdraw::HistoryProcess
 		end
 
 		records = []
+		files = {}
 
 		loop do
 			case channel.read
+			in [:file_meta, file_path, keys, meta]
+				files[file_path] = [keys, meta]
+			in [:passed_bin, file_path, worker, slot, seq_start, payload]
+				unpack_binary(records, files.fetch(file_path), file_path, worker, slot, seq_start, payload)
 			in [:records, batch]
 				records.concat(batch)
 			in [:save, run, coverage_map]
@@ -115,6 +150,43 @@ class Quickdraw::HistoryProcess
 		end
 
 		exit!(0)
+	end
+
+	private def unpack_binary(records, (keys, meta), path, worker, slot, seq_start, payload)
+		values = payload.unpack("Q<*")
+		i = 0
+		n = values.size
+		sequence = seq_start
+
+		while i < n
+			index = values[i]
+			line, class_name, description, variant = meta[index]
+			records << Quickdraw::History::Record.new(
+				key: keys[index],
+				path:,
+				line:,
+				class_name:,
+				description:,
+				variant:,
+				status: "passed",
+				duration: values[i + 1] * 1e-9,
+				stats: [
+					values[i + 2] * 1e-9,
+					values[i + 3] * 1e-9,
+					values[i + 4] * 1e-9,
+					values[i + 5] * 1e-9,
+					values[i + 6] * 1e-9,
+					values[i + 7],
+				],
+				assertions: values[i + 8],
+				details: nil,
+				worker:,
+				slot:,
+				sequence:,
+			)
+			sequence += 1
+			i += 9
+		end
 	end
 
 	# After the run has ended, so problems go straight to stderr.
