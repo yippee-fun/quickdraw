@@ -56,6 +56,13 @@ class CountersTest < Quickdraw::Test
 	end
 
 	test "what a thread the test left running adds later isn't the next test's" do
+		Fiber[:counters_test] = true
+		kept = Thread::Queue.new
+		keeping = Thread.new { kept.pop; Fiber[:counters_test] }
+		Fiber[:counters_test] = nil
+		kept << true
+		skip "A thread doesn't keep the fiber storage it started with on this Ruby" unless keeping.value
+
 		Quickdraw::Counters.start
 		waiting = Thread::Queue.new
 		left_running = Thread.new { waiting.pop; Quickdraw::Counters.add("late") }
