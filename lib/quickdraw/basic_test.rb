@@ -1,42 +1,6 @@
 # frozen_string_literal: true
 
 class Quickdraw::BasicTest
-	@active_checks = 0
-
-	class << self
-		attr_accessor :active_checks
-
-		def has_setup?
-			return @has_setup unless @has_setup.nil?
-
-			@has_setup = instance_method(:setup).owner != Quickdraw::BasicTest
-		end
-
-		def has_teardown?
-			return @has_teardown unless @has_teardown.nil?
-
-			@has_teardown = instance_method(:teardown).owner != Quickdraw::BasicTest
-		end
-
-		def method_added(name)
-			@has_setup = nil if name == :setup
-			@has_teardown = nil if name == :teardown
-			super
-		end
-
-		def include(*modules)
-			@has_setup = nil
-			@has_teardown = nil
-			super
-		end
-
-		def prepend(*modules)
-			@has_setup = nil
-			@has_teardown = nil
-			super
-		end
-	end
-
 	# Raised by #skip. An Exception rather than a StandardError, so a test's own
 	# `rescue => error` doesn't swallow it.
 	class Skip < Exception
@@ -88,6 +52,7 @@ class Quickdraw::BasicTest
 		@runner = runner
 		@deferred = nil
 		@contexts = nil
+		@checks = nil
 		@raised_context = nil
 	end
 
@@ -149,7 +114,7 @@ class Quickdraw::BasicTest
 
 	# Indicate that an assertion passed successfully.
 	def success!
-		((Quickdraw::BasicTest.active_checks == 0) ? @runner : runner).success!(@description)
+		runner.success!(@description)
 
 		nil
 	end
@@ -217,7 +182,7 @@ class Quickdraw::BasicTest
 	# What records assertions: a property's case while one of this test's runs
 	# (see Test#check), in its fiber and the threads it starts, or the test's.
 	private def runner
-		return @runner if Quickdraw::BasicTest.active_checks == 0
+		return @runner unless @checks
 
 		test, recorder = Fiber[:quickdraw_case]
 		test.equal?(self) ? recorder : @runner
@@ -230,11 +195,7 @@ class Quickdraw::BasicTest
 	# Inside config's around_test callbacks (see Configuration#around_test), so
 	# they cover setup and teardown too, and see the test's exceptions.
 	def run
-		if Quickdraw::Config.around_test_callbacks_empty?
-			run_test
-		else
-			Quickdraw::Config.around(self) { run_test }
-		end
+		Quickdraw::Config.around(self) { run_test }
 	rescue Skip => skip
 		@runner.skip!(skip.reason)
 	rescue Quickdraw::Interrupted
@@ -246,7 +207,7 @@ class Quickdraw::BasicTest
 	private def run_block = instance_exec(&@block)
 
 	private def run_test
-		@runner.measure("setup") { setup } if self.class.has_setup?
+		@runner.measure("setup") { setup }
 		around_test { @runner.measure("test") { run_block } }
 	rescue Skip, Quickdraw::Interrupted
 		raise
@@ -257,14 +218,12 @@ class Quickdraw::BasicTest
 		# Cleanup carries on after Ctrl-C, which then stops the worker.
 		interrupted = nil
 
-		if self.class.has_teardown?
-			begin
-				@runner.measure("teardown") { teardown }
-			rescue Quickdraw::Interrupted => error
-				interrupted = error
-			rescue Exception => error
-				error!(error)
-			end
+		begin
+			@runner.measure("teardown") { teardown }
+		rescue Quickdraw::Interrupted => error
+			interrupted = error
+		rescue Exception => error
+			error!(error)
 		end
 
 		# Deferred blocks are taken, so an around_test that runs the test again
