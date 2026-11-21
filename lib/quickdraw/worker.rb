@@ -25,6 +25,7 @@ class Quickdraw::Worker
 		# equals wall time and nothing is reported as waiting.
 		CPU_CLOCK = Process.const_defined?(:CLOCK_PROCESS_CPUTIME_ID) ? Process::CLOCK_PROCESS_CPUTIME_ID : Process::CLOCK_MONOTONIC
 		GC_KEYS = GC.stat.keys.freeze
+		NATIVE = Quickdraw::Native.available?
 
 		def initialize
 			@assertions = 0
@@ -37,6 +38,7 @@ class Quickdraw::Worker
 			@counts = nil
 			@output = nil
 			@leaks = nil
+			@metrics = [0, 0, 0, 0] if NATIVE
 		end
 
 		# Records the wall time of a phase of the test. Only the wall clock is read,
@@ -53,21 +55,34 @@ class Quickdraw::Worker
 		# Records the whole test's duration, CPU time, GC time and allocations.
 		# CPU time includes that of processes the test started and waited for (and
 		# theirs), since a test waiting on a busy process isn't idle.
-		def measure_test
-			wall = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
-			cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond)
-			children = children_cpu
-			gc = gc_milliseconds
-			allocations = allocated_objects
-			Quickdraw::Counters.start
+		if NATIVE
+			# One native call at each end, which allocates nothing.
+			def measure_test
+				Quickdraw::Native.metrics_start(@metrics)
+				Quickdraw::Counters.start
 
-			yield
-		ensure
-			@counts = Quickdraw::Counters.take
-			@duration = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - wall
-			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (children_cpu - children)
-			@stats[GC_TIME] = (gc_milliseconds - gc) * 1_000_000
-			@stats[ALLOCATIONS] = allocated_objects - allocations
+				yield
+			ensure
+				@counts = Quickdraw::Counters.take
+				@duration, @stats[CPU], @stats[GC_TIME], @stats[ALLOCATIONS] = Quickdraw::Native.metrics_finish(@metrics)
+			end
+		else
+			def measure_test
+				wall = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+				cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond)
+				children = children_cpu
+				gc = gc_milliseconds
+				allocations = allocated_objects
+				Quickdraw::Counters.start
+
+				yield
+			ensure
+				@counts = Quickdraw::Counters.take
+				@duration = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - wall
+				@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (children_cpu - children)
+				@stats[GC_TIME] = (gc_milliseconds - gc) * 1_000_000
+				@stats[ALLOCATIONS] = allocated_objects - allocations
+			end
 		end
 
 		def success!(_description)
@@ -188,7 +203,7 @@ class Quickdraw::Worker
 		@sampler = Quickdraw::Sampler.new if @profile
 
 		if @timeouts
-			@watchdog = Quickdraw::Watchdog.new do |seconds, threads|
+			@watchdog = Quickdraw::Watchdog.start do |seconds, threads|
 				@channel.write([:timeout, seconds, threads])
 			end
 		end
@@ -417,7 +432,7 @@ class Quickdraw::Worker
 
 		outcome = in_fork(seconds) do
 			# Its thread didn't survive the fork.
-			@watchdog &&= Quickdraw::Watchdog.new { nil }
+			@watchdog &&= Quickdraw::Watchdog.start { nil }
 			tracer = Quickdraw::Mutation::Tracer.new
 			traced = tracer.trace(subjects)
 

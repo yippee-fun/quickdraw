@@ -28,4 +28,34 @@ class NativeTest < Quickdraw::Test
 			assert_equal Quickdraw::Platform.efficiency_cores, levels.last
 		end
 	end
+
+	test "metrics are how much time, GC and allocation happened between start and finish" do
+		skip "Rust native extension not compiled" unless Quickdraw::Native.available?
+
+		metrics = [0, 0, 0, 0]
+		Quickdraw::Native.metrics_start(metrics)
+		objects = Array.new(100) { Object.new }
+		Process.wait(Process.spawn(RbConfig.ruby, "-e", "200_000.times { }"))
+		duration, cpu, gc, allocations = Quickdraw::Native.metrics_finish(metrics)
+
+		assert_equal objects.size, 100
+		assert_operator duration, :>, 0
+		assert_operator cpu, :>, 0
+		assert_operator gc, :>=, 0
+		assert_operator allocations, :>=, 100
+		assert_raises(TypeError) { Quickdraw::Native.metrics_start(1) }
+		assert_raises(TypeError) { Quickdraw::Native.metrics_finish(nil) }
+	end
+
+	test "a test's recorded stats are the same kind with or without the extension" do
+		recorder = Quickdraw::Worker::Recorder.new
+		recorder.measure_test { Array.new(100) { Object.new } }
+		result = recorder.to_h
+		stats = Quickdraw::STATS.zip(result.fetch("stats")).to_h
+
+		assert_operator result.fetch("duration"), :>, 0
+		assert_operator stats.fetch("cpu"), :>, 0
+		assert_operator stats.fetch("gc"), :>=, 0
+		assert_operator stats.fetch("allocations"), :>=, (GC.stat.key?(:total_allocated_objects) ? 100 : 0)
+	end
 end

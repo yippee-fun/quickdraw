@@ -6,6 +6,10 @@
 #
 # Runs alongside user code, so it must only use core Ruby.
 class Quickdraw::Watchdog
+	def self.start(&on_timeout)
+		(Quickdraw::NativeWatchdog.start(&on_timeout) if Quickdraw::Native.available?) || new(&on_timeout)
+	end
+
 	def initialize(&on_timeout)
 		@on_timeout = on_timeout
 		@mutex = Thread::Mutex.new

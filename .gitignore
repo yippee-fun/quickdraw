@@ -15,3 +15,4 @@ Gemfile.lock
 /ext/quickdraw_ext/Makefile
 /ext/quickdraw_ext/quickdraw_ext.*
 /lib/quickdraw/quickdraw_ext.*
+/ext/quickdraw_ext/Cargo.lock
