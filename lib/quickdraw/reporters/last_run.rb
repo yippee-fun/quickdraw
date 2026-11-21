@@ -80,6 +80,8 @@ class Quickdraw::Reporters::LastRun
 		give_up(error)
 	end
 
+	def passed_result(_path, _test, _duration, _setup, _body, _teardown, _cpu, _gc, _allocations, _assertions) = nil
+
 	def result(path, test, result)
 		return unless result["errors"].any? || result["failures"].any? || result["leaks"]
 

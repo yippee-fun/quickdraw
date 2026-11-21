@@ -7,21 +7,25 @@ class Quickdraw::Channel
 		down_reader, down_writer = IO.pipe
 		up_reader, up_writer = IO.pipe
 
-		[new(up_reader, down_writer), new(down_reader, up_writer)]
+		[new(up_reader, down_writer, synchronize: false), new(down_reader, up_writer, synchronize: true)]
 	end
 
 	# Bytes #read_available read of a message that hadn't all arrived.
 	READ_SIZE = 65_536
 	# Reads #read_available makes at most, so a fast writer can't keep it reading.
 	READS_AT_ONCE = 16
+	# High bit on the 4-byte length prefix flags a binary packed results frame
+	# (no Marshal encode/decode on the passing-test hot path).
+	BINARY_FLAG = 0x8000_0000
+	LENGTH_MASK = 0x7FFF_FFFF
 
-	def initialize(reader, writer)
+	def initialize(reader, writer, synchronize: true)
 		@reader = reader
 		@writer = writer
 		@buffer = "".b
 		@writer.sync = true
 		# A worker's watchdog thread can write while its main thread is mid-message.
-		@write_lock = Thread::Mutex.new
+		@write_lock = Thread::Mutex.new if synchronize
 	end
 
 	attr_reader :reader
@@ -36,7 +40,24 @@ class Quickdraw::Channel
 	# Returns false if the other end has gone away.
 	def write(message)
 		data = self.class.encode(message)
-		@write_lock.synchronize { @writer.write(data) }
+		if @write_lock
+			@write_lock.synchronize { @writer.write(data) }
+		else
+			@writer.write(data)
+		end
+		true
+	rescue Errno::EPIPE
+		false
+	end
+
+	# Writes a binary-packed batch of passing test results without Marshal.
+	def write_binary_results(packed)
+		frame = [BINARY_FLAG | packed.bytesize].pack("N") << packed
+		if @write_lock
+			@write_lock.synchronize { @writer.write(frame) }
+		else
+			@writer.write(frame)
+		end
 		true
 	rescue Errno::EPIPE
 		false
@@ -47,8 +68,9 @@ class Quickdraw::Channel
 	# readable.
 	def read
 		header = take(4) or return
-		data = take(header.unpack1("N")) or return
-		Marshal.load(data)
+		raw = header.unpack1("N")
+		data = take(raw & LENGTH_MASK) or return
+		(raw & BINARY_FLAG) != 0 ? [:results_bin, data] : Marshal.load(data)
 	rescue Errno::ECONNRESET
 		nil
 	end
@@ -72,12 +94,15 @@ class Quickdraw::Channel
 
 		messages = []
 		offset = 0
+		buf_size = @buffer.bytesize
 
-		while @buffer.bytesize - offset >= 4
-			size = @buffer.byteslice(offset, 4).unpack1("N")
-			break if @buffer.bytesize - offset - 4 < size
+		while buf_size - offset >= 4
+			raw = @buffer.unpack1("N", offset:)
+			size = raw & LENGTH_MASK
+			break if buf_size - offset - 4 < size
 
-			messages << Marshal.load(@buffer.byteslice(offset + 4, size))
+			payload = @buffer.byteslice(offset + 4, size)
+			messages << ((raw & BINARY_FLAG) != 0 ? [:results_bin, payload] : Marshal.load(payload))
 			offset += 4 + size
 		end
 

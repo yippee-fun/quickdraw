@@ -77,6 +77,11 @@ class Quickdraw::Outcome
 		end
 	end
 
+	def record_passed(assertions)
+		@tests += 1
+		@assertions += assertions
+	end
+
 	def record(result)
 		@tests += 1
 		@assertions += result["assertions"]

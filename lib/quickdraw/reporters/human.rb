@@ -80,6 +80,15 @@ class Quickdraw::Reporters::Human
 		"#{ruby} · #{pluralize(Quickdraw::Platform.cpu_cores, 'core')} · #{pluralize(@processes, 'worker')} · seed #{@seed}"
 	end
 
+	def passed_result(path, test, duration, setup, body, teardown, cpu, gc, allocations, _assertions)
+		@timings.record_passed(path, test, duration, setup, body, teardown, cpu, gc, allocations)
+		tally = @tallies[path][test["variant"]]
+		tally.tests += 1
+		tally.duration += duration
+		tally.statuses["passed"] += 1
+		@status_line.test_passed
+	end
+
 	def result(path, test, result)
 		@timings.record(path, test, result)
 		@profile.record(result)

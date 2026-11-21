@@ -4,6 +4,13 @@
 class Quickdraw::Reporters::Multiple
 	def initialize(reporters)
 		@reporters = reporters
+		@fast = reporters.all? { |reporter| reporter.respond_to?(:passed_result) }
+	end
+
+	def supports_passed_result? = @fast
+
+	def passed_result(path, test, duration, setup, body, teardown, cpu, gc, allocations, assertions)
+		@reporters.each { |reporter| reporter.passed_result(path, test, duration, setup, body, teardown, cpu, gc, allocations, assertions) }
 	end
 
 	def booting = @reporters.each(&:booting)

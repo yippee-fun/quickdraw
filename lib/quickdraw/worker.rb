@@ -216,6 +216,7 @@ class Quickdraw::Worker
 
 		if @timeouts
 			@watchdog = Quickdraw::Watchdog.new do |seconds, threads|
+				flush_pending_binary
 				@channel.write([:timeout, seconds, threads])
 			end
 		end
@@ -258,12 +259,30 @@ class Quickdraw::Worker
 				@channel.write([:started])
 				tests = @files.fetch(path)
 				@capture&.start
+				@pending_bin = []
+				last_flush = now
 
 				indices.each do |index|
 					seed(path, index)
-					@channel.write([:result, index, run(tests[index], compact: true)])
+					res = run(tests[index], compact: true)
+
+					if Array === res && res[3].empty?
+						stats = res[1]
+						@pending_bin.push(index, res[0], stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], res[2])
+
+						if @pending_bin.size >= 576 || (now - last_flush) >= 0.02
+							flush_pending_binary
+							last_flush = now
+						end
+					else
+						flush_pending_binary
+						@channel.write([:result, index, res])
+						last_flush = now
+					end
 				end
 
+				flush_pending_binary
+				@pending_bin = nil
 				@capture&.stop
 				covered(path) if @coverage
 				@channel.write([:ready, Process.pid])
@@ -764,6 +783,14 @@ class Quickdraw::Worker
 		$stderr.flush
 	rescue IOError
 		nil
+	end
+
+	private def flush_pending_binary
+		return unless @pending_bin && !@pending_bin.empty?
+
+		data = @pending_bin.pack("Q<*")
+		@pending_bin.clear
+		@channel.write_binary_results(data)
 	end
 
 	private def now

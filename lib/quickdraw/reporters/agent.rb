@@ -41,6 +41,8 @@ class Quickdraw::Reporters::Agent
 		@seed = seed
 	end
 
+	def passed_result(_path, _test, _duration, _setup, _body, _teardown, _cpu, _gc, _allocations, _assertions) = nil
+
 	def result(path, test, result)
 		@problems << [path, test, result] if result["errors"].any? || result["failures"].any?
 		@leaks << [path, test, result["leaks"]] if result["leaks"]

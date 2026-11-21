@@ -51,6 +51,10 @@ class Quickdraw::Reporters::StatusLine
 		end
 	end
 
+	def test_passed
+		@tests_done += 1
+	end
+
 	def test_done(status)
 		@tests_done += 1
 
