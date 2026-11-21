@@ -16,6 +16,15 @@ class CLITest < Quickdraw::Test
 		refute_includes result.stderr, ".rb:"
 	end
 
+	test "takes clustered switches, attached values and paths after --", timeout: 20 do
+		result = passing.run("-tbp1", "--name=a", "-s7", "--no-history", "--", "a.test.rb")
+
+		assert(result.success?) { result.output }
+		match { result => { summary: /\A1 test · 1 assertion/ } }
+		assert_includes result.stdout, "Slowest tests"
+		assert_includes result.stdout, "Workers  1 (manual)"
+	end
+
 	test "explains ambiguous options and bad values", timeout: 20 do
 		match { passing.run("--fail") => { stderr: /Did you mean --failed or --fail-fast\?/ } }
 		match { passing.run("-p", "abc") => { stderr: /--processes takes a whole number, not "abc"\./ } }
