@@ -70,7 +70,7 @@ class Quickdraw::Channel
 		header = take(4) or return
 		raw = header.unpack1("N")
 		data = take(raw & LENGTH_MASK) or return
-		(raw & BINARY_FLAG) != 0 ? [:results_bin, data] : Marshal.load(data)
+		((raw & BINARY_FLAG) != 0) ? [:results_bin, data] : Marshal.load(data)
 	rescue Errno::ECONNRESET
 		nil
 	end
@@ -102,7 +102,7 @@ class Quickdraw::Channel
 			break if buf_size - offset - 4 < size
 
 			payload = @buffer.byteslice(offset + 4, size)
-			messages << ((raw & BINARY_FLAG) != 0 ? [:results_bin, payload] : Marshal.load(payload))
+			messages << (((raw & BINARY_FLAG) != 0) ? [:results_bin, payload] : Marshal.load(payload))
 			offset += 4 + size
 		end
 
