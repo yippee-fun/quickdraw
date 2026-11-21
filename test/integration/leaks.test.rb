@@ -172,6 +172,25 @@ class LeaksTest < Quickdraw::Test
 		assert_includes result.stdout, "This test made no assertions."
 	end
 
+	test "finds threads started with a constructor saved before leak tracking", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
+		result = project(
+			"config/quickdraw.rb" => "$new_thread = Thread.method(:new)\n",
+			"saved.test.rb" => <<~RUBY,
+				class Saved < Quickdraw::Test
+					test("1 starts none") { assert true }
+					test("2 saved constructor") { $new_thread.call { sleep }; assert true }
+					test("3 starts none") { assert true }
+				end
+			RUBY
+		).run("-p", "1", "--no-history", "--seed", "1", "--format", "json")
+
+		leaks = result.events.select { |event| event["leaks"] }.to_h { |event| [event["name"], event["leaks"].map { |leak| leak["message"] }] }
+
+		assert_equal leaks, { "Saved › 2 saved constructor" => ["A thread started at saved.test.rb:3 is still running."] }
+	end
+
 	test "reports a failure after a test from a thread that was running before it", timeout: 20 do
 		skip "Leak checks need fork" unless Process.respond_to?(:fork)
 

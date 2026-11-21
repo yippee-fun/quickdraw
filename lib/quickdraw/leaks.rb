@@ -3,7 +3,8 @@
 # Finds state a test left behind, after every test: threads and Ractors it
 # started that are still running, a fiber scheduler it set, child processes it
 # didn't wait for, and changes to ENV. Unless a test started a thread or a
-# process, or changed ENV, this only compares the scheduler and Ractor count.
+# process, or changed ENV, this only compares the scheduler and the thread and
+# Ractor counts.
 #
 # Runs in the worker alongside user code, so it must only use core Ruby.
 class Quickdraw::Leaks
@@ -159,19 +160,18 @@ class Quickdraw::Leaks
 		leaks = nil
 		started = ThreadStarts.take
 
-		# Only threads Ruby code started have a location to report, and those
-		# are all recorded, so with none there's no need to list threads.
-		if started
-			threads = Thread.list
+		threads = Thread.list
 
-			unless threads == @threads
-				(threads - @threads).each do |thread|
-					location = started_at(thread) or next
-					(leaks ||= []) << { "kind" => "thread", "message" => Quickdraw.utf8("A thread started at #{location} is still running.") }
-				end
-
-				@threads = threads
+		# Comparing the lists takes as long as listing, so they're only compared
+		# if a thread was started or the count changed, which also catches one
+		# started with a Thread.new saved before Starting was prepended.
+		if (started || threads.size != @threads.size) && threads != @threads
+			(threads - @threads).each do |thread|
+				location = started_at(thread) or next
+				(leaks ||= []) << { "kind" => "thread", "message" => Quickdraw.utf8("A thread started at #{location} is still running.") }
 			end
+
+			@threads = threads
 		end
 
 		# Unsetting it would run its fibers to the end, which could take forever.
