@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 # Aggregates per-test timing results across the whole run. Results arrive with
-# times already converted to seconds. Each test's record is only kept with
-# `each_test`, for #slowest_tests; otherwise only the slowest is.
+# times already converted to seconds. Only the `keep` slowest tests' records
+# are kept, since #record runs for every test.
 class Quickdraw::Timings
 	CPU = Quickdraw::STATS.index("cpu")
 	GC_TIME = Quickdraw::STATS.index("gc")
@@ -12,15 +12,19 @@ class Quickdraw::Timings
 		def wall(phase) = stats[Quickdraw::PHASES.index(phase)]
 	end
 
-	attr_reader :count, :test_time, :slowest
+	attr_reader :count, :test_time
 
-	def initialize(each_test:)
-		@tests = [] if each_test
+	def initialize(keep: 1)
+		raise ArgumentError, "Timings keeps at least the slowest test." unless keep >= 1
+
+		@keep = keep
+		@kept = []
+		# The shortest duration kept, once `keep` are.
+		@floor = -Float::INFINITY
 		@count = 0
 		# Total time spent in tests, summed across workers.
 		@test_time = 0.0
-		@slowest = nil
-		@files = Hash.new { |hash, key| hash[key] = [0.0, 0] }
+		@files = {}
 		@totals = Array.new(Quickdraw::STATS.size, 0)
 		@counts = Hash.new { |hash, key| hash[key] = [0, 0.0] }
 	end
@@ -53,16 +57,22 @@ class Quickdraw::Timings
 
 		@count += 1
 		@test_time += duration
-		slowest = @slowest.nil? || duration > @slowest.duration
-		timed = Test.new(duration:, path:, test:, stats:) if slowest || @tests
-		@slowest = timed if slowest
-		@tests << timed if @tests
+		keep(duration, path, test, stats) if duration > @floor
 
-		file = @files[path]
+		# Results mostly come in runs from one file.
+		file = path.equal?(@path) ? @file : file(path)
 		file[0] += duration
 		file[1] += 1
 
-		stats.each_with_index { |value, index| @totals[index] += value }
+		# In Quickdraw::STATS' order. Unrolled, since a loop takes three times as long.
+		setup, body, teardown, cpu, gc, allocations = stats
+		totals = @totals
+		totals[0] += setup
+		totals[1] += body
+		totals[2] += teardown
+		totals[3] += cpu
+		totals[4] += gc
+		totals[5] += allocations
 
 		result["counts"]&.each do |name, (count, seconds)|
 			total = @counts[name]
@@ -70,6 +80,11 @@ class Quickdraw::Timings
 			total[1] += seconds
 		end
 	end
+
+	def slowest = @kept.max_by(&:duration)
+
+	# The `keep` slowest, slowest first.
+	def slowest_tests = @kept.sort_by { |test| -test.duration }
 
 	# From Quickdraw::Counters: [name, count per test, seconds per test], most
 	# frequent first.
@@ -113,15 +128,22 @@ class Quickdraw::Timings
 		share(test_time, elapsed * processes)
 	end
 
-	def slowest_tests(limit)
-		raise "Timings only keeps each test with each_test: true." unless @tests
-
-		@tests.max_by(limit, &:duration)
-	end
-
 	# [path, total duration, test count]
 	def slowest_files(limit)
 		@files.max_by(limit) { |_path, (duration, _count)| duration }.map { |path, (duration, count)| [path, duration, count] }
+	end
+
+	private def keep(duration, path, test, stats)
+		@kept << Test.new(duration:, path:, test:, stats:)
+		return if @kept.size < @keep
+
+		@kept.delete_at(@kept.each_index.min_by { |index| @kept[index].duration }) if @kept.size > @keep
+		@floor = @kept.min_by(&:duration).duration
+	end
+
+	private def file(path)
+		@path = path
+		@file = (@files[path] ||= [0.0, 0])
 	end
 
 	private def phases_time

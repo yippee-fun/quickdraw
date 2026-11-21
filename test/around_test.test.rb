@@ -28,6 +28,60 @@ class CountersTest < Quickdraw::Test
 		assert_equal Quickdraw::Counters.take, {}
 	end
 
+	test "counts what a thread the test started adds, and what any other thread adds meanwhile" do
+		Quickdraw::Counters.take
+		waiting = Thread::Queue.new
+		outsider = Thread.new { waiting.pop; Quickdraw::Counters.add("outside") }
+
+		Quickdraw::Counters.start
+		Thread.new { Quickdraw::Counters.add("inside", 0.5) }.join
+		waiting << true
+		outsider.join
+
+		assert_equal Quickdraw::Counters.take, { "inside" => [1, 0.5], "outside" => [1, 0.0] }
+		assert_equal Quickdraw::Counters.take, {}
+	end
+
+	test "start forgets what was counted before it" do
+		Quickdraw::Counters.take
+		Quickdraw::Counters.add("before")
+		Quickdraw::Counters.start
+
+		assert_equal Quickdraw::Counters.take, {}
+
+		Quickdraw::Counters.start
+		Quickdraw::Counters.add("after")
+
+		assert_equal Quickdraw::Counters.take, { "after" => [1, 0.0] }
+	end
+
+	test "what a thread the test left running adds later isn't the next test's" do
+		Quickdraw::Counters.start
+		waiting = Thread::Queue.new
+		left_running = Thread.new { waiting.pop; Quickdraw::Counters.add("late") }
+		Quickdraw::Counters.take
+
+		Quickdraw::Counters.start
+		waiting << true
+		left_running.join
+
+		assert_equal Quickdraw::Counters.take, {}
+	end
+
+	# With nothing counted yet, take could return early. An add that's under
+	# way, which holds the lock, would then finish first and still be missed.
+	test "take waits for an add that's under way, even with nothing counted yet" do
+		Quickdraw::Counters.take
+		taking = nil
+
+		Quickdraw::Counters.instance_variable_get(:@mutex).synchronize do
+			taking = Thread.new { Quickdraw::Counters.take }
+			assert_nil taking.join(0.05)
+		end
+
+		assert_equal taking.value, {}
+	end
+
 	test "a name must be a String" do
 		assert_raises(ArgumentError) { Quickdraw::Counters.add(:queries) }
 	end

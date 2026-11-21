@@ -3,7 +3,7 @@
 module Quickdraw::Assertions
 	def assert_equal(actual, expected)
 		if actual == expected
-			((Quickdraw::BasicTest.active_checks == 0) ? @runner : runner).success!(@description)
+			runner.success!(@description)
 			return nil
 		end
 

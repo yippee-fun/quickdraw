@@ -160,13 +160,8 @@ class Quickdraw::Reporters::StatusLine
 		@cursor_hidden = false
 	end
 
-	# From stty rather than io/console, which group loaders, forked from this
-	# process, would pass on to tests.
 	private def terminal_width
-		columns = IO.popen(["stty", "size"], in: @io, err: File::NULL, &:read).split.last.to_i
-		columns.positive? ? columns : 80
-	rescue SystemCallError
-		80
+		Quickdraw::Platform.terminal_columns(@io) || 80
 	end
 
 	private def red(text) = style(text, 31)
