@@ -6,8 +6,6 @@
 # arrays and hashes, since user objects may not survive Marshal.
 class Quickdraw::Worker
 	ANONYMOUS_MODULE = /#<Module:0x\h+>::/
-	# Keys in a result with no output or leaks (see Recorder#to_h).
-	PLAIN_RESULT_SIZE = 8
 
 	# How often to check that a fork running mutation tests is still alive.
 	FORK_CHECK_INTERVAL = 0.1
@@ -28,24 +26,6 @@ class Quickdraw::Worker
 		HAS_GC_TIME = GC_KEYS.include?(:time)
 		HAS_ALLOCATIONS = GC_KEYS.include?(:total_allocated_objects)
 
-		@last_children_cpu = 0
-
-		def self.children_cpu
-			times = Process.times
-			((times.cutime + times.cstime) * 1_000_000_000).round
-		end
-
-		def self.reset_children_cpu
-			@last_children_cpu = children_cpu
-		end
-
-		def self.take_children_cpu_delta
-			current = children_cpu
-			delta = current - @last_children_cpu
-			@last_children_cpu = current
-			delta
-		end
-
 		def initialize
 			@assertions = 0
 			@failures = []
@@ -63,10 +43,11 @@ class Quickdraw::Worker
 		# since it's ~30ns against ~200ns for the CPU clock. A phase that runs more
 		# than once (e.g. a retrying around hook) accumulates.
 		def measure(phase)
+			# Quicker than hashing the name.
 			index = case phase
-			when "test" then 1
-			when "setup" then 0
-			when "teardown" then 2
+			in "test" then 1
+			in "setup" then 0
+			in "teardown" then 2
 			else PHASE_INDICES.fetch(phase)
 			end
 			started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
@@ -77,31 +58,30 @@ class Quickdraw::Worker
 
 		# Records the whole test's duration, CPU time, GC time and allocations.
 		# CPU time includes that of processes the test started and waited for (and
-		# theirs), since a test waiting on a busy process isn't idle.
-		def measure_test
-			track_children = !Quickdraw::Leaks::ProcessStarts.watching? || Quickdraw::Leaks::ProcessStarts.started
-			children = track_children ? self.class.children_cpu : nil
+		# theirs), since a test waiting on a busy process isn't idle. Reading
+		# theirs takes ~400ns, so `children` is the last test's #children_cpu
+		# where no process has been waited for since.
+		def measure_test(children = nil)
+			children ||= read_children_cpu
 			wall = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 			cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond)
-			gc = HAS_GC_TIME ? GC.stat(:time) : 0
-			allocations = HAS_ALLOCATIONS ? GC.stat(:total_allocated_objects) : 0
+			gc = gc_milliseconds
+			allocations = allocated_objects
 			Quickdraw::Counters.start
 
 			yield
 		ensure
 			@counts = Quickdraw::Counters.take
 			@duration = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - wall
-			children_delta = if track_children
-				self.class.children_cpu - children
-			elsif Quickdraw::Leaks::ProcessStarts.started
-				self.class.take_children_cpu_delta
-			else
-				0
-			end
-			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + children_delta
-			@stats[GC_TIME] = ((HAS_GC_TIME ? GC.stat(:time) : 0) - gc) * 1_000_000
-			@stats[ALLOCATIONS] = (HAS_ALLOCATIONS ? GC.stat(:total_allocated_objects) : 0) - allocations
+			@children_cpu = read_children_cpu
+			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (@children_cpu - children)
+			@stats[GC_TIME] = (gc_milliseconds - gc) * 1_000_000
+			@stats[ALLOCATIONS] = allocated_objects - allocations
 		end
+
+		# The CPU time, in nanoseconds, of the child processes that had been
+		# waited for when the test ended.
+		attr_reader :children_cpu
 
 		def success!(_description = nil)
 			@assertions += 1
@@ -154,6 +134,8 @@ class Quickdraw::Worker
 			@late = late
 		end
 
+		# A plain passing test's result as just its numbers, which is several
+		# times quicker to send and to read than #to_h. See Worker.result.
 		def to_compact
 			if @failures.empty? && @errors.empty? && !@skipped && !@profile && !@output && !@leaks
 				[@duration, @stats, @assertions, @counts]
@@ -180,6 +162,14 @@ class Quickdraw::Worker
 			result["leaks"] = @leaks if @leaks
 			result
 		end
+
+		private def read_children_cpu
+			times = Process.times
+			((times.cutime + times.cstime) * 1_000_000_000).round
+		end
+
+		private def gc_milliseconds = HAS_GC_TIME ? GC.stat(:time) : 0
+		private def allocated_objects = HAS_ALLOCATIONS ? GC.stat(:total_allocated_objects) : 0
 	end
 
 	# `timeouts` is false where the worker shares a process with the coordinator,
@@ -209,6 +199,8 @@ class Quickdraw::Worker
 		# Failures threads made after the tests that started them finished, as
 		# leaks, for the test running when they're found.
 		@late = Thread::Queue.new
+		# The last test's Recorder#children_cpu, while it's still current.
+		@children_cpu = nil
 	end
 
 	def call
@@ -232,7 +224,6 @@ class Quickdraw::Worker
 
 		# After the watchdog and sampler start, so their threads aren't leaks.
 		@leaks = Quickdraw::Leaks.new(Quickdraw::ROOT) if @leak_mode
-		Recorder.reset_children_cpu
 		@terminal_turn = Thread::Queue.new([true])
 		Quickdraw::Debugger.install(self)
 
@@ -264,6 +255,8 @@ class Quickdraw::Worker
 					@channel.write([:result, index, run(tests[index], compact: true)])
 				end
 
+				# Processes can be waited for before the next test, as a file loads.
+				@children_cpu = nil
 				@capture&.stop
 				covered(path) if @coverage
 				@channel.write([:ready, Process.pid])
@@ -329,14 +322,7 @@ class Quickdraw::Worker
 		[:load_failed, path, Quickdraw.serialize_error(error)]
 	end
 
-	# A passing test's result as just its numbers, which is several times quicker
-	# to send and to read. See .result.
-	def self.compact(result)
-		plain = result.size == PLAIN_RESULT_SIZE && result["failures"].empty? && result["errors"].empty? && !result["skipped"] && !result["profile"]
-		plain ? [result["duration"], result["stats"], result["assertions"], result["counts"]] : result
-	end
-
-	# A result as Recorder#to_h made it, from what .compact sent.
+	# A result as Recorder#to_h makes it, from what Recorder#to_compact made.
 	def self.result(sent)
 		case sent
 		in Hash then sent
@@ -371,7 +357,7 @@ class Quickdraw::Worker
 	private def run(definition, compact: false)
 		recorder = Recorder.new
 
-		recorder.measure_test do
+		recorder.measure_test(@children_cpu) do
 			next recorder.pending! unless definition.block
 
 			test = definition.test_class.new(description: definition.description, block: definition.block, runner: recorder)
@@ -404,8 +390,13 @@ class Quickdraw::Worker
 			nil
 		end
 
+		@children_cpu = recorder.children_cpu
+
 		if @leaks
+			# The check waits for processes the test left, which aren't the next test's.
+			@children_cpu = nil if Quickdraw::Leaks::ProcessStarts.started
 			leaks = @leaks.check
+
 			unless @late.empty?
 				late = late_failures
 				leaks = leaks ? leaks.concat(late) : late
