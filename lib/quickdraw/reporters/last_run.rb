@@ -122,27 +122,26 @@ class Quickdraw::Reporters::LastRun
 	private def write(event)
 		return unless @file
 
-		line = begin
-			fast_json(event)
-		rescue ArgumentError
-			require "json"
-			begin
-				JSON.generate(utf8(event))
-			rescue JSON::GeneratorError => error
-				give_up(error)
-				return
-			end
-		end
-
+		line = encode_json(event) or return
 		@file.puts(line)
 	rescue SystemCallError => error
 		give_up(error)
 	end
 
+	private def encode_json(event)
+		fast_json(event)
+	rescue ArgumentError
+		require "json"
+		JSON.generate(utf8(event))
+	rescue JSON::GeneratorError => error
+		give_up(error)
+		nil
+	end
+
 	private def fast_json(value)
 		case value
 		in String
-			%("#{Quickdraw.utf8(value).gsub(/["\\\x00-\x1f]/) { |char| JSON_ESCAPES[char] || format("\\u%04x", char.ord) }}")
+			%("#{Quickdraw.utf8(value).gsub(/["\\\x00-\x1f]/) { |char| JSON_ESCAPES[char] || format('\\u%04x', char.ord) }}")
 		in Integer
 			value.to_s
 		in Float
