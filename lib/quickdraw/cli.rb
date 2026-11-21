@@ -16,20 +16,12 @@ class Quickdraw::CLI
 	end
 
 	def call
-		# For the last run's report.
-		@command_line = [Quickdraw::Reporters.command, *@args.map { |argument| argument.match?(%r{\A[\w./:=@%+,-]+\z}) ? argument : argument.inspect }].join(" ")
+		@command_line = command_line
 
-		# A file or directory with a command's name is still run as tests.
-		case @args
-		in ["all" | "browser" => scope, *rest] if !File.exist?(scope) && !(@args in ["browser", "install", *])
-			@scope = scope
-			@args = rest
-		in [name, *] if !File.exist?(name) && (command = Quickdraw::Commands.find(name))
+		if (command = take_command)
 			# Commands don't give out the terminal, though a run that started this one might.
 			ENV.delete(Quickdraw::Debugger::FLAG)
 			exit(command.new(@args.drop(1)).call)
-		else
-			nil
 		end
 
 		# optparse, etc and anything else needed to parse options load in a
@@ -53,8 +45,58 @@ class Quickdraw::CLI
 		if options[:watch]
 			watch(options)
 		else
+			# Before the run loads anything more, which the daemon forks without.
+			Quickdraw::Daemon::Server.start if Quickdraw::Daemon.wanted? && daemon_serves?(options)
 			exit(run(options).exit_status)
 		end
+	end
+
+	# For a daemon (see Daemon::Server), in a process that's thrown away: the
+	# options of the run the arguments ask for, or nil for what only a cold
+	# start can do.
+	def plan
+		return if take_command
+
+		options = parse
+		options if daemon_serves?(options)
+	end
+
+	# In a fork of the daemon, with its loaders: the run that #plan gave
+	# `options` for. Returns its exit status, or nil if config turned out to
+	# ask for what only a cold start can do (see WarmLoaders#decline).
+	def serve(options, warm_loaders)
+		@command_line = command_line
+		take_command
+		catch(:declined) { run(options.merge(warm_loaders:)).exit_status }
+	end
+
+	# For the last run's report.
+	private def command_line
+		[Quickdraw::Reporters.command, *@args.map { |argument| argument.match?(%r{\A[\w./:=@%+,-]+\z}) ? argument : argument.inspect }].join(" ")
+	end
+
+	# Takes `all` or `browser` from the arguments, as the scope. Returns the
+	# command to run instead of tests, if the arguments name one. A file or
+	# directory with a command's name is still run as tests.
+	private def take_command
+		case @args
+		in ["all" | "browser" => scope, *rest] if !File.exist?(scope) && !(@args in ["browser", "install", *])
+			@scope = scope
+			@args = rest
+			nil
+		in [name, *] if !File.exist?(name)
+			Quickdraw::Commands.find(name)
+		else
+			nil
+		end
+	end
+
+	# Whether a daemon's loaders, which boot before any run, suit this one:
+	# not with what they'd have to boot differently for, or what changes the
+	# process itself. Nor with --flakes, which warm loaders don't report.
+	private def daemon_serves?(options)
+		options[:daemon] != false && !machine_readable?(options) &&
+			[:watch, :coverage, :profile, :efficiency, :flakes_path].none? { |name| options[name] }
 	end
 
 	private def parse
@@ -393,6 +435,10 @@ class Quickdraw::CLI
 
 			parser.on("--no-history", "Don’t read or record run history (#{HISTORY_PATH})") do
 				options[:history] = false
+			end
+
+			parser.on("--no-daemon", "Start cold, rather than from the daemon the last run left with config booted (or set #{Quickdraw::Daemon::VARIABLE}=0)") do
+				options[:daemon] = false
 			end
 
 			parser.on("-v", "--version", "Print the version") do

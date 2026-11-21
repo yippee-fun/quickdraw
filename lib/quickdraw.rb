@@ -21,6 +21,7 @@ module Quickdraw
 	autoload :Commands, "quickdraw/commands"
 	autoload :Watch, "quickdraw/watch"
 	autoload :WarmLoaders, "quickdraw/warm_loaders"
+	autoload :Daemon, "quickdraw/daemon"
 	autoload :Replay, "quickdraw/replay"
 	autoload :Sampler, "quickdraw/sampler"
 	autoload :Profile, "quickdraw/profile"

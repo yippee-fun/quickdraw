@@ -2,4 +2,6 @@
 # frozen_string_literal: true
 
 require_relative "../lib/quickdraw"
+# Exits, if this project's daemon runs the tests.
+Quickdraw::Daemon.run(ARGV)
 Quickdraw::CLI.new(ARGV).call

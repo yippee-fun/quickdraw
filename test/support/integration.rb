@@ -130,8 +130,9 @@ module Integration
 		# size, which both streams go to, so everything is in stdout.
 		#
 		# A block is called with the output so far and the process's input about
-		# every 50ms, to interact with it as a person would.
-		def run(*arguments, env: {}, timeout: 10, interrupt_when: nil, tty: nil, &interact)
+		# every 50ms, to interact with it as a person would. With `input`, its
+		# stdin is that file instead.
+		def run(*arguments, env: {}, timeout: 10, interrupt_when: nil, tty: nil, input: nil, &interact)
 			# Unset what Quickdraw sets in this test's own worker, or the environment
 			# this suite runs in (an AI agent, GitHub Actions, an option parser
 			# setting), so behaviour is only what the test asks for.
@@ -149,12 +150,14 @@ module Integration
 				"BUNDLE_GEMFILE" => nil,
 				"BUNDLER_SETUP" => nil,
 				"RUBYLIB" => $LOAD_PATH.join(File::PATH_SEPARATOR),
+				# Each run starts cold, unless a test is about the daemon.
+				"QUICKDRAW_DAEMON" => "0",
 				**Quickdraw::Reporters::AGENT_VARIABLES.to_h { |name| [name, nil] },
 				**env,
 			}
 			command = [RbConfig.ruby, "-I", File.join(ROOT, "lib"), EXECUTABLE, *arguments]
 
-			pid, stdout_reader, stderr_reader, input = tty ? spawn_on_terminal(environment, command, *tty) : spawn(environment, command)
+			pid, stdout_reader, stderr_reader, input = tty ? spawn_on_terminal(environment, command, *tty) : spawn(environment, command, input)
 			readers = [stdout_reader, stderr_reader].compact
 			stdout = +""
 			stderr = +""
@@ -221,11 +224,11 @@ module Integration
 			end
 		end
 
-		private def spawn(environment, command)
+		private def spawn(environment, command, input)
 			stdout_reader, stdout_writer = IO.pipe
 			stderr_reader, stderr_writer = IO.pipe
 			stdin_reader, stdin_writer = IO.pipe
-			pid = Process.spawn(environment, *command, chdir: @directory, in: stdin_reader, out: stdout_writer, err: stderr_writer, pgroup: true)
+			pid = Process.spawn(environment, *command, chdir: @directory, in: input || stdin_reader, out: stdout_writer, err: stderr_writer, pgroup: true)
 
 			[pid, stdout_reader, stderr_reader, stdin_writer]
 		ensure
@@ -287,6 +290,47 @@ module Integration
 
 		private def now
 			Process.clock_gettime(Process::CLOCK_MONOTONIC)
+		end
+	end
+
+	# For tests of the daemon (see Quickdraw::Daemon), which other tests' runs
+	# don't leave or use.
+	module Daemons
+		# Runs Quickdraw as Project#run does, where runs leave and use daemons,
+		# with no stdin, since only a cold start can pass one on.
+		def daemon_run(project, *, env: {}, tty: nil, **, &)
+			project.run(*, env: { "QUICKDRAW_DAEMON" => nil, **env }, tty:, input: (File::NULL unless tty), **, &)
+		end
+
+		def wait_until(seconds = 10)
+			deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+			sleep 0.01 until yield || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+			assert(yield) { "Gave up waiting after #{seconds}s." }
+		end
+
+		def daemon_directory(project) = Quickdraw::Daemon.directory(project.directory)
+		def daemon?(project) = File.exist?(File.join(daemon_directory(project), "requests"))
+		def daemon_pid(project) = Integer(File.read(File.join(daemon_directory(project), "pid")))
+
+		# Stops the project's daemon when the test ends. Returns the project.
+		def with_daemon(project)
+			defer do
+				if daemon?(project)
+					Process.kill("TERM", daemon_pid(project))
+					wait_until { !Dir.exist?(daemon_directory(project)) }
+				end
+			end
+
+			project
+		end
+
+		# Runs once, cold, and again from the daemon it leaves, once that has
+		# booted. Returns the cold run's result.
+		def warm(project, *, **)
+			result = daemon_run(project, "-p", "1", *, **)
+			wait_until { daemon?(project) }
+			daemon_run(project, "-p", "1", *, **)
+			result
 		end
 	end
 

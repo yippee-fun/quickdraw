@@ -696,6 +696,8 @@ class Quickdraw::Coordinator
 	# Configuration#settings), or else the defaults. Retries are as many as
 	# the channels opened for them allow (see Configuration::MOST_RETRIES).
 	private def apply_settings(settings)
+		# Flakes are reported by a loader that then exits (see #call).
+		@warm_loaders&.decline if settings[:flakes] || settings[:on_flaky]
 		@capture = settings.fetch(:capture, true) if @capture.nil?
 		@capture = :loading if @capture && @capture_loading
 		@retries.count = @forking ? (@retry_count || settings.fetch(:retries, 1)) : 0
@@ -772,6 +774,8 @@ class Quickdraw::Coordinator
 		end
 
 		left_out, @unloaded = @unloaded.partition { |path, _display_path, group| !selected?(path, browser_groups.key?(group)) }
+		# A browser group's setup clears the last run's artifacts, so it has to run for each run.
+		@warm_loaders&.decline if @unloaded.any? { |_path, _display_path, group| browser_groups.key?(group) }
 		@outcome.browser_files_left_out = left_out.filter_map { |_path, display_path, group| display_path if browser_groups.key?(group) }.uniq.size
 
 		# So its coverage isn't taken for the whole file's.
