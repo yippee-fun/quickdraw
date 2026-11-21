@@ -54,12 +54,14 @@ class Quickdraw::BasicTest
 	# from `quickdraw mutate --unique-kills`, for a test of code that can't be
 	# mutated, such as a template or configuration.
 	def self.test(description = nil, timeout: nil, mutation: true, &block)
-		line = block ? block.source_location[1] : caller_locations(1, 1).first.lineno
-
 		if block
+			location = block.source_location
+			line = location[1]
 			@occurrences ||= {}
 			@description_counts ||= Hash.new(0)
-			@occurrences[block.source_location] = @description_counts[description] += 1
+			@occurrences[location] = @description_counts[description] += 1
+		else
+			line = caller_locations(1, 1).first.lineno
 		end
 
 		Quickdraw.register(Quickdraw::Definition.new(test_class: self, description:, block:, timeout:, line:, mutation:))
