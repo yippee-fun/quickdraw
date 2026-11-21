@@ -111,6 +111,12 @@ module Quickdraw
 	def self.register(test)
 		raise "Tests can only be defined while Quickdraw loads a test file." unless @tests
 
+		# Nearly every test is defined in the body of a class in the file being
+		# loaded. Nothing that file requires can be running beneath that body,
+		# so the test belongs to the file. Taking the one frame that called
+		# `test` is several times quicker than taking a backtrace.
+		return @tests << test if body?(caller_locations(2, 1)&.first)
+
 		# Tests defined by another selected test file that this one requires
 		# belong to that file. Quickdraw loads it separately. The file being
 		# required is usually a few frames up, so the whole backtrace, which is
@@ -119,6 +125,13 @@ module Quickdraw
 		return if file && file != @loading && @test_files.key?(file)
 
 		@tests << test
+	end
+
+	# Whether the frame is the top level of the file being loaded or the body of
+	# a class or module in it. A method or block isn't, since a file that one
+	# requires could be calling it.
+	private_class_method def self.body?(location)
+		location&.path == @loading && location.label.start_with?("<class:", "<module:", "<top (required)>", "<main>")
 	end
 
 	# JRuby labels a required file's top level <main>.
