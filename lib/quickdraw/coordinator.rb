@@ -71,6 +71,7 @@ class Quickdraw::Coordinator
 			@completed = 0
 			@size = indices.size
 			@reported = 0
+			@crashes = []
 		end
 
 		attr_reader :path, :display_path, :group, :variant, :tests, :keys, :pending, :load_duration
@@ -92,28 +93,32 @@ class Quickdraw::Coordinator
 		# A worker sends the results of tests that pass together (see
 		# Worker::RESULTS_AT_ONCE), so when one crashes, the tests it has sent
 		# no result for may have passed, crashed it, or not run. They run again,
-		# one at a time, until the one that crashes is known.
-		def suspect(indices)
-			@suspects = (@suspects || []) | indices
+		# one at a time, until the one that crashes is known. `output` is what
+		# the worker printed.
+		def suspect(indices, output)
+			@crashes << [indices.dup, output]
 		end
 
-		# Once a test has crashed its worker alone.
-		def crash_found
-			@suspects = nil
+		# Once the test has crashed a worker alone, which explains the crash
+		# it was a suspect of, if any.
+		def crash_found(index)
+			@crashes.reject! { |indices, _output| indices.include?(index) }
 		end
 
-		# Returns whether the test was the last of the suspects, so none of
-		# them crashed its worker again.
-		def cleared?(index)
-			return false unless @suspects&.delete(index) && @suspects.empty?
+		# Once the test has run without crashing a worker. If it was the last
+		# suspect of a crash, yields what the crashed worker printed.
+		def cleared(index)
+			@crashes.reject! do |indices, output|
+				next false unless indices.delete(index) && indices.empty?
 
-			@suspects = nil
-			true
+				yield output
+				true
+			end
 		end
 
 		def next_batch
 			# Alone, so other workers can take the slow tests after it.
-			return @pending.shift(1) if @suspects || slow?(@pending.first)
+			return @pending.shift(1) if @crashes.any? || slow?(@pending.first)
 
 			average = average_duration
 			size = average ? [@batch_size, (BATCH_BUDGET / [average, 1e-9].max).floor].min : 1
@@ -370,7 +375,6 @@ class Quickdraw::Coordinator
 		@filter = filter
 		@fail_fast = fail_fast
 		@stopping = false
-		@unexplained_crash = false
 		@interrupted = false
 		@abandoned = []
 		@abandoned_output_paths = []
@@ -528,7 +532,7 @@ class Quickdraw::Coordinator
 
 		wait_for_loaders(interrupt_reader)
 		wait_for_teardown if @interrupted
-		processes_failed = !@interrupted && (@unexplained_crash || @loaders.each_value.any? { |loader| loader.pid && !loader.status&.success? })
+		processes_failed = !@interrupted && @loaders.each_value.any? { |loader| loader.pid && !loader.status&.success? }
 
 		# Stopped before they could be retried.
 		@retries.abandon { |attempt| report_retry(attempt, attempt.failure) }
@@ -1160,21 +1164,16 @@ class Quickdraw::Coordinator
 		end.map(&:first)
 	end
 
-	# However a worker sent a result (see Worker#call), it's received as
-	# [:result, index, result], with the result as Worker::Recorder#to_h makes it.
 	private def handle(worker, message)
 		worker.received_message
-
-		case message
-		in [:result | :integers, *]
-			Quickdraw::Worker.each_result(message) { |index, result| received(worker, [:result, index, result]) }
-		else
-			received(worker, message)
-		end
-	end
-
-	private def received(worker, message)
 		@timeline&.received(worker, message)
+
+		# However the worker sent them (see Worker#call), results are recorded
+		# one way. Before the other messages, since most messages are results.
+		if message in [:result | :integers, *]
+			Quickdraw::Worker.each_result(message) { |index, result| record(worker, index, result) }
+			return
+		end
 
 		case message
 		in nil
@@ -1214,8 +1213,6 @@ class Quickdraw::Coordinator
 			elsif !@files.key?([path, worker.group])
 				load_failed(path, worker.group, error)
 			end
-		in [:result, index, result]
-			record(worker, index, result)
 		in [:covered, path, sources]
 			(@coverage_map[display_path(path)] ||= {}).merge!(sources.to_h { |source| [source, true] })
 		end
@@ -1294,8 +1291,13 @@ class Quickdraw::Coordinator
 		end
 
 		file.record(result["duration"])
+
 		# A crash that none of the tests it could have been repeats still fails the run.
-		@unexplained_crash = true if file.cleared?(index)
+		file.cleared(index) do |output|
+			@outcome.unexplained_crash = true
+			@reporter.printed(output) if output && @capture_loading
+		end
+
 		@elastic&.record(result)
 		placement = placement(worker)
 
@@ -1410,12 +1412,12 @@ class Quickdraw::Coordinator
 				# first, so the test is the first without one.
 				if rest.empty? || worker.timeout
 					file.pending.unshift(*rest)
-					file.crash_found
+					file.crash_found(index)
 					report(file, index, {
 						"assertions" => 0, "failures" => [], "errors" => [crash], "duration" => nil, "output" => output
 					}, placement(worker))
 				else
-					file.suspect(indices)
+					file.suspect(indices, output)
 					file.pending.unshift(*indices)
 				end
 			else

@@ -74,13 +74,14 @@ class BatchingTest < Quickdraw::Test
 	end
 
 	test "fails the run when a worker is killed by a test that doesn't do it again alone", timeout: 60 do
-		[1, 2, 3].each do |seed|
+		[["agent", 1], ["agent", 2], ["human", 3]].each do |format, seed|
 			project = project("batched.test.rb" => among_passing(<<~'RUBY'))
 				test("kills its worker once") do
 					killed = "#{__dir__}/killed"
 
 					unless File.exist?(killed)
 						File.write(killed, "")
+						puts "its last words"
 						exit!(0)
 					end
 
@@ -88,18 +89,21 @@ class BatchingTest < Quickdraw::Test
 				end
 			RUBY
 
-			result = project.run("-p", "1", "--no-history", "--seed", seed.to_s, "--format", "agent")
+			result = project.run("-p", "1", "--no-history", "--seed", seed.to_s, "--format", format)
 
 			refute result.success?
 			assert File.exist?(File.join(project.directory, "killed"))
 
 			# The test is only known if it ran in a batch of its own.
 			if result.stdout.include?("Quickdraw::WorkerCrashed")
-				assert_includes result.stdout, "FAILED: #{PASSING + 1} tests, #{PASSING} passed, 1 errored"
+				assert_includes result.stdout, "1 errored"
 			else
-				assert_includes result.stdout, "Workers exited with a failure status"
-				assert_includes result.stdout, "FAILED: #{PASSING + 1} tests, #{PASSING + 1} passed in"
+				assert_includes result.stdout, "A worker exited while it ran tests, and none of them made a worker exit again when run alone."
+				refute_includes result.stdout, "errored"
 			end
+
+			# What the worker printed isn't lost with it.
+			assert_equal result.stdout.scan("its last words").size, 1 if format == "human"
 		end
 	end
 

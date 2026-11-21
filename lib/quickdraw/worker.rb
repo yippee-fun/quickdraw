@@ -356,9 +356,12 @@ class Quickdraw::Worker
 	def self.result(sent)
 		case sent
 		in Hash then sent
-		in [duration, stats, assertions, counts]
-			{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
+		in [duration, stats, assertions, counts] then plain_pass(duration, stats, assertions, counts)
 		end
+	end
+
+	private_class_method def self.plain_pass(duration, stats, assertions, counts)
+		{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
 	end
 
 	# Yields the index and result, as Recorder#to_h makes it, of each test in a
@@ -373,7 +376,7 @@ class Quickdraw::Worker
 			offset = 0
 
 			while offset < integers.size
-				yield integers[offset], result([integers[offset + 1], integers[offset + 2, Quickdraw::STATS.size], integers[offset + RESULT_INTEGERS - 1], {}])
+				yield integers[offset], plain_pass(integers[offset + 1], integers[offset + 2, Quickdraw::STATS.size], integers[offset + RESULT_INTEGERS - 1], {})
 				offset += RESULT_INTEGERS
 			end
 		end

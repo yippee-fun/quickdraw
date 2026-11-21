@@ -54,7 +54,9 @@ module WorkerProcess
 
 	# A worker with `files`, which maps names to sources, to load and run.
 	# `timeout` is each test's, unless it has its own, with `timeouts`.
-	def start_worker(files, leaks: nil, timeouts: false, timeout: nil)
+	# `unsent_time` is its Worker::UNSENT_TIME, which by default is too long
+	# to reach, so a slow machine doesn't change which results are sent together.
+	def start_worker(files, leaks: nil, timeouts: false, timeout: nil, unsent_time: 3_600_000_000_000)
 		skip "Workers are forked" unless Process.respond_to?(:fork)
 
 		directory = tmpdir
@@ -75,6 +77,9 @@ module WorkerProcess
 				Quickdraw.__send__(:remove_const, :Config)
 				Quickdraw.const_set(:Config, config)
 			end
+
+			Quickdraw::Worker.__send__(:remove_const, :UNSENT_TIME)
+			Quickdraw::Worker.const_set(:UNSENT_TIME, unsent_time)
 
 			Quickdraw::Worker.new(worker, paths.values.to_h { |path| [path, true] }, 1, timeouts:, leaks:).call
 		ensure

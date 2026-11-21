@@ -101,8 +101,7 @@ class WorkerTest < Quickdraw::Test
 		worker.load("a.test.rb")
 		messages = worker.run("a.test.rb", (0...count).to_a)
 
-		# A slow machine can send fewer at once, as the tests take longer.
-		assert_operator indices(messages.drop(1)).map(&:size).max, :<=, Quickdraw::Worker::RESULTS_AT_ONCE
+		assert_equal indices(messages).map(&:size), [0, Quickdraw::Worker::RESULTS_AT_ONCE, Quickdraw::Worker::RESULTS_AT_ONCE, 10]
 		assert_equal indices(messages).flatten, (0...count).to_a
 	end
 
@@ -127,7 +126,7 @@ class WorkerTest < Quickdraw::Test
 	end
 
 	test "sends a slow test's result as it finishes, with those waiting", timeout: 20 do
-		worker = start_worker({ "a.test.rb" => <<~RUBY })
+		worker = start_worker({ "a.test.rb" => <<~RUBY }, unsent_time: Quickdraw::Worker::UNSENT_TIME)
 			class Slow < Quickdraw::Test
 				test("quick") { assert true }
 				test("slow") { sleep #{Quickdraw::Worker::UNSENT_TIME / 1e9}; assert true }
@@ -139,7 +138,10 @@ class WorkerTest < Quickdraw::Test
 		worker.start("a.test.rb", [0, 1, 2])
 
 		assert_equal worker.read, [:started]
-		assert_equal indices([worker.read]), [[0, 1]]
+		# Together, unless the machine is slow enough for the quick one to be sent first.
+		arrived = []
+		arrived.concat(indices([worker.read]).flatten) until arrived.size >= 2
+		assert_equal arrived, [0, 1]
 		File.write(worker.path("arrived"), "")
 		assert_equal indices([worker.read]), [[2]]
 		assert_equal worker.read.first, :ready

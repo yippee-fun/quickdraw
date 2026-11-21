@@ -35,6 +35,7 @@ class Quickdraw::Outcome
 		@unloaded_files = 0
 		@browser_files_left_out = 0
 		@refused = false
+		@unexplained_crash = false
 		@processes_failed = false
 		@stopped_early = false
 		@nothing_matched = false
@@ -62,6 +63,10 @@ class Quickdraw::Outcome
 
 	# Whether the run asked for browser tests config doesn't have, so nothing ran.
 	attr_accessor :refused
+
+	# Whether a worker exited while it ran tests, none of which made a worker
+	# exit again when run alone (see Coordinator#crashed).
+	attr_accessor :unexplained_crash
 
 	# A CoverageReport with --coverage, or nil.
 	attr_accessor :coverage
@@ -102,6 +107,6 @@ class Quickdraw::Outcome
 
 	def passed?
 		@failed == 0 && @errored == 0 && (@flaky == 0 || @allow_flaky) && @load_errors == 0 && @not_run == 0 && @unloaded_files == 0 &&
-			!@processes_failed && !@nothing_matched && !@interrupted && !@refused
+			!@processes_failed && !@unexplained_crash && !@nothing_matched && !@interrupted && !@refused
 	end
 end
