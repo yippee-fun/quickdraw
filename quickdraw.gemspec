@@ -19,9 +19,10 @@ Gem::Specification.new do |spec|
 		"rubygems_mfa_required" => "true",
 	}
 
-	spec.files = Dir["lib/**/*", "exe/*", "README.md", "CHANGELOG.md", "LICENSE.txt"]
+	spec.files = Dir["lib/**/*", "exe/*", "ext/quickdraw_ext/Cargo.toml", "ext/quickdraw_ext/extconf.rb", "ext/quickdraw_ext/src/*.rs", "README.md", "CHANGELOG.md", "LICENSE.txt"]
 	spec.bindir = "exe"
 	spec.executables = ["quickdraw", "qd", "qc"]
+	spec.extensions = ["ext/quickdraw_ext/extconf.rb"] if RUBY_ENGINE == "ruby"
 
 	spec.add_dependency "phlex", "~> 2.4"
 

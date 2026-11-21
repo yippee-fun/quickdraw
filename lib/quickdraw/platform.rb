@@ -39,12 +39,17 @@ module Quickdraw::Platform
 		RUBY_PLATFORM =~ /darwin/
 	end
 
-	# [performance, efficiency] logical cores, from one sysctl, since each takes
-	# ~2ms. Every core counts as a performance core if sysctl can't say.
+	# [performance, efficiency] logical cores. Uses the Rust native extension's
+	# sysctlbyname (~2µs) when compiled, falling back to `sysctl` (~9ms). Every
+	# core counts as a performance core if sysctl can't say.
 	private def core_levels
 		@core_levels ||= begin
-			levels = `sysctl -n hw.perflevel0.logicalcpu hw.perflevel1.logicalcpu 2>/dev/null`.split.map { |count| Integer(count, 10, exception: false) }
-			(levels.size == 2 && levels.all?(&:positive?)) ? levels : [cpu_cores, 0]
+			if Quickdraw::Native.available? && (native = Quickdraw::Native.macos_core_levels)
+				native
+			else
+				levels = `sysctl -n hw.perflevel0.logicalcpu hw.perflevel1.logicalcpu 2>/dev/null`.split.map { |count| Integer(count, 10, exception: false) }
+				(levels.size == 2 && levels.all?(&:positive?)) ? levels : [cpu_cores, 0]
+			end
 		rescue SystemCallError
 			[cpu_cores, 0]
 		end

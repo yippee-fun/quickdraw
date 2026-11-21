@@ -40,6 +40,7 @@ module Quickdraw
 	autoload :Leaks, "quickdraw/leaks"
 	autoload :Channel, "quickdraw/channel"
 	autoload :Platform, "quickdraw/platform"
+	autoload :Native, "quickdraw/native"
 	autoload :Reporters, "quickdraw/reporters"
 	autoload :Outcome, "quickdraw/outcome"
 	autoload :Flake, "quickdraw/flake"

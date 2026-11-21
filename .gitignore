@@ -11,3 +11,7 @@
 .covered.db
 Gemfile.lock
 /.quickdraw/
+/ext/quickdraw_ext/target/
+/ext/quickdraw_ext/Makefile
+/ext/quickdraw_ext/quickdraw_ext.*
+/lib/quickdraw/quickdraw_ext.*
