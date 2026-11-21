@@ -47,11 +47,9 @@ class Quickdraw::Reporters::LastRun
 	# Written to a temporary file, then moved into place, so the last run's
 	# file is only replaced by one that says what this run is.
 	def start(processes:, worker_choice:, seed:, **)
-		require "json"
-		require "fileutils"
 		require_relative "../version"
 
-		FileUtils.mkdir_p(File.dirname(@path))
+		mkdir_p(File.dirname(@path))
 		temporary = "#{@path}.#{Process.pid}"
 		@file = File.open(temporary, "w")
 		@file.sync = true
@@ -111,10 +109,68 @@ class Quickdraw::Reporters::LastRun
 	# Whether this run was saved, so `quickdraw last` shows it.
 	def saved? = @saved
 
+	JSON_ESCAPES = {
+		'"' => '\"',
+		"\\" => "\\\\",
+		"\b" => '\b',
+		"\f" => '\f',
+		"\n" => '\n',
+		"\r" => '\r',
+		"\t" => '\t',
+	}.freeze
+
 	private def write(event)
-		@file&.puts(JSON.generate(utf8(event)))
-	rescue SystemCallError, JSON::GeneratorError => error
+		return unless @file
+
+		line = begin
+			fast_json(event)
+		rescue ArgumentError
+			require "json"
+			begin
+				JSON.generate(utf8(event))
+			rescue JSON::GeneratorError => error
+				give_up(error)
+				return
+			end
+		end
+
+		@file.puts(line)
+	rescue SystemCallError => error
 		give_up(error)
+	end
+
+	private def fast_json(value)
+		case value
+		in String
+			%("#{Quickdraw.utf8(value).gsub(/["\\\x00-\x1f]/) { |char| JSON_ESCAPES[char] || format("\\u%04x", char.ord) }}")
+		in Integer
+			value.to_s
+		in Float
+			raise ArgumentError, "non-finite float" unless value.finite?
+
+			value.to_s
+		in true then "true"
+		in false then "false"
+		in nil then "null"
+		in Array
+			"[#{value.map { |item| fast_json(item) }.join(',')}]"
+		in Hash
+			"{#{value.map { |key, item| "#{fast_json(key.to_s)}:#{fast_json(item)}" }.join(',')}}"
+		in Symbol
+			fast_json(value.to_s)
+		else
+			raise ArgumentError, "unsupported type: #{value.class}"
+		end
+	end
+
+	private def mkdir_p(directory)
+		return if File.directory?(directory)
+
+		parent = File.dirname(directory)
+		mkdir_p(parent) if parent != directory
+		Dir.mkdir(directory)
+	rescue Errno::EEXIST
+		raise unless File.directory?(directory)
 	end
 
 	private def give_up(error)

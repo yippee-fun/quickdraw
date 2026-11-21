@@ -156,9 +156,26 @@ class Quickdraw::Reporters::StatusLine
 		@cursor_hidden = false
 	end
 
-	# From stty rather than io/console, which group loaders, forked from this
-	# process, would pass on to tests.
+	TIOCGWINSZ = case RUBY_PLATFORM
+	when /darwin/ then 0x40087468
+	when /linux/ then 0x5413
+	end
+
+	# From ioctl rather than io/console (which group loaders, forked from this
+	# process, would pass on to tests) or stty (which spawns a subprocess).
 	private def terminal_width
+		if TIOCGWINSZ
+			begin
+				buffer = +"\0\0\0\0\0\0\0\0"
+				if @io.ioctl(TIOCGWINSZ, buffer) == 0
+					columns = buffer.unpack1("x2S")
+					return columns if columns.positive?
+				end
+			rescue SystemCallError
+				nil
+			end
+		end
+
 		columns = IO.popen(["stty", "size"], in: @io, err: File::NULL, &:read).split.last.to_i
 		columns.positive? ? columns : 80
 	rescue SystemCallError

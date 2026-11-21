@@ -32,9 +32,10 @@ class Quickdraw::CLI
 			nil
 		end
 
-		# optparse, etc and anything else needed to parse options load in a
-		# throwaway process so they don’t leak into the processes that run tests.
-		options = Quickdraw.isolate { parse }
+		# Common invocations parse without loading optparse or forking; anything
+		# unusual or invalid falls back to optparse in a throwaway process so
+		# optparse, did_you_mean, etc. don’t leak into the processes that run tests.
+		options = fast_parse || Quickdraw.isolate { parse }
 
 		# Ruby reads the timeslice at boot, so it's set by starting again. See Sampler.
 		if options[:profile] && ENV["RUBY_THREAD_TIMESLICE"] != PROFILE_TIMESLICE
@@ -55,6 +56,214 @@ class Quickdraw::CLI
 		else
 			exit(run(options).exit_status)
 		end
+	end
+
+	# Zero-fork parser for common CLI invocations. Returns nil to fall back to
+	# `Quickdraw.isolate { parse }` for --help, --version, unknown/ambiguous
+	# options, invalid values, --format with a file path, --flakes, missing
+	# operand paths, or any validation error.
+	private def fast_parse
+		options = {
+			backtrace: false,
+			timings: false,
+			timeline: false,
+			profile: false,
+			coverage: false,
+			processes: nil,
+			watch: false,
+			seed: nil,
+			efficiency: false,
+			history: true,
+			failed: false,
+			changed: false,
+			fail_fast: false,
+			names: [],
+			excludes: [],
+			browsers: [],
+			outputs: [],
+		}
+
+		operands = []
+		i = 0
+
+		while i < @args.size
+			arg = @args[i]
+			i += 1
+
+			if arg == "--"
+				operands.concat(@args[i..])
+				break
+			elsif !arg.start_with?("-") || arg == "-"
+				operands << arg
+				next
+			end
+
+			flag, inline = arg.start_with?("--") ? arg.split("=", 2) : [arg, nil]
+
+			case flag
+			when "-f", "--failed"
+				return nil unless inline.nil?
+				options[:failed] = true
+			when "--changed"
+				return nil unless inline.nil?
+				options[:changed] = true
+			when "--fail-fast"
+				return nil unless inline.nil?
+				options[:fail_fast] = true
+			when "--allow-flaky"
+				return nil unless inline.nil?
+				options[:allow_flaky] = true
+			when "--no-allow-flaky"
+				return nil unless inline.nil?
+				options[:allow_flaky] = false
+			when "--quarantine"
+				return nil unless inline.nil?
+				options[:quarantine] = true
+			when "--no-quarantine"
+				return nil unless inline.nil?
+				options[:quarantine] = false
+			when "-t", "--timings"
+				return nil unless inline.nil?
+				options[:timings] = true
+			when "--timeline"
+				return nil unless inline.nil?
+				options[:timeline] = true
+			when "--profile"
+				return nil unless inline.nil?
+				options[:profile] = true
+			when "-c", "--coverage"
+				return nil unless inline.nil?
+				options[:coverage] = true
+			when "-b", "--backtrace"
+				return nil unless inline.nil?
+				options[:backtrace] = true
+			when "--capture"
+				return nil unless inline.nil?
+				options[:capture] = true
+			when "--no-capture"
+				return nil unless inline.nil?
+				options[:capture] = false
+			when "-m", "--max"
+				return nil unless inline.nil?
+				options[:max] = true
+			when "-e", "--efficiency"
+				return nil unless inline.nil?
+				options[:efficiency] = true
+			when "--elastic"
+				return nil unless inline.nil?
+				options[:elastic] = true
+			when "--no-elastic"
+				return nil unless inline.nil?
+				options[:elastic] = false
+			when "-w", "--watch"
+				return nil unless inline.nil?
+				options[:watch] = true
+			when "--no-history"
+				return nil unless inline.nil?
+				options[:history] = false
+			when "-n", "--name", "-x", "--exclude", "--browser", "--base", "--retry", "-s", "--seed", "--format", "--leaks", "-p", "--processes"
+				if inline.nil?
+					return nil if i >= @args.size
+					value = @args[i]
+					i += 1
+				else
+					value = inline
+				end
+
+				case flag
+				when "-n", "--name"
+					options[:names] << value
+				when "-x", "--exclude"
+					options[:excludes] << value
+				when "--browser"
+					options[:browsers] |= [value]
+				when "--base"
+					options[:base] = value
+				when "--retry"
+					count = Integer(value, exception: false)
+					return nil unless count && count >= 0
+					options[:retries] = count
+				when "-s", "--seed"
+					seed = Integer(value, exception: false)
+					return nil unless seed
+					options[:seed] = seed
+				when "--format"
+					format, path = value.split(":", 2)
+					return nil if path || !FORMATS.include?(format)
+					options[:outputs] << [format, nil]
+				when "--leaks"
+					return nil unless LEAK_MODES.include?(value)
+					options[:leaks] = value
+				when "-p", "--processes"
+					processes = Integer(value, exception: false)
+					return nil unless processes && processes >= 1
+					options[:processes] = processes
+				end
+			else
+				return nil
+			end
+		end
+
+		return nil if options[:outputs].size > 1
+		return nil if options[:watch] && options[:outputs].any? { |format, _| format == "junit" }
+
+		if options[:outputs].empty?
+			options[:outputs].unshift([Quickdraw::Reporters.agent? ? "agent" : "human", nil])
+		end
+
+		return nil if [options[:processes], options[:max], options[:efficiency]].count(&:itself) > 1
+		return nil if options[:failed] && !options[:history]
+		return nil if options[:quarantine] && !options[:history]
+		return nil if options[:base] && !options[:changed]
+		return nil if options[:changed] && (operands.any? || options[:watch] || options[:failed])
+		return nil if options[:efficiency] && !Quickdraw::Platform.m_series?
+
+		forking = Quickdraw::Platform.supports_forking?
+		return nil if !forking && (options[:watch] || options[:coverage] || options[:leaks] == "fail" || options[:max] || options[:efficiency] || options[:processes]&.>(1))
+
+		options[:processes] = if !forking
+			1
+		elsif options[:max]
+			Quickdraw::Platform.cpu_cores
+		elsif options[:efficiency]
+			Quickdraw::Platform.efficiency_cores
+		else
+			options[:processes]
+		end
+
+		if options[:processes]
+			options[:cores] = options[:processes]
+			options[:max_processes] = options[:processes]
+		else
+			options[:cores] = forking ? Quickdraw::Platform.non_blocking_cores : 1
+			options[:max_processes] = Quickdraw::Platform.cpu_cores * 3
+		end
+
+		if options[:seed].nil? && ENV.key?("SEED")
+			options[:seed] = Integer(ENV["SEED"], exception: false)
+			return nil unless options[:seed]
+		end
+		options[:seed] ||= Random.new_seed % 100_000
+		return nil unless (0..MAX_SEED).cover?(options[:seed])
+
+		options[:patterns] = []
+		options[:lines] = {}
+
+		operands.each do |argument|
+			path, *lines = split_lines(argument)
+			return nil if test_files([path]).empty?
+
+			options[:patterns] << path
+			(options[:lines][File.realpath(path)] ||= []).concat(lines) if lines.any?
+		end
+
+		(options[:names] + options[:excludes]).each do |pattern|
+			Quickdraw::Filter::NamePattern.parse(pattern)
+		rescue RegexpError
+			return nil
+		end
+
+		options
 	end
 
 	private def parse

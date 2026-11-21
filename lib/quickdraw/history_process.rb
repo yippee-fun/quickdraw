@@ -25,6 +25,8 @@ class Quickdraw::HistoryProcess
 			# process group, which a terminal, CI or a test may stop as a whole.
 			Process.setpgid(0, 0)
 			trap("INT", "IGNORE")
+			# Don't hold a piped stdout open while SQLite finishes writing.
+			$stdout.reopen(File::NULL, "w")
 			serve(history_channel, path)
 		end
 
