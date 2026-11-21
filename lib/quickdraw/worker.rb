@@ -25,6 +25,26 @@ class Quickdraw::Worker
 		# equals wall time and nothing is reported as waiting.
 		CPU_CLOCK = Process.const_defined?(:CLOCK_PROCESS_CPUTIME_ID) ? Process::CLOCK_PROCESS_CPUTIME_ID : Process::CLOCK_MONOTONIC
 		GC_KEYS = GC.stat.keys.freeze
+		HAS_GC_TIME = GC_KEYS.include?(:time)
+		HAS_ALLOCATIONS = GC_KEYS.include?(:total_allocated_objects)
+
+		@last_children_cpu = 0
+
+		def self.children_cpu
+			times = Process.times
+			((times.cutime + times.cstime) * 1_000_000_000).round
+		end
+
+		def self.reset_children_cpu
+			@last_children_cpu = children_cpu
+		end
+
+		def self.take_children_cpu_delta
+			current = children_cpu
+			delta = current - @last_children_cpu
+			@last_children_cpu = current
+			delta
+		end
 
 		def initialize
 			@assertions = 0
@@ -43,7 +63,12 @@ class Quickdraw::Worker
 		# since it's ~30ns against ~200ns for the CPU clock. A phase that runs more
 		# than once (e.g. a retrying around hook) accumulates.
 		def measure(phase)
-			index = PHASE_INDICES.fetch(phase)
+			index = case phase
+			when "test" then 1
+			when "setup" then 0
+			when "teardown" then 2
+			else PHASE_INDICES.fetch(phase)
+			end
 			started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 			yield
 		ensure
@@ -54,23 +79,31 @@ class Quickdraw::Worker
 		# CPU time includes that of processes the test started and waited for (and
 		# theirs), since a test waiting on a busy process isn't idle.
 		def measure_test
+			track_children = !Quickdraw::Leaks::ProcessStarts.watching? || Quickdraw::Leaks::ProcessStarts.started
+			children = track_children ? self.class.children_cpu : nil
 			wall = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 			cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond)
-			children = children_cpu
-			gc = gc_milliseconds
-			allocations = allocated_objects
+			gc = HAS_GC_TIME ? GC.stat(:time) : 0
+			allocations = HAS_ALLOCATIONS ? GC.stat(:total_allocated_objects) : 0
 			Quickdraw::Counters.start
 
 			yield
 		ensure
 			@counts = Quickdraw::Counters.take
 			@duration = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - wall
-			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (children_cpu - children)
-			@stats[GC_TIME] = (gc_milliseconds - gc) * 1_000_000
-			@stats[ALLOCATIONS] = allocated_objects - allocations
+			children_delta = if track_children
+				self.class.children_cpu - children
+			elsif Quickdraw::Leaks::ProcessStarts.started
+				self.class.take_children_cpu_delta
+			else
+				0
+			end
+			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + children_delta
+			@stats[GC_TIME] = ((HAS_GC_TIME ? GC.stat(:time) : 0) - gc) * 1_000_000
+			@stats[ALLOCATIONS] = (HAS_ALLOCATIONS ? GC.stat(:total_allocated_objects) : 0) - allocations
 		end
 
-		def success!(_description)
+		def success!(_description = nil)
 			@assertions += 1
 		end
 
@@ -121,6 +154,14 @@ class Quickdraw::Worker
 			@late = late
 		end
 
+		def to_compact
+			if @failures.empty? && @errors.empty? && !@skipped && !@profile && !@output && !@leaks
+				[@duration, @stats, @assertions, @counts]
+			else
+				to_h
+			end
+		end
+
 		# Output and leaks only when there are some, since each key sent costs
 		# about 250ns.
 		def to_h
@@ -138,20 +179,6 @@ class Quickdraw::Worker
 			result["output"] = @output if @output
 			result["leaks"] = @leaks if @leaks
 			result
-		end
-
-		# In nanoseconds, of child processes that have been waited for.
-		private def children_cpu
-			times = Process.times
-			((times.cutime + times.cstime) * 1_000_000_000).round
-		end
-
-		private def gc_milliseconds
-			GC_KEYS.include?(:time) ? GC.stat(:time) : 0
-		end
-
-		private def allocated_objects
-			GC_KEYS.include?(:total_allocated_objects) ? GC.stat(:total_allocated_objects) : 0
 		end
 	end
 
@@ -205,6 +232,7 @@ class Quickdraw::Worker
 
 		# After the watchdog and sampler start, so their threads aren't leaks.
 		@leaks = Quickdraw::Leaks.new(Quickdraw::ROOT) if @leak_mode
+		Recorder.reset_children_cpu
 		@terminal_turn = Thread::Queue.new([true])
 		Quickdraw::Debugger.install(self)
 
@@ -233,7 +261,7 @@ class Quickdraw::Worker
 
 				indices.each do |index|
 					seed(path, index)
-					@channel.write([:result, index, self.class.compact(run(tests[index]))])
+					@channel.write([:result, index, run(tests[index], compact: true)])
 				end
 
 				@capture&.stop
@@ -340,7 +368,7 @@ class Quickdraw::Worker
 		name.include?("#<Module:") ? name.gsub(ANONYMOUS_MODULE, "") : name
 	end
 
-	private def run(definition)
+	private def run(definition, compact: false)
 		recorder = Recorder.new
 
 		recorder.measure_test do
@@ -377,9 +405,13 @@ class Quickdraw::Worker
 		end
 
 		if @leaks
-			leaks = [*@leaks.check, *late_failures]
+			leaks = @leaks.check
+			unless @late.empty?
+				late = late_failures
+				leaks = leaks ? leaks.concat(late) : late
+			end
 
-			if leaks.any?
+			if leaks
 				if @leak_mode == :fail
 					recorder.error!({ "name" => "Quickdraw::Leak", "message" => leaks.map { |leak| leak["message"] }.join("\n"), "backtrace" => [] })
 				else
@@ -390,12 +422,14 @@ class Quickdraw::Worker
 
 		recorder.fail_without_assertions(definition.block.source_location[0], definition.line) if definition.block
 		recorder.output = output if output && recorder.problem?
-		result = recorder.to_h
+		result = compact ? recorder.to_compact : recorder.to_h
 
 		# A thread the test left running may fail an assertion yet, which is a leak.
 		if @leaks
-			name = "#{Quickdraw::Filter.name_of(describe(definition))} (line #{definition.line})"
-			recorder.close { |failure| @late << { "kind" => "late failure", "message" => Quickdraw.utf8("After #{name} finished, a thread it started failed an assertion at #{failure['path'].delete_prefix("#{Quickdraw::ROOT}/")}:#{failure['line']}: #{failure['message']}") } }
+			recorder.close do |failure|
+				name = "#{Quickdraw::Filter.name_of(describe(definition))} (line #{definition.line})"
+				@late << { "kind" => "late failure", "message" => Quickdraw.utf8("After #{name} finished, a thread it started failed an assertion at #{failure['path'].delete_prefix("#{Quickdraw::ROOT}/")}:#{failure['line']}: #{failure['message']}") }
+			end
 		end
 
 		result

@@ -81,6 +81,8 @@ class Quickdraw::Leaks
 		end
 
 		def self.take
+			return nil if @raised.empty? && @threads.empty?
+
 			threads = @raised + @threads
 			@raised = []
 			@threads = []
@@ -186,7 +188,7 @@ class Quickdraw::Leaks
 
 		@ractors = ractors
 
-		if (deaths = thread_deaths).any?
+		if (deaths = thread_deaths)
 			(leaks ||= []).concat(deaths)
 		end
 
@@ -298,7 +300,10 @@ class Quickdraw::Leaks
 	# nothing joined them to see. A thread's status is nil once an exception has
 	# ended it.
 	private def thread_deaths
-		ThreadStarts.take.filter_map do |thread|
+		started = ThreadStarts.take or return nil
+		deaths = nil
+
+		started.each do |thread|
 			next if thread.alive? || !thread.status.nil? || thread.quickdraw_joined?
 
 			location = started_at(thread) or next
@@ -309,8 +314,10 @@ class Quickdraw::Leaks
 				error
 			end
 
-			{ "kind" => "thread", "message" => Quickdraw.utf8("A thread started at #{location} ended with #{error.class}: #{error.message}") } if error
+			(deaths ||= []) << { "kind" => "thread", "message" => Quickdraw.utf8("A thread started at #{location} ended with #{error.class}: #{error.message}") } if error
 		end
+
+		deaths
 	end
 
 	# Not on Rubies without Ractors.

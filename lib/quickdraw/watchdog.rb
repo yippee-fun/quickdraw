@@ -6,11 +6,16 @@
 #
 # Runs alongside user code, so it must only use core Ruby.
 class Quickdraw::Watchdog
+	# Coarse tick for checking long deadlines without per-test mutex/condvar overhead.
+	TICK = 0.25
+
 	def initialize(&on_timeout)
 		@on_timeout = on_timeout
 		@mutex = Thread::Mutex.new
 		@changed = Thread::ConditionVariable.new
 		@deadline = nil
+		@remaining = nil
+		@paused = false
 		@thread = Thread.new { watch_deadlines }
 		@thread.name = "quickdraw-watchdog"
 	end
@@ -24,23 +29,27 @@ class Quickdraw::Watchdog
 			return false
 		end
 
-		@mutex.synchronize do
-			@seconds = seconds
-			@watched = Thread.current
-			@deadline = now + seconds
-			@changed.signal
+		@seconds = seconds
+		@watched = Thread.current
+		deadline = now + seconds
+
+		if seconds < TICK * 2
+			@mutex.synchronize do
+				@deadline = deadline
+				@changed.signal
+			end
+		else
+			@deadline = deadline
 		end
 
 		yield
 		# Not when a debugger has paused the clock.
-		@mutex.synchronize { @deadline ? now > @deadline : false }
+		current = @deadline
+		current ? now > current : false
 	ensure
 		if seconds
-			@mutex.synchronize do
-				@deadline = nil
-				@remaining = nil
-				@changed.signal
-			end
+			@deadline = nil
+			@remaining = nil
 		end
 	end
 
@@ -48,6 +57,7 @@ class Quickdraw::Watchdog
 	# gives the test what it had left.
 	def pause
 		@mutex.synchronize do
+			@paused = true
 			@remaining = @deadline && (@deadline - now)
 			@deadline = nil
 			@changed.signal
@@ -56,6 +66,7 @@ class Quickdraw::Watchdog
 
 	def resume
 		@mutex.synchronize do
+			@paused = false
 			@deadline = now + @remaining if @remaining
 			@remaining = nil
 			@changed.signal
@@ -65,10 +76,11 @@ class Quickdraw::Watchdog
 	private def watch_deadlines
 		@mutex.synchronize do
 			loop do
-				if @deadline.nil?
-					@changed.wait(@mutex)
-				elsif (remaining = @deadline - now) > 0
-					@changed.wait(@mutex, remaining)
+				deadline = @deadline
+				if deadline.nil?
+					@changed.wait(@mutex, @paused ? nil : TICK)
+				elsif (remaining = deadline - now) > 0
+					@changed.wait(@mutex, remaining < TICK ? remaining : TICK)
 				else
 					time_out
 				end

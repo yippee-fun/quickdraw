@@ -46,6 +46,7 @@ class Quickdraw::Test < Quickdraw::BasicTest
 			recorder = Quickdraw::Property::Recorder.new
 			outer = Fiber[:quickdraw_case]
 			# With the test, so another test run inside the case records its own.
+			Quickdraw::BasicTest.active_checks += 1
 			Fiber[:quickdraw_case] = [self, recorder]
 			# Context a case adds is only its own.
 			contexts = @contexts
@@ -59,6 +60,7 @@ class Quickdraw::Test < Quickdraw::BasicTest
 		ensure
 			@contexts = contexts
 			Fiber[:quickdraw_case] = outer
+			Quickdraw::BasicTest.active_checks -= 1
 			recorder.close(test_runner)
 		end
 
@@ -75,9 +77,11 @@ class Quickdraw::Test < Quickdraw::BasicTest
 	end
 
 	private def run_block
-		case self.class.fuzz_target(@block)
-		in [generators, cases] then check(*generators, cases:) { |*values| instance_exec(*values, &@block) }
-		in nil then super
+		if (target = self.class.fuzz_target(@block))
+			generators, cases = target
+			check(*generators, cases:) { |*values| instance_exec(*values, &@block) }
+		else
+			super
 		end
 	end
 

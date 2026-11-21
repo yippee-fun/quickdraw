@@ -11,6 +11,8 @@ module Quickdraw::Counters
 
 	@counts = {}
 	@mutex = Thread::Mutex.new
+	@used = false
+	EMPTY = {}.freeze
 
 	def add(name, seconds = 0.0)
 		raise ::ArgumentError, "A counter's name must be a String, not #{name.inspect}." unless String === name
@@ -18,6 +20,7 @@ module Quickdraw::Counters
 		seconds = Float(seconds)
 
 		@mutex.synchronize do
+			@used = true
 			count = ((Fiber[:quickdraw_counts] || @counts)[name] ||= [0, 0.0])
 			count[0] += 1
 			count[1] += seconds
@@ -28,18 +31,28 @@ module Quickdraw::Counters
 
 	# Starts counting for a test, in this fiber.
 	def start
-		@mutex.synchronize do
-			@counts = {}
-			Fiber[:quickdraw_counts] = {}
+		Fiber[:quickdraw_counts] = {}
+
+		if @used
+			@mutex.synchronize do
+				@counts = {}
+				@used = false
+			end
 		end
 	end
 
 	# The counts since #start, as {name => [count, seconds]}.
 	def take
+		unless @used
+			Fiber[:quickdraw_counts] = nil
+			return EMPTY
+		end
+
 		@mutex.synchronize do
 			counts = Fiber[:quickdraw_counts] || {}
 			Fiber[:quickdraw_counts] = nil
 			others, @counts = @counts, {}
+			@used = false
 
 			others.each do |name, (count, seconds)|
 				total = (counts[name] ||= [0, 0.0])

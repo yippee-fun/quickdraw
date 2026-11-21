@@ -115,8 +115,10 @@ module Quickdraw
 		# belong to that file. Quickdraw loads it separately. The file being
 		# required is usually a few frames up, so the whole backtrace, which is
 		# slow to take, is only taken if it isn't.
-		file = (top_required(caller_locations(1, NEAR_FRAMES)) || top_required(caller_locations))&.path
-		return if file && file != @loading && @test_files.key?(file)
+		if @test_files.size > 1
+			file = (top_required(caller_locations(1, NEAR_FRAMES)) || top_required(caller_locations))&.path
+			return if file && file != @loading && @test_files.key?(file)
+		end
 
 		@tests << test
 	end

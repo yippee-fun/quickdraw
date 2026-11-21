@@ -106,8 +106,8 @@ class Quickdraw::Capture
 
 	# A test can replace $stdout with a buffered IO, or close it.
 	private def flush
-		$stdout.flush
-		$stderr.flush
+		$stdout.flush unless $stdout.equal?(STDOUT) && STDOUT.sync
+		$stderr.flush unless $stderr.equal?(STDERR) && STDERR.sync
 	rescue IOError
 		nil
 	end

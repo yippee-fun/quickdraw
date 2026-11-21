@@ -113,6 +113,8 @@ class Quickdraw::Configuration
 		@around_test_callbacks << block
 	end
 
+	def around_test_callbacks_empty? = @around_test_callbacks.empty?
+
 	# Runs the block inside the around_test callbacks, for `test`.
 	def around(test)
 		return yield if @around_test_callbacks.empty?
