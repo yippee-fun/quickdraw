@@ -30,6 +30,11 @@ class Quickdraw::Coordinator
 	# How long to wait for teardown after Ctrl-C before reporting, in seconds.
 	INTERRUPT_GRACE = 3
 
+	# Seconds of work per worker from which workers run tests with YJIT. Tests
+	# that keep running the same Ruby code repay compiling within 0.1s, but
+	# others never do, so shorter runs, with little to gain, go without.
+	YJIT_FROM = 2.0
+
 	class TestFile
 		# A file runs once in each group it's in (see Configuration::Group), as a
 		# TestFile for each. `group` is the group's name, or nil for none, and
@@ -310,14 +315,14 @@ class Quickdraw::Coordinator
 	# asked for, or config's by_default includes them.
 	#
 	# Run settings config can set too (`capture`, `leaks`, `retries`,
-	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic` and `processes`)
-	# are nil unless the command line gave them, and config's apply then (see
-	# #apply_settings).
+	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic`, `yjit`
+	# and `processes`) are nil unless the command line gave them, and config's
+	# apply then (see #apply_settings).
 	def initialize(
 		files:, processes:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
 		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil,
-		browser_tests: :default, named_files: {}
+		yjit: nil, browser_tests: :default, named_files: {}
 	)
 		raise ArgumentError, "browser_tests must be :default, :only or :all, not #{browser_tests.inspect}." unless browser_tests in :default | :only | :all
 
@@ -326,6 +331,7 @@ class Quickdraw::Coordinator
 		@named_files = named_files
 		@timeline = Quickdraw::Timeline.new if timeline
 		@elastic_allowed = elastic
+		@yjit = yjit
 		@warm_loaders = warm_loaders
 		@repeatable = repeatable
 		@retry_count = retries
@@ -696,6 +702,7 @@ class Quickdraw::Coordinator
 		@retries.count = @forking ? (@retry_count || settings.fetch(:retries, 1)) : 0
 		@outcome.allow_flaky = @allow_flaky.nil? ? settings.fetch(:allow_flaky, false) : @allow_flaky
 		@elastic_allowed = settings.fetch(:elastic, false) if @elastic_allowed.nil?
+		@yjit = settings[:yjit] if @yjit.nil?
 		@configured_processes = settings[:processes] unless @processes
 		@processes ||= @configured_processes
 		@browser_by_default = settings.fetch(:browser_by_default, false)
@@ -808,7 +815,10 @@ class Quickdraw::Coordinator
 	end
 
 	private def start_workers
-		@scheduler.allocate(@processes).each do |group, workers|
+		allocation = @scheduler.allocate(@processes)
+		@loaders.each_value { |loader| loader.command("yjit") } if yjit?(allocation.sum { |_group, workers| workers })
+
+		allocation.each do |group, workers|
 			workers.times { start_worker(@loaders.fetch(group), @free_slots.shift) }
 		end
 	end
@@ -942,6 +952,19 @@ class Quickdraw::Coordinator
 		)
 
 		[choice.processes, choice.reason]
+	end
+
+	# Whether the `workers` run tests with YJIT: as the run or config said, or
+	# else when the selection's last run kept a core busy for long enough per
+	# worker to repay compiling.
+	private def yjit?(workers)
+		return false unless @forking && Quickdraw::Platform.yjit_supported?
+		# Ruby runs one JIT at a time.
+		return false if [:ZJIT, :RJIT].any? { |jit| RubyVM.const_defined?(jit) && RubyVM.const_get(jit).enabled? }
+		return @yjit unless @yjit.nil?
+
+		last = estimate or return false
+		last.test_time * (1 - @runs.waiting_share) / workers >= YJIT_FROM
 	end
 
 	# Workers that died without closing their pipes, because a process they or

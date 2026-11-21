@@ -383,6 +383,11 @@ class Quickdraw::CLI
 				options[:elastic] = it
 			end
 
+			parser.on("--[no-]yjit", "Run tests with YJIT, or without (default: with, when run history expects enough work to repay compiling)") do |it|
+				usage_error "--yjit needs a Ruby with YJIT, which this isn’t." if it && !Quickdraw::Platform.yjit_supported?
+				options[:yjit] = it
+			end
+
 			parser.separator ""
 			parser.separator bold("Other")
 
@@ -654,6 +659,7 @@ class Quickdraw::CLI
 			warm_loaders: options[:warm_loaders],
 			timeline: options[:timeline],
 			elastic: options[:elastic],
+			yjit: options[:yjit],
 			variants: (options[:browsers] if options[:browsers].any?),
 			browser_tests:,
 			named_files:,
