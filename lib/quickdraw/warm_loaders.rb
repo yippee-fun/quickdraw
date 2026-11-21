@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-# Watch mode's loaders (see Loader), which stay booted between runs, so only
-# the first run waits for config to boot. They fork from the watch process,
-# which is as clean as the runs it forks, and each serves one run at a time
-# through a Session.
+# Watch mode's loaders (see Loader), and the daemon's (see Daemon), which stay
+# booted between runs, so only the first run waits for config to boot. They
+# fork from the watch process, or the daemon, which is as clean as the runs it
+# forks, and each serves one run at a time through a Session.
 #
 # A run happens in a fork of the watch process, so it can't give a loader that
 # already exists new pipes: passing them needs a UNIX socket, and loaders
@@ -18,8 +18,9 @@ class Quickdraw::WarmLoaders
 	EXIT_GRACE = 3
 
 	# `link` is a Channel to the loader (see Loader#serve_runs), and `waiter`
-	# reaps it, so a run can tell it's gone.
-	Loader = Data.define(:pid, :link, :waiter, :gemfile)
+	# reaps it, so a run can tell it's gone. `bundle` is a Snapshot of its
+	# Gemfile and lockfile, if it has its own.
+	Loader = Data.define(:pid, :link, :waiter, :gemfile, :bundle)
 
 	# A run's use of a warm loader, in place of the loader process the
 	# coordinator would start. Its control, report and channels are named
@@ -31,19 +32,28 @@ class Quickdraw::WarmLoaders
 			def success? = success
 		end
 
-		# `settings` are for workers (see Loader#serve_run).
-		def initialize(pid, directory, group:, capacity:, settings:)
+		# Makes `directory`, with the named pipes of a session with `capacity`
+		# channels, which takes about 0.3ms a channel.
+		def self.make(directory, capacity)
 			Dir.mkdir(directory, 0o700)
+			channels = Array.new(capacity) { |index| ["#{index}.up", "#{index}.down"] }
+			["finished", "control", "report", *channels.flatten].each { |name| File.mkfifo(File.join(directory, name), 0o600) }
+		end
+
+		# `settings` are for workers (see Loader#serve_run). `directory` may have
+		# been made already, with at least as many channels.
+		def initialize(pid, directory, group:, capacity:, settings:)
+			self.class.make(directory, capacity) unless Dir.exist?(directory)
 			File.binwrite(File.join(directory, "settings"), Marshal.dump(settings))
 			@directory = directory
-			@finished = fifo("finished", File::RDONLY | File::NONBLOCK)
+			@finished = pipe("finished", File::RDONLY | File::NONBLOCK)
 			# Opened for reading too, so it doesn't wait for the loader, which
 			# sees the end once this process closes it.
-			control = fifo("control", File::RDWR).tap { |io| io.sync = true }
-			report = fifo("report", File::RDONLY | File::NONBLOCK)
+			control = pipe("control", File::RDWR).tap { |io| io.sync = true }
+			report = pipe("report", File::RDONLY | File::NONBLOCK)
 
 			channels = Array.new(capacity) do |index|
-				Quickdraw::Channel.new(fifo("#{index}.up", File::RDONLY | File::NONBLOCK), fifo("#{index}.down", File::RDWR))
+				Quickdraw::Channel.new(pipe("#{index}.up", File::RDONLY | File::NONBLOCK), pipe("#{index}.down", File::RDWR))
 			end
 
 			super(group:, pid:, control:, report:, channels:)
@@ -81,11 +91,42 @@ class Quickdraw::WarmLoaders
 			false
 		end
 
-		private def fifo(name, flags)
-			path = File.join(@directory, name)
-			File.mkfifo(path, 0o600)
-			File.open(path, flags, binmode: true)
+		private def pipe(name, flags)
+			File.open(File.join(@directory, name), flags, binmode: true)
 		end
+	end
+
+	# What files looked like when they were last read, for finding those that
+	# have changed since without a file watcher. Those changed after `since`
+	# count as changed, since they may have been read before that.
+	class Snapshot
+		def self.signature(path)
+			stat = File.stat(path)
+			[stat.mtime, stat.size, stat.ino]
+		rescue SystemCallError
+			nil
+		end
+
+		def initialize(paths, since: nil)
+			@signatures = paths.to_h do |path|
+				signature = self.class.signature(path)
+				[path, (signature && since && signature.first >= since) ? :unknown : signature]
+			end
+		end
+
+		def changed
+			@signatures.filter_map { |path, signature| path unless self.class.signature(path) == signature }
+		end
+	end
+
+	# The files this process has loaded that could change: not Ruby's own
+	# libraries or installed gems.
+	def self.loaded_files
+		installed = [*RbConfig::CONFIG.values_at("rubylibdir", "sitedir", "vendordir"), *(Gem.path if defined?(Gem))].filter_map do |directory|
+			"#{File.realpath(directory)}/" if directory && File.directory?(directory)
+		end
+
+		$LOADED_FEATURES.select { |feature| feature.start_with?("/") && !feature.start_with?(*installed) }
 	end
 
 	# Whether `changed` (absolute) has one of `files`, or a directory holding
@@ -95,11 +136,19 @@ class Quickdraw::WarmLoaders
 	end
 
 	# `coverage` and `test_output_to_stderr` are as for Loader#initialize, and
-	# the same for every run.
-	def initialize(coverage:, test_output_to_stderr:)
+	# the same for every run. Sessions' named pipes go in `directory`, which
+	# mustn't exist yet. With `declines`, a run that needs what warm loaders
+	# don't do can start again cold (see #decline). The block runs in each
+	# loader forked, before it boots, to close what it mustn't hold open.
+	def initialize(coverage:, test_output_to_stderr:, directory: File.join(Quickdraw.temporary_directory, "quickdraw-#{Random.urandom(8).unpack1('H*')}"), declines: false, &in_loader)
 		@coverage = coverage
 		@test_output_to_stderr = test_output_to_stderr
-		@directory = File.join(Quickdraw.temporary_directory, "quickdraw-#{Random.urandom(8).unpack1('H*')}")
+		@declines = declines
+		@in_loader = in_loader
+		# Sessions made for the next run, each with the number of channels it has.
+		@ahead = []
+		@capacity = 0
+		@directory = directory
 		Dir.mkdir(@directory, 0o700)
 		@loaders = {}
 		@wanted = Quickdraw::Channel.new(*IO.pipe)
@@ -119,14 +168,36 @@ class Quickdraw::WarmLoaders
 		end
 
 		stale.each_key { |group| restart(group) }
-		return false unless ask(paths, @loaders.except(*stale.keys), interrupt)
+		return false unless paths.empty? || ask([:changed, paths], @loaders.except(*stale.keys), interrupt)
 
 		@loaders[nil] ||= start(nil, nil)
 		true
 	end
 
+	# As #prepare, with no file watcher to say what changed: each loader looks
+	# at the files it booted from itself (see Loader#check).
+	def refresh(interrupt:)
+		stale = @loaders.select { |_group, loader| !loader.waiter.alive? || loader.bundle&.changed&.any? }
+		stale.each_key { |group| restart(group) }
+		return false unless ask([:check], @loaders.except(*stale.keys), interrupt)
+
+		@loaders[nil] ||= start(nil, nil)
+		true
+	end
+
+	# In a run that another process asked for: what its workers take on from
+	# that process (see Daemon.adopt).
+	attr_writer :invocation
+
+	# In a run, before any of its tests start, once config turns out to ask
+	# for what warm loaders don't do. Watch mode carries on without. A
+	# daemon's run stops, for a cold start to do it all (see CLI#serve).
+	def decline
+		throw :declined if @declines
+	end
+
 	# In the watch process, after a run: starts the loaders it wanted, for the
-	# next run, and removes its named pipes.
+	# next run, removes its named pipes, and makes the next run's.
 	def warm_up
 		while @wanted.reader.wait_readable(0)
 			group, gemfile = @wanted.read
@@ -138,7 +209,7 @@ class Quickdraw::WarmLoaders
 			end
 		end
 
-		remove_sessions
+		make_ahead
 	end
 
 	# In a run: a session with the warm loader for `group`, or nil if there
@@ -156,8 +227,10 @@ class Quickdraw::WarmLoaders
 			return
 		end
 
-		directory = File.join(@directory, "#{Process.pid}-#{@sessions += 1}")
-		session = Session.new(loader.pid, directory, group:, capacity:, settings:)
+		ahead = @ahead.find { |_directory, channels| channels >= capacity }
+		@ahead.delete(ahead)
+		directory = ahead&.first || File.join(@directory, "#{Process.pid}-#{@sessions += 1}")
+		session = Session.new(loader.pid, directory, group:, capacity:, settings: settings.merge(invocation: @invocation))
 		return session if loader.link.write([:run, directory])
 
 		# It has exited, and prepare replaces it before the next run.
@@ -181,17 +254,15 @@ class Quickdraw::WarmLoaders
 		Dir.rmdir(@directory)
 	end
 
-	# Asks `loaders` what `paths` (absolute) changing means for them, and
-	# replaces those that need booting again, or that exit meanwhile, since a
-	# process config started can hold their link open. Returns false if
-	# interrupted.
-	private def ask(paths, loaders, interrupt)
-		return true if paths.empty?
-
+	# Asks `loaders` whether they're still fresh, with [:changed, paths] for
+	# what paths (absolute) changing means for them, or [:check], and replaces
+	# those that need booting again, or that exit meanwhile, since a process
+	# config started can hold their link open. Returns false if interrupted.
+	private def ask(message, loaders, interrupt)
 		asking = {}
 
 		loaders.each do |group, loader|
-			if loader.link.write([:changed, paths])
+			if loader.link.write(message)
 				asking[loader.link.reader] = group
 			else
 				restart(group)
@@ -222,10 +293,11 @@ class Quickdraw::WarmLoaders
 		pid = Quickdraw::Loader.start([], [], nil, gemfile:, link: loader_link, group:, coverage: @coverage, test_output_to_stderr: @test_output_to_stderr) do
 			link.close
 			disconnect
+			@in_loader&.call
 		end
 
 		loader_link.close
-		Loader.new(pid:, link:, waiter: Process.detach(pid), gemfile:)
+		Loader.new(pid:, link:, waiter: Process.detach(pid), gemfile:, bundle: (Snapshot.new(bundle_files(File.expand_path(gemfile))) if gemfile))
 	end
 
 	# Not until the old loader has exited, since its at_exit hooks may still be
@@ -262,12 +334,36 @@ class Quickdraw::WarmLoaders
 		[gemfile, "#{gemfile}.lock", "#{gemfile.delete_suffix('.rb')}.locked"]
 	end
 
-	private def remove_sessions
+	# Removes the sessions the last run used, which have its settings, and
+	# makes one for each loader, so the next run doesn't wait for its named
+	# pipes: each with as many channels as the most a run has used.
+	private def make_ahead
 		Dir.each_child(@directory) do |name|
 			session = File.join(@directory, name)
-			Dir.each_child(session) { |file| File.unlink(File.join(session, file)) }
-			Dir.rmdir(session)
+			next unless File.exist?(File.join(session, "settings"))
+
+			@capacity = [@capacity, Dir.children(session).count { |file| file.end_with?(".up") }].max
+			remove_session(session)
 		end
+
+		@ahead, unusable = @ahead.partition { |directory, channels| channels >= @capacity && Dir.exist?(directory) }
+		unusable.each { |directory, _channels| remove_session(directory) if Dir.exist?(directory) }
+		return if @capacity == 0
+
+		(@loaders.size - @ahead.size).times do
+			directory = File.join(@directory, "ahead-#{@sessions += 1}")
+			Session.make(directory, @capacity)
+			@ahead << [directory, @capacity]
+		end
+	end
+
+	private def remove_sessions
+		Dir.each_child(@directory) { |name| remove_session(File.join(@directory, name)) }
+	end
+
+	private def remove_session(directory)
+		Dir.each_child(directory) { |file| File.unlink(File.join(directory, file)) }
+		Dir.rmdir(directory)
 	end
 
 	private def now

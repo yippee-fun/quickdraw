@@ -104,6 +104,7 @@ class Quickdraw::Configuration
 		raise ArgumentError, "on_flaky needs a block." unless block
 
 		@flaky_callbacks << block
+		@settings[:on_flaky] = true
 	end
 
 	# Wraps every test, with its setup and teardown, in the block, which calls

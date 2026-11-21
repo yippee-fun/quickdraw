@@ -4,6 +4,7 @@ require_relative "../support/integration"
 
 class RailsTest < Quickdraw::Test
 	include Integration
+	include Integration::Daemons
 
 	APP = {
 		"config/quickdraw.rb" => "Quickdraw.configure(&:rails)\n",
@@ -175,6 +176,33 @@ class RailsTest < Quickdraw::Test
 
 		assert_equal problems(result), ["1 failed", "1 failed", ""]
 		assert_equal boots(project), 2
+	end
+
+	test "from the daemon, reloads app code that changed between runs, and boots again when an initializer changes", timeout: 60 do
+		project = with_daemon(watched_app(reloading: true, eager_load: true, test: <<~TEST))
+			class UserTest < Quickdraw::Test
+				test("greets") { assert_equal [User.new.greeting, (Post.name if Object.const_defined?(:Post))], ["hello", "Post"] }
+			end
+		TEST
+
+		assert_equal warm(project, timeout: 30).exit_status, 1
+		assert_equal boots(project), 2
+
+		project.write("app/models/user.rb" => "class User < ActiveRecord::Base\n\tdef greeting = 'hello'\nend\n")
+
+		assert_equal daemon_run(project, "-p", "1", timeout: 30).exit_status, 1
+
+		project.write("app/models/post.rb" => "class Post < ActiveRecord::Base; end\n")
+		reloaded = daemon_run(project, "-p", "1", timeout: 30)
+
+		assert(reloaded.success?) { reloaded.output }
+		assert_equal boots(project), 2
+
+		project.write("config/initializers/greeting.rb" => "GREETING = 'hello'\n")
+		booted = daemon_run(project, "-p", "1", timeout: 30)
+
+		assert(booted.success?) { booted.output }
+		assert_equal boots(project), 3
 	end
 
 	test "won't run in a protected environment, since it empties databases", timeout: 30 do

@@ -146,6 +146,7 @@ class Quickdraw::Loader
 		trap("INT") { nil }
 
 		Quickdraw::CoverageCollector.start if @coverage
+		@booting_at = Time.now
 
 		begin
 			self.class.boot(group: @group)
@@ -193,10 +194,13 @@ class Quickdraw::Loader
 	# runs, one at a time, until the watch process stops it, or exits.
 	private def serve_runs
 		@autoloadable = autoloadable_files
+		# For #check. What changed while booting may have been loaded before it did.
+		@snapshot = Quickdraw::WarmLoaders::Snapshot.new(watched, since: @booting_at)
 
 		while (message = @link.read)
 			case message
 			in [:changed, paths] then @link.write(refresh(paths))
+			in [:check] then @link.write(check)
 			in [:run, directory] then serve_run(directory)
 			in [:stop] then break
 			end
@@ -211,7 +215,7 @@ class Quickdraw::Loader
 	# Skipped if the run has already gone, after Ctrl-C, say.
 	private def serve_run(directory)
 		settings = Marshal.load(File.binread(File.join(directory, "settings")))
-		@test_files, @seed, @profile, @capture, @capture_loading, @leaks = settings.values_at(:test_files, :seed, :profile, :capture, :capture_loading, :leaks)
+		@test_files, @seed, @profile, @capture, @capture_loading, @leaks, @invocation = settings.values_at(:test_files, :seed, :profile, :capture, :capture_loading, :leaks, :invocation)
 		@directory = directory
 		@running = {}
 		@statuses = []
@@ -225,8 +229,14 @@ class Quickdraw::Loader
 	rescue SystemCallError
 		nil
 	ensure
-		[@control, @report, @finished].compact.each(&:close)
-		@control = @report = @finished = @directory = nil
+		# Closing writes what's left, which a run that has gone can't read.
+		[@control, @report, @finished].compact.each do |io|
+			io.close
+		rescue SystemCallError
+			nil
+		end
+
+		@control = @report = @finished = @directory = @invocation = nil
 	end
 
 	# What changes to `paths` (absolute) mean to a warm loader: :fresh if it
@@ -253,6 +263,34 @@ class Quickdraw::Loader
 		# Booting again reports what's wrong.
 		:stale
 	end
+
+	# As #refresh, for a loader with no file watcher to say what changed (see
+	# WarmLoaders#refresh): it looks at what booting loaded, at config, and at
+	# the autoloader's directories, which change when files come and go.
+	private def check
+		return :stale unless @boot_report.first == :booted
+
+		changed = @snapshot.changed
+		return :fresh if changed.empty?
+		return :stale if changed.any? { |path| "#{path}/".start_with?("#{config_directory}/") }
+
+		directories, files = changed.partition { |path| File.directory?(path) }
+		known = @autoloadable.keys
+		found = directories.any? ? autoloadable_files.keys : known
+		result = refresh(files + (found - known) + (known - found))
+		@snapshot = Quickdraw::WarmLoaders::Snapshot.new(watched) unless result == :stale
+		result
+	end
+
+	# The files and directories #check looks at.
+	private def watched
+		config = Dir.glob("**/*", base: config_directory).map { |path| File.join(config_directory, path) }
+		autoloaded = autoload_dirs.flat_map { |dir| [dir, *Dir.glob("**/", base: dir).map { |path| File.join(dir, path).chomp("/") }] }
+
+		[*Quickdraw::WarmLoaders.loaded_files, config_directory, *config, *autoloaded]
+	end
+
+	private def config_directory = File.join(Quickdraw::ROOT, "config")
 
 	# Whether booting loaded `path`, or the autoloader's idea of it is out of
 	# date, since it's been added or deleted.
@@ -360,6 +398,7 @@ class Quickdraw::Loader
 			# Only the loader holds these, so closing them says it's done.
 			@link&.close
 			@finished&.close
+			Quickdraw::Daemon.adopt(@invocation) if @invocation
 			start_worker(channel, slot, test_files)
 		end
 
