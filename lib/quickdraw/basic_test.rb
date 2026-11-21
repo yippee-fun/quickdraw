@@ -147,7 +147,7 @@ class Quickdraw::BasicTest
 
 	# Indicate that an assertion passed successfully.
 	def success!
-		(Quickdraw::BasicTest.active_checks == 0 ? @runner : runner).success!(@description)
+		((Quickdraw::BasicTest.active_checks == 0) ? @runner : runner).success!(@description)
 
 		nil
 	end

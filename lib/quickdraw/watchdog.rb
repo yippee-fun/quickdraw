@@ -80,7 +80,7 @@ class Quickdraw::Watchdog
 				if deadline.nil?
 					@changed.wait(@mutex, @paused ? nil : TICK)
 				elsif (remaining = deadline - now) > 0
-					@changed.wait(@mutex, remaining < TICK ? remaining : TICK)
+					@changed.wait(@mutex, (remaining < TICK) ? remaining : TICK)
 				else
 					time_out
 				end
