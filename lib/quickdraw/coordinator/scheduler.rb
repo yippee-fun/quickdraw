@@ -45,6 +45,16 @@ class Quickdraw::Coordinator::Scheduler
 		allocation
 	end
 
+	# How many workers the files to load are worth starting: one each, or more
+	# for a file that history, or else its group, expects to take long enough
+	# to share (see WorkerTuner::MINIMUM_WORK_PER_WORKER).
+	def first_workers
+		@unloaded.sum do |_path, display_path, group|
+			seconds = @plan&.files&.dig(display_path, 1) || @group_file_seconds[group] || 0.0
+			[(seconds / Quickdraw::WorkerTuner::MINIMUM_WORK_PER_WORKER).floor, 1].max
+		end
+	end
+
 	# A worker added in `group`, since idle CPU is room for its cores.
 	def added(group)
 		@core_budget += cores(group)
@@ -55,7 +65,7 @@ class Quickdraw::Coordinator::Scheduler
 	# Only one whose workers fit in the cores the run uses, unless `fitting` is false.
 	def busiest_loader(except: nil, fitting: true)
 		candidates = @loaders.each_value.reject do |loader|
-			loader.equal?(except) || loader.spares.empty? || loader.status || !work_left?(loader.group) || (fitting && !fits?(loader.group))
+			loader.equal?(except) || loader.spares.zero? || loader.status || !work_left?(loader.group) || (fitting && !fits?(loader.group))
 		end
 
 		candidates.max_by do |loader|
