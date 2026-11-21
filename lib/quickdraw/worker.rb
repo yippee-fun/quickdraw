@@ -13,6 +13,16 @@ class Quickdraw::Worker
 	# How long past its tests' timeouts to wait for a baseline fork before killing it.
 	BASELINE_GRACE = 5
 
+	# A plain passing test's result waits to be sent with the next ones, as
+	# integers (see Channel#queue), until this many are waiting, or the tests
+	# they're for took this many nanoseconds, so a slow test's result is sent
+	# as it finishes.
+	RESULTS_AT_ONCE = 64
+	UNSENT_TIME = 20_000_000
+
+	# The integers a queued result is: its index, duration, stats and assertions.
+	RESULT_INTEGERS = 3 + Quickdraw::STATS.size
+
 	class Recorder
 		PHASE_INDICES = Quickdraw::PHASES.each_with_index.to_h.freeze
 		CPU = Quickdraw::STATS.index("cpu")
@@ -208,7 +218,6 @@ class Quickdraw::Worker
 
 		if @timeouts
 			@watchdog = Quickdraw::Watchdog.new do |seconds, threads|
-				flush_pending_binary
 				@channel.write([:timeout, seconds, threads])
 			end
 		end
@@ -250,30 +259,32 @@ class Quickdraw::Worker
 				@channel.write([:started])
 				tests = @files.fetch(path)
 				@capture&.start
-				@pending_bin = []
-				last_flush = now
+
+				unsent = 0
 
 				indices.each do |index|
 					seed(path, index)
-					res = run(tests[index], compact: true)
+					definition = tests[index]
+					# The coordinator takes the first test it has no result for as
+					# the one running, and kills the worker once it's long past its
+					# timeout. Only tests with the same timeout can wait unsent.
+					@channel.flush if definition.timeout
+					result = run(definition, compact: true)
 
-					if Array === res && res[3].empty?
-						stats = res[1]
-						@pending_bin.push(index, res[0], stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], res[2])
+					if Array === result && result[3].empty? && !definition.timeout
+						duration, stats, assertions = result
+						unsent += duration
 
-						if @pending_bin.size >= 576 || (now - last_flush) >= 0.02
-							flush_pending_binary
-							last_flush = now
+						if @channel.queue(index, duration, *stats, assertions) >= RESULTS_AT_ONCE * RESULT_INTEGERS || unsent >= UNSENT_TIME
+							@channel.flush
+							unsent = 0
 						end
 					else
-						flush_pending_binary
-						@channel.write([:result, index, res])
-						last_flush = now
+						@channel.write([:result, index, result])
+						unsent = 0
 					end
 				end
 
-				flush_pending_binary
-				@pending_bin = nil
 				# Processes can be waited for before the next test, as a file loads.
 				@children_cpu = nil
 				@capture&.stop
@@ -347,6 +358,24 @@ class Quickdraw::Worker
 		in Hash then sent
 		in [duration, stats, assertions, counts]
 			{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
+		end
+	end
+
+	# Yields the index and result, as Recorder#to_h makes it, of each test in a
+	# message a worker sent results in: one, or those that were queued.
+	def self.each_result(message)
+		case message
+		in [:result, index, sent]
+			yield index, result(sent)
+		in [:integers, integers]
+			raise ArgumentError, "Expected #{RESULT_INTEGERS} integers for each result, but got #{integers.size}." unless (integers.size % RESULT_INTEGERS).zero?
+
+			offset = 0
+
+			while offset < integers.size
+				yield integers[offset], result([integers[offset + 1], integers[offset + 2, Quickdraw::STATS.size], integers[offset + RESULT_INTEGERS - 1], {}])
+				offset += RESULT_INTEGERS
+			end
 		end
 	end
 
@@ -774,14 +803,6 @@ class Quickdraw::Worker
 		$stderr.flush
 	rescue IOError
 		nil
-	end
-
-	private def flush_pending_binary
-		return unless @pending_bin && !@pending_bin.empty?
-
-		data = @pending_bin.pack("Q<*")
-		@pending_bin.clear
-		@channel.write_binary_results(data)
 	end
 
 	private def now

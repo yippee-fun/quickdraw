@@ -29,28 +29,6 @@ class Quickdraw::Timings
 		@counts = Hash.new { |hash, key| hash[key] = [0, 0.0] }
 	end
 
-	def record_passed(path, test, duration, setup, body, teardown, cpu, gc, allocations)
-		@count += 1
-		@test_time += duration
-		slowest = @slowest.nil? || duration > @slowest.duration
-		if slowest || @tests
-			timed = Test.new(duration:, path:, test:, stats: [setup, body, teardown, cpu, gc, allocations])
-			@slowest = timed if slowest
-			@tests << timed if @tests
-		end
-
-		file = @files[path]
-		file[0] += duration
-		file[1] += 1
-
-		@totals[0] += setup
-		@totals[1] += body
-		@totals[2] += teardown
-		@totals[3] += cpu
-		@totals[4] += gc
-		@totals[5] += allocations
-	end
-
 	def record(path, test, result)
 		duration = result["duration"] or return
 		stats = result["stats"]
