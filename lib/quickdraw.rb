@@ -111,6 +111,10 @@ module Quickdraw
 	def self.register(test)
 		raise "Tests can only be defined while Quickdraw loads a test file." unless @tests
 
+		# A test written in the file being loaded belongs to it, which is nearly
+		# every test, so those need no backtrace.
+		return @tests << test if test.block&.source_location&.first == @loading
+
 		# Tests defined by another selected test file that this one requires
 		# belong to that file. Quickdraw loads it separately. The file being
 		# required is usually a few frames up, so the whole backtrace, which is

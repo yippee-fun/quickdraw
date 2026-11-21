@@ -70,6 +70,33 @@ class IsolationTest < Quickdraw::Test
 		match { result => { summary: /\A3 tests · 3 assertions/ } }
 	end
 
+	test "runs tests a helper file defines once, for the test file that calls it", timeout: 20 do
+		result = project(
+			"a.test.rb" => <<~RUBY,
+				require_relative "shared"
+
+				class A < Quickdraw::Test
+					Shared.define(self)
+					test("a") { assert true }
+				end
+			RUBY
+			"b.test.rb" => <<~RUBY,
+				require_relative "a.test"
+
+				class B < Quickdraw::Test
+					test("b") { assert true }
+				end
+			RUBY
+			"shared.rb" => <<~RUBY,
+				module Shared
+					def self.define(test_class) = test_class.test("shared") { assert true }
+				end
+			RUBY
+		).run("-p", "1", "--no-history", "a.test.rb", "b.test.rb")
+
+		match { result => { summary: /\A3 tests · 3 assertions/ } }
+	end
+
 	test "gives a test the same random numbers for a seed, whichever worker runs it", timeout: 30 do
 		project = project("random.test.rb" => <<~RUBY)
 			class Randomness < Quickdraw::Test
