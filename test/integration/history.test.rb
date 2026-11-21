@@ -59,6 +59,58 @@ class HistoryTest < Quickdraw::Test
 		refute_includes result.output, "couldn’t"
 	end
 
+	test "what reads a run's output through a pipe doesn't wait for its history to be written", timeout: 30 do
+		skip "Another process writes run history only with fork" unless Process.respond_to?(:fork)
+
+		path = File.join(tmpdir, "history.sqlite3")
+		# Held, so the history process is still waiting to write once the run has gone.
+		lock = Quickdraw::History.lock_for_writing(path)
+		script = <<~RUBY
+			require "quickdraw"
+			history = Quickdraw::HistoryProcess.new(ARGV.fetch(0))
+			# As #save asks, without waiting for the lock.
+			history.instance_variable_get(:@channel).write([:save, { records: [] }, nil])
+			puts history.instance_variable_get(:@pid)
+			$stdout.flush
+			exit!(0)
+		RUBY
+
+		reader, writer = IO.pipe
+		run = Process.spawn(RbConfig.ruby, "-I", Quickdraw::LIB, "-e", script, path, out: writer, err: writer)
+		writer.close
+		Process.wait(run)
+		output = +""
+
+		closed = loop do
+			break false unless reader.wait_readable(5)
+
+			chunk = reader.read_nonblock(4096, exception: false) or break true
+			output << chunk
+		end
+
+		assert(closed) { "The history process held the run's output open." }
+
+		history = Integer(output)
+		assert_equal Process.kill(0, history), 1
+	ensure
+		Process.kill("KILL", history) if history
+		reader&.close
+		lock&.close
+	end
+
+	test "the run says when its history can't be locked for writing", timeout: 30 do
+		skip "Another process writes run history only with fork" unless Process.respond_to?(:fork)
+
+		path = File.join(tmpdir, "history.sqlite3")
+		Dir.mkdir("#{path}.lock")
+		history = Quickdraw::HistoryProcess.new(path)
+
+		assert_raises(Quickdraw::History::Error) { history.save({ records: [] }, nil) }
+	ensure
+		# Until it has exited.
+		history&.close&.join
+	end
+
 	test "estimates the worker count, then tunes it from history", timeout: 30 do
 		skip "Choosing the worker count needs fork" unless Process.respond_to?(:fork)
 

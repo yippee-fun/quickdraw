@@ -814,7 +814,9 @@ class Quickdraw::Coordinator
 
 	private def start_workers
 		@scheduler.allocate(@processes).each do |group, workers|
-			workers.times { start_worker(@loaders.fetch(group), @free_slots.shift) }
+			loader = @loaders.fetch(group)
+			loader.command("warmup") if workers > 1
+			workers.times { start_worker(loader, @free_slots.shift) }
 		end
 	end
 
@@ -842,6 +844,7 @@ class Quickdraw::Coordinator
 		added = 0
 
 		while added < count && (loader = @scheduler.busiest_loader(fitting: false)) && loader.spares.size > spare_channels
+			loader.command("warmup")
 			start_worker(loader, @slot_count)
 			@scheduler.added(loader.group)
 			@slot_count += 1
