@@ -210,7 +210,6 @@ class Quickdraw::CLI
 			options[:processes]
 		end
 
-		options[:cores] = Quickdraw::Platform.supports_forking? ? Quickdraw::Platform.non_blocking_cores : 1
 		# Tests that mostly wait can use more workers than cores; beyond this the
 		# memory and scheduling overhead outweighs it.
 		options[:max_processes] = Quickdraw::Platform.cpu_cores * 3
@@ -517,7 +516,7 @@ class Quickdraw::CLI
 	# they describe highlighted.
 	private def help_text(parser)
 		column = 4 + parser.summary_width + 1
-		width = [terminal_columns || HELP_WIDTH, HELP_WIDTH].min
+		width = [Quickdraw::Platform.terminal_columns($stdout) || HELP_WIDTH, HELP_WIDTH].min
 
 		# Too narrow for two columns, descriptions go under what they describe.
 		narrow = width - column < 30
@@ -544,13 +543,6 @@ class Quickdraw::CLI
 			lines.last << " " unless lines.last.empty?
 			lines.last << word
 		end
-	end
-
-	private def terminal_columns
-		require "io/console"
-		$stdout.winsize[1]
-	rescue LoadError, SystemCallError, NoMethodError
-		nil
 	end
 
 	private def cyan(text, io = $stdout) = style(text, 36, io)
@@ -629,7 +621,6 @@ class Quickdraw::CLI
 		Quickdraw::Coordinator.new(
 			files:,
 			processes: options[:processes],
-			cores: options[:cores],
 			max_processes: options[:max_processes],
 			# inspect, so a path containing a space can't collide with two paths.
 			selection: [

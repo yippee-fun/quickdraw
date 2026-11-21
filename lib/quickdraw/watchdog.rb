@@ -5,12 +5,28 @@
 # then exits the worker so the coordinator can report it and replace it.
 #
 # Runs alongside user code, so it must only use core Ruby.
+#
+# Starting and finishing a test take no lock. The test's thread and the
+# watchdog's each write their own variable, then read the other's, so one of
+# them always sees the other: #watch wakes the watchdog only for a deadline
+# sooner than the one it's sleeping to, and waits for the lock only while the
+# watchdog decides whether to time the test out. That needs each to see the
+# other's last write, which only CRuby's GVL promises, so other engines always
+# wake the watchdog and take the lock.
 class Quickdraw::Watchdog
+	MONOTONIC = Process::CLOCK_MONOTONIC
+	ORDERED_WRITES = RUBY_ENGINE == "ruby"
+
 	def initialize(&on_timeout)
 		@on_timeout = on_timeout
 		@mutex = Thread::Mutex.new
-		@changed = Thread::ConditionVariable.new
+		@wakeups = Thread::Queue.new
 		@deadline = nil
+		@wake_at = Float::INFINITY
+		@expiring = false
+		# How long the clock has been stopped for in all, and since when it's
+		# stopped, if it is. One object, so a reader never sees half a change.
+		@pause = [0.0, nil].freeze
 		@thread = Thread.new { watch_deadlines }
 		@thread.name = "quickdraw-watchdog"
 	end
@@ -24,56 +40,102 @@ class Quickdraw::Watchdog
 			return false
 		end
 
-		@mutex.synchronize do
-			@seconds = seconds
-			@watched = Thread.current
-			@deadline = now + seconds
-			@changed.signal
+		# The deadline last, so the watchdog never sees it without the rest.
+		@seconds = seconds
+		@watched = Thread.current
+		@armed = @pause
+		deadline = @deadline = Process.clock_gettime(MONOTONIC) + seconds
+
+		if !ORDERED_WRITES
+			@wakeups << true
+		elsif deadline < @wake_at
+			@wake_at = deadline
+			@wakeups << true
 		end
 
-		yield
-		# Not when a debugger has paused the clock.
-		@mutex.synchronize { @deadline ? now > @deadline : false }
-	ensure
-		if seconds
-			@mutex.synchronize do
-				@deadline = nil
-				@remaining = nil
-				@changed.signal
-			end
+		begin
+			yield
+			Process.clock_gettime(MONOTONIC) > deadline && overran?(deadline)
+		ensure
+			@deadline = nil
+			# Never returns if the watchdog is timing the test out.
+			@mutex.synchronize { nil } if @expiring || !ORDERED_WRITES
 		end
 	end
 
-	# Stops the clock, e.g. while a debugger has the terminal, until #resume
-	# gives the test what it had left.
+	# Stops the clock, e.g. while a debugger has the terminal, until #resume.
 	def pause
 		@mutex.synchronize do
-			@remaining = @deadline && (@deadline - now)
-			@deadline = nil
-			@changed.signal
+			total, since = @pause
+			@pause = [total, now].freeze unless since
 		end
 	end
 
 	def resume
 		@mutex.synchronize do
-			@deadline = now + @remaining if @remaining
-			@remaining = nil
-			@changed.signal
+			total, since = @pause
+
+			if since
+				@pause = [total + (now - since), nil].freeze
+				@wakeups << true
+			end
 		end
 	end
 
 	private def watch_deadlines
-		@mutex.synchronize do
-			loop do
-				if @deadline.nil?
-					@changed.wait(@mutex)
-				elsif (remaining = @deadline - now) > 0
-					@changed.wait(@mutex, remaining)
+		loop do
+			deadline = @deadline
+			pause = @pause
+
+			if deadline.nil? || pause[1]
+				wait(deadline, Float::INFINITY, nil)
+			else
+				wake_at = deadline + stopped(deadline, pause)
+				remaining = wake_at - now
+
+				if remaining > 0
+					wait(deadline, wake_at, remaining)
 				else
-					time_out
+					expire(deadline)
 				end
 			end
 		end
+	end
+
+	# Not if the deadline changed before @wake_at did, as #watch only wakes
+	# this thread for a deadline it can see is sooner.
+	private def wait(deadline, wake_at, timeout)
+		@wake_at = wake_at
+		@wakeups.pop(timeout:) if @deadline == deadline
+	end
+
+	# A test that finishes meanwhile sees @expiring and waits for the lock, so
+	# it's either timed out or reported, never both.
+	private def expire(deadline)
+		@mutex.synchronize do
+			@expiring = true
+			time_out if @deadline == deadline && overran?(deadline)
+		ensure
+			@expiring = false
+		end
+	end
+
+	# Not while a debugger has the clock stopped.
+	private def overran?(deadline)
+		pause = @pause
+		!pause[1] && now >= deadline + stopped(deadline, pause)
+	end
+
+	# How long the clock was stopped for while the watched block ran, as of
+	# `pause`, which isn't stopped.
+	private def stopped(deadline, pause)
+		armed = @armed
+		return 0.0 if armed.equal?(pause)
+
+		total, since = armed
+		# Armed while stopped, so not what had passed of that stop.
+		total += deadline - @seconds - since if since
+		pause[0] - total
 	end
 
 	private def time_out
@@ -104,6 +166,6 @@ class Quickdraw::Watchdog
 	end
 
 	private def now
-		Process.clock_gettime(Process::CLOCK_MONOTONIC)
+		Process.clock_gettime(MONOTONIC)
 	end
 end
