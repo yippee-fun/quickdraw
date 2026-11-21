@@ -24,9 +24,6 @@ class Quickdraw::Coordinator
 
 	# How long the coordinator waits for a message before checking on workers anyway.
 	POLL_INTERVAL = 0.1
-	# History::Records sent to the history process at a time, as the run goes.
-	HISTORY_BATCH = 500
-
 	# How long past a test's timeout to wait for its watchdog before killing it.
 	TIMEOUT_GRACE = 5
 
@@ -388,7 +385,6 @@ class Quickdraw::Coordinator
 		# Files with slow tests waiting (see TestFile#slow?), so dispatching doesn't scan the rest.
 		@slow_files = {}
 		@averages = {}
-		@records = []
 		@load_errors = []
 	end
 
@@ -1114,7 +1110,6 @@ class Quickdraw::Coordinator
 			worker_choice: @worker_choice,
 			selection: @selection,
 			passed:,
-			records: @records,
 			loaded_paths: @files.each_value.map(&:display_path).uniq,
 			load_errors: @load_errors,
 		}
@@ -1311,22 +1306,7 @@ class Quickdraw::Coordinator
 		@reporter.finished_file(file.display_path, file.variant) if file.reported == file.size
 		@stopping = true if @fail_fast && failed?(result) && !result["quarantined"]
 
-		if @history
-			@records << Quickdraw::History::Record.from(
-				key: file.keys[index],
-				path: file.display_path,
-				test: file.tests[index],
-				result:,
-				worker: process,
-				slot:,
-				sequence:,
-			)
-
-			if @records.size >= HISTORY_BATCH
-				@history.add(@records)
-				@records = []
-			end
-		end
+		@history&.add(file, index, result, process, slot, sequence)
 	end
 
 	private def load_failed(path, group, error)
