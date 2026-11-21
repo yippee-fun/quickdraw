@@ -22,7 +22,8 @@ class CLITest < Quickdraw::Test
 		assert(result.success?) { result.output }
 		match { result => { summary: /\A1 test · 1 assertion/ } }
 		assert_includes result.stdout, "Slowest tests"
-		assert_includes result.stdout, "Workers  1 (manual)"
+		# Without fork there is one worker whatever was asked for, so the count isn’t reported as chosen.
+		assert_includes result.stdout, "Workers  1 (manual)" if Process.respond_to?(:fork)
 	end
 
 	test "explains ambiguous options and bad values", timeout: 20 do
