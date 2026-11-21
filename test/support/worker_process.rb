@@ -4,12 +4,14 @@
 # the coordinator: to send it commands and see exactly what it sends back.
 module WorkerProcess
 	class Session
-		def initialize(channel, paths)
+		def initialize(channel, paths, directory)
 			@channel = channel
 			@paths = paths
+			@directory = directory
 		end
 
-		attr_reader :channel
+		# A file beside the test files, which their tests see in __dir__.
+		def path(name) = File.join(@directory, name)
 
 		# The descriptions of the file's tests, in the order their indices are in.
 		def load(name)
@@ -21,15 +23,23 @@ module WorkerProcess
 			end
 		end
 
+		# Has the worker run the tests at `indices` as one batch.
+		def start(name, indices)
+			@channel.write([:run, @paths.fetch(name), indices])
+		end
+
+		# The next message the worker sends, or nil once it has exited.
+		def read = @channel.read
+
 		# Runs the tests at `indices` as one batch. Returns every message the
 		# worker sent until it was ready for another, or until it exited, which
 		# a last nil shows.
 		def run(name, indices)
-			@channel.write([:run, @paths.fetch(name), indices])
+			start(name, indices)
 			messages = []
 
 			loop do
-				case @channel.read
+				case read
 				in [:ready, _pid] then break
 				in nil
 					messages << nil
@@ -43,7 +53,8 @@ module WorkerProcess
 	end
 
 	# A worker with `files`, which maps names to sources, to load and run.
-	def start_worker(files, leaks: nil, timeouts: false)
+	# `timeout` is each test's, unless it has its own, with `timeouts`.
+	def start_worker(files, leaks: nil, timeouts: false, timeout: nil)
 		skip "Workers are forked" unless Process.respond_to?(:fork)
 
 		directory = tmpdir
@@ -56,6 +67,15 @@ module WorkerProcess
 			Quickdraw::Leaks::ProcessStarts.watch if leaks && !Quickdraw::Leaks::ProcessStarts.watching?
 			# This fork isn't a process the worker's tests started.
 			Quickdraw::Leaks::ProcessStarts.started = false
+
+			if timeout
+				# Config is frozen once it's loaded.
+				config = Quickdraw::Config.dup
+				config.timeout = timeout
+				Quickdraw.__send__(:remove_const, :Config)
+				Quickdraw.const_set(:Config, config)
+			end
+
 			Quickdraw::Worker.new(worker, paths.values.to_h { |path| [path, true] }, 1, timeouts:, leaks:).call
 		ensure
 			exit!(0)
@@ -76,6 +96,6 @@ module WorkerProcess
 		end
 
 		assert_equal coordinator.read, [:ready, pid]
-		Session.new(coordinator, paths)
+		Session.new(coordinator, paths, directory)
 	end
 end

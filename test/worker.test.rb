@@ -23,10 +23,22 @@ class WorkerTest < Quickdraw::Test
 		end
 	RUBY
 
-	# Each result the batch sent, by its index, as Recorder#to_h made it.
-	def results(messages)
-		messages.filter_map { |message| [message[1], Quickdraw::Worker.result(message[2])] if message in [:result, *] }.to_h
+	# Each result in the messages, in the order sent, as [index, result], with
+	# the result as Recorder#to_h made it.
+	def each_result(messages)
+		pairs = []
+
+		messages.each do |message|
+			Quickdraw::Worker.each_result(message) { |index, result| pairs << [index, result] } if message in [:result | :integers, *]
+		end
+
+		pairs
 	end
+
+	def results(messages) = each_result(messages).to_h
+
+	# The indices of the tests whose results each message has.
+	def indices(messages) = messages.map { |message| each_result([message]).map(&:first) }
 
 	def cpu_seconds(result) = result["stats"][CPU] / 1_000_000_000.0
 
@@ -34,36 +46,137 @@ class WorkerTest < Quickdraw::Test
 		skip "Child processes' CPU time is only reported by CRuby" unless RUBY_ENGINE == "ruby"
 	end
 
-	test "says it started a batch, then sends each test's result in order, a plain pass as just its numbers" do
+	MIXED = <<~RUBY
+		class Mixed < Quickdraw::Test
+			test("passes") { assert true; assert true }
+			test("fails") { assert_equal 1, 2 }
+			test("skips") { skip "later" }
+			test("counts") { Quickdraw::Counters.add("queries"); assert true }
+			test("passes again") { assert true }
+			test("raises") { raise "broken" }
+			test("passes last") { assert true }
+			test("has its own timeout", timeout: 5) { assert true }
+			test("is pending")
+			test("passes at the end") { assert true }
+		end
+	RUBY
+
+	test "sends the results of plain passing tests together, once the batch has finished" do
 		worker = start_worker({ "a.test.rb" => <<~RUBY })
-			class A < Quickdraw::Test
-				test("passes") { assert true; assert true }
-				test("fails") { assert false }
-				test("skips") { skip "later" }
-				test("counts") { Quickdraw::Counters.add("queries"); assert true }
-				test("passes again") { assert true }
+			class Plain < Quickdraw::Test
+				5.times { |number| test("passes \#{number}") { (number + 1).times { assert true } } }
 			end
 		RUBY
 
-		assert_equal worker.load("a.test.rb"), ["passes", "fails", "skips", "counts", "passes again"]
-		messages = worker.run("a.test.rb", [4, 0, 1, 2, 3])
+		worker.load("a.test.rb")
+		messages = worker.run("a.test.rb", [3, 0, 4, 1, 2])
 
-		failed = skipped = counts = nil
+		match { messages => [[:started], [:integers, Array]] }
+		assert_equal messages.last.last.size, 5 * Quickdraw::Worker::RESULT_INTEGERS
+		assert_equal(each_result(messages).map { |index, result| [index, result["assertions"]] }, [[3, 4], [0, 1], [4, 5], [1, 2], [2, 3]])
+	end
 
-		match do
-			messages => [
-				[:started],
-				[:result, 4, [Integer, Array, 1, {}]],
-				[:result, 0, [Integer, Array, 2, {}]],
-				[:result, 1, Hash => failed],
-				[:result, 2, Hash => skipped],
-				[:result, 3, [Integer, Array, 1, Hash => counts]],
-			]
-		end
+	test "a result sent with others is the same as one sent alone" do
+		worker = start_worker({ "a.test.rb" => "class Plain < Quickdraw::Test; test('passes') { assert true }; end\n" })
+		worker.load("a.test.rb")
+		result = results(worker.run("a.test.rb", [0])).fetch(0)
 
-		assert_equal failed["failures"].map { |failure| failure["message"] }, ["expected false to be truthy"]
-		assert_equal skipped["skipped"], { "pending" => false, "reason" => "later" }
-		assert_equal counts, { "queries" => [1, 0.0] }
+		assert_equal result.keys, Quickdraw::Worker::Recorder.new.to_h.keys
+		assert_equal result.except("duration", "stats"), { "assertions" => 1, "failures" => [], "errors" => [], "skipped" => nil, "profile" => nil, "counts" => {} }
+		assert_operator result["duration"], :>, 0
+		assert_equal result["stats"].size, Quickdraw::STATS.size
+		assert_operator result["stats"][Quickdraw::STATS.index("test")], :<=, result["duration"]
+		assert_operator result["stats"][Quickdraw::STATS.index("allocations")], :>, 0 if Quickdraw::Worker::Recorder::HAS_ALLOCATIONS
+	end
+
+	test "sends at most RESULTS_AT_ONCE results together" do
+		count = (Quickdraw::Worker::RESULTS_AT_ONCE * 2) + 10
+
+		worker = start_worker({ "a.test.rb" => <<~RUBY })
+			class Many < Quickdraw::Test
+				#{count}.times { |number| test("passes \#{number}") { assert true } }
+			end
+		RUBY
+
+		worker.load("a.test.rb")
+		messages = worker.run("a.test.rb", (0...count).to_a)
+
+		# A slow machine can send fewer at once, as the tests take longer.
+		assert_operator indices(messages.drop(1)).map(&:size).max, :<=, Quickdraw::Worker::RESULTS_AT_ONCE
+		assert_equal indices(messages).flatten, (0...count).to_a
+	end
+
+	test "sends anything but a plain pass alone and whole, after the results that were waiting, so every result arrives in order" do
+		worker = start_worker({ "a.test.rb" => MIXED })
+
+		assert_equal worker.load("a.test.rb").size, 10
+		messages = worker.run("a.test.rb", [0, 4, 1, 6, 2, 3, 5, 7, 8, 9])
+
+		assert_equal messages.map(&:first), [:started, :integers, :result, :integers, :result, :result, :result, :result, :result, :integers]
+		assert_equal indices(messages), [[], [0, 4], [1], [6], [2], [3], [5], [7], [8], [9]]
+
+		results = results(messages)
+		failure = results.fetch(1)["failures"].fetch(0)
+		assert_equal [failure["line"], File.basename(failure["path"])], [3, "a.test.rb"]
+		assert_includes failure["message"], "1"
+		assert_equal results.fetch(2)["skipped"], { "pending" => false, "reason" => "later" }
+		assert_equal results.fetch(3)["counts"], { "queries" => [1, 0.0] }
+		assert_equal results.fetch(5)["errors"].map { |error| [error["name"], error["message"]] }, [["RuntimeError", "broken"]]
+		assert_equal results.fetch(7)["assertions"], 1
+		assert_equal results.fetch(8)["skipped"], { "pending" => true, "reason" => nil }
+	end
+
+	test "sends a slow test's result as it finishes, with those waiting", timeout: 20 do
+		worker = start_worker({ "a.test.rb" => <<~RUBY })
+			class Slow < Quickdraw::Test
+				test("quick") { assert true }
+				test("slow") { sleep #{Quickdraw::Worker::UNSENT_TIME / 1e9}; assert true }
+				test("waits to be told its results arrived") { sleep 0.005 until File.exist?("\#{__dir__}/arrived"); assert true }
+			end
+		RUBY
+
+		worker.load("a.test.rb")
+		worker.start("a.test.rb", [0, 1, 2])
+
+		assert_equal worker.read, [:started]
+		assert_equal indices([worker.read]), [[0, 1]]
+		File.write(worker.path("arrived"), "")
+		assert_equal indices([worker.read]), [[2]]
+		assert_equal worker.read.first, :ready
+	end
+
+	test "sends the results that are waiting before it runs a test with its own timeout", timeout: 20 do
+		worker = start_worker({ "a.test.rb" => <<~RUBY })
+			class Timed < Quickdraw::Test
+				2.times { |number| test("quick \#{number}") { assert true } }
+				test("waits to be told its results arrived", timeout: 30) { sleep 0.005 until File.exist?("\#{__dir__}/arrived"); assert true }
+			end
+		RUBY
+
+		worker.load("a.test.rb")
+		worker.start("a.test.rb", [0, 1, 2])
+
+		assert_equal worker.read, [:started]
+		assert_equal indices([worker.read]), [[0, 1]]
+		File.write(worker.path("arrived"), "")
+		assert_equal worker.read.first(2), [:result, 2]
+		assert_equal worker.read.first, :ready
+	end
+
+	test "sends the results that are waiting before it says a test timed out, then exits", timeout: 20 do
+		worker = start_worker({ "a.test.rb" => <<~RUBY }, timeouts: true, timeout: 0.2)
+			class Hangs < Quickdraw::Test
+				3.times { |number| test("quick \#{number}") { assert true } }
+				test("hangs") { sleep }
+				test("is never run") { assert true }
+			end
+		RUBY
+
+		worker.load("a.test.rb")
+		messages = worker.run("a.test.rb", [0, 1, 2, 3, 4])
+
+		assert_equal messages.map { |message| message&.first }, [:started, :integers, :timeout, nil]
+		assert_equal indices(messages.first(2)), [[], [0, 1, 2]]
 	end
 
 	test "a test's CPU time leaves out a process its file waited for as it loaded" do
