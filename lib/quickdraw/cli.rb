@@ -384,6 +384,15 @@ class Quickdraw::CLI
 				options[:elastic] = it
 			end
 
+			parser.on("--[no-]yjit", "Run tests with YJIT, or without (default: with, when run history expects enough work to repay compiling)") do |it|
+				usage_error "--yjit needs a Ruby with YJIT, which this isn’t." if it && !Quickdraw::Platform.yjit_supported?
+				options[:yjit] = it
+			end
+
+			parser.on("--[no-]defer-gc", "Put off each worker’s first GC, or don’t (default: put off, when run history expects little work)") do |it|
+				options[:defer_gc] = it
+			end
+
 			parser.separator ""
 			parser.separator bold("Other")
 
@@ -663,6 +672,8 @@ class Quickdraw::CLI
 			warm_loaders: options[:warm_loaders],
 			timeline: options[:timeline],
 			elastic: options[:elastic],
+			yjit: options[:yjit],
+			defer_gc: options[:defer_gc],
 			variants: (options[:browsers] if options[:browsers].any?),
 			browser_tests:,
 			named_files:,

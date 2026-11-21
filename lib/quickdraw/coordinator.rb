@@ -313,14 +313,14 @@ class Quickdraw::Coordinator
 	# asked for, or config's by_default includes them.
 	#
 	# Run settings config can set too (`capture`, `leaks`, `retries`,
-	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic` and `processes`)
-	# are nil unless the command line gave them, and config's apply then (see
+	# `allow_flaky`, `quarantine`, `flakes_path`, `elastic`, `yjit`, `defer_gc`
+	# and `processes`) are nil unless the command line gave them, and config's apply then (see
 	# #apply_settings).
 	def initialize(
 		files:, processes:, cores:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
 		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil,
-		browser_tests: :default, named_files: {}
+		yjit: nil, defer_gc: nil, browser_tests: :default, named_files: {}
 	)
 		raise ArgumentError, "browser_tests must be :default, :only or :all, not #{browser_tests.inspect}." unless browser_tests in :default | :only | :all
 
@@ -329,6 +329,8 @@ class Quickdraw::Coordinator
 		@named_files = named_files
 		@timeline = Quickdraw::Timeline.new if timeline
 		@elastic_allowed = elastic
+		@yjit = yjit
+		@defer_gc = defer_gc
 		@warm_loaders = warm_loaders
 		@repeatable = repeatable
 		@retry_count = retries
@@ -701,6 +703,8 @@ class Quickdraw::Coordinator
 		@retries.count = @forking ? (@retry_count || settings.fetch(:retries, 1)) : 0
 		@outcome.allow_flaky = @allow_flaky.nil? ? settings.fetch(:allow_flaky, false) : @allow_flaky
 		@elastic_allowed = settings.fetch(:elastic, false) if @elastic_allowed.nil?
+		@yjit = settings[:yjit] if @yjit.nil?
+		@defer_gc = settings[:defer_gc] if @defer_gc.nil?
 		@configured_processes = settings[:processes] unless @processes
 		@processes ||= @configured_processes
 		@browser_by_default = settings.fetch(:browser_by_default, false)
@@ -708,6 +712,10 @@ class Quickdraw::Coordinator
 
 		if !@forking && (@retry_count || settings[:retries])&.positive?
 			warn "Retries need fork, which this platform doesn’t support, so failures aren’t retried."
+		end
+
+		if !@forking && @defer_gc
+			warn "Deferring GC needs fork, which this platform doesn’t support, so it isn’t deferred."
 		end
 
 		if !@forking && @leaks.nil? && settings[:leaks] == :fail
@@ -813,7 +821,10 @@ class Quickdraw::Coordinator
 	end
 
 	private def start_workers
-		@scheduler.allocate(@processes).each do |group, workers|
+		allocation = @scheduler.allocate(@processes)
+		tune(allocation.sum { |_group, workers| workers })
+
+		allocation.each do |group, workers|
 			workers.times { start_worker(@loaders.fetch(group), @free_slots.shift) }
 		end
 	end
@@ -936,11 +947,34 @@ class Quickdraw::Coordinator
 		choice = Quickdraw::WorkerTuner.new(cores: @cores, max: capacity).choose(
 			# --failed runs a different subset each time, so its timings aren't comparable.
 			runs: (@only_keys || !@runs) ? [] : @runs.recent_runs,
-			expected: @plan&.expected(@unloaded.map { |_path, display_path| display_path }.uniq) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil),
+			expected:,
 			waiting_share: @runs&.waiting_share,
 		)
 
 		[choice.processes, choice.reason]
+	end
+
+	# What history expects of the files this run loads.
+	private def expected
+		@plan&.expected(@unloaded.map { |_path, display_path| display_path }.uniq) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil)
+	end
+
+	# How long history expects each of `workers` to keep a core busy running
+	# tests, in seconds: from the selection's last run, or else its files'
+	# tests, unless only some of them run. Nil if history can't say.
+	private def expected_work(workers)
+		test_time = estimate&.test_time
+		test_time ||= expected.test_time unless @only_keys || @filter.any?
+
+		test_time * (1 - (@runs&.waiting_share || 0.0)) / workers if test_time&.positive? && workers > 0
+	end
+
+	# Before the `workers` start, so they start tuned (see Runtime).
+	private def tune(workers)
+		return unless @forking
+
+		tunings = Quickdraw::Runtime.choose(expected_work(workers), yjit: @yjit, defer_gc: @defer_gc)
+		@loaders.each_value { |loader| loader.command("tune #{tunings.join(' ')}") } if tunings.any?
 	end
 
 	# Workers that died without closing their pipes, because a process they or

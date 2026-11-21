@@ -140,6 +140,7 @@ qd --watch                 # run again when files change
 `quickdraw` and `qd` are the same command. `qd --help` lists every option. `qd all` and `qd browser` take the same options and paths (see Browser testing for which runs include browser tests).
 
 - **Workers:** Quickdraw chooses the number of workers from previous runs, exploring until it finds the fastest. Pass `-p N` to choose, `--max` for every core, or `--efficiency` for an Apple silicon Mac's efficiency cores. `--elastic` adds workers during a run while its tests mostly wait (on IO, the network or `sleep`) and the CPU is idle, which speeds up the first run of tests like that, before there's history to go on. It never adds workers to tests that keep the CPU busy, or when memory is short.
+- **Ruby:** once there are previous runs to go on, workers expected to spend two seconds or more each running tests run them with YJIT, which takes about that long to repay compiling, and workers expected to spend under half a second put off garbage collection until they've grown by 64MB. `--yjit` and `--defer-gc` do so whatever the run, and `--no-yjit` and `--no-defer-gc` never. Starting Ruby itself with YJIT (`RUBYOPT=--yjit`) makes every run pay for compiling, however short.
 - **Order:** tests run in a random order. The seed is printed after each run, and `--seed N` repeats it.
 - **Stopping:** `--fail-fast` stops starting tests after the first problem. Ctrl-C stops the run, lets running tests clean up, and reports what finished.
 - **Watch mode:** a changed test file, browser tests' included, reruns on its own, and a changed source file reruns its tests. Keys rerun everything, run only failures, or filter by path or name. Config stays booted between runs, so only the first waits for it (a Rails app's rerun takes about 100ms rather than 600ms). It boots again when `config/`, the Gemfile or a file it loaded changes, or a file is added to or deleted from an autoloaded directory. File events come from FSEvents on macOS and inotify on Linux, without a gem. Elsewhere it polls every 0.5s, as it does with `QUICKDRAW_POLL=1`, for file systems that don't send events, such as some Docker volumes.
@@ -420,6 +421,8 @@ Quickdraw.configure do |config|
   config.flakes = "tmp/flakes.json" # --flakes tmp/flakes.json
   config.capture = false        # --no-capture
   config.elastic = true         # --elastic
+  config.yjit = false           # --no-yjit
+  config.defer_gc = false       # --no-defer-gc
   config.processes = 4          # -p 4
 end
 ```

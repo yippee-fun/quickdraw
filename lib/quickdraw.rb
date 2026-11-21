@@ -52,6 +52,7 @@ module Quickdraw
 	autoload :HistoryProcess, "quickdraw/history_process"
 	autoload :Filter, "quickdraw/filter"
 	autoload :WorkerTuner, "quickdraw/worker_tuner"
+	autoload :Runtime, "quickdraw/runtime"
 	autoload :Elastic, "quickdraw/elastic"
 	autoload :IdleCPU, "quickdraw/idle_cpu"
 	autoload :Assertions, "quickdraw/assertions"
