@@ -143,6 +143,54 @@ class LeaksTest < Quickdraw::Test
 		assert_includes failing.stdout, "Quickdraw::Leak: A thread started at concurrent.test.rb:4 ended with RuntimeError"
 	end
 
+	test "finds threads however they were started, after tests that started none", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
+		result = project("threads.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--format", "json")
+			class Threads < Quickdraw::Test
+				test("starts none") { assert true }
+				test("joins") { Thread.new { 1 }.join; assert true }
+				test("ends later") { Thread.new { sleep 0.05 }; assert true }
+				test("waits") { sleep 0.2; assert true }
+				test("start") { Thread.start { sleep }; assert true }
+				test("fork") { Thread.fork { sleep }; assert true }
+				test("from a thread") { Thread.new { Thread.new { sleep } }.join; assert true }
+				test("no assertions") { Thread.new { sleep } }
+			end
+		RUBY
+
+		leaks = result.events.select { |event| event["leaks"] }.to_h { |event| [event["name"], event["leaks"].map { |leak| leak["message"] }] }
+
+		assert_equal leaks, {
+			"Threads › ends later" => ["A thread started at threads.test.rb:4 is still running."],
+			"Threads › start" => ["A thread started at threads.test.rb:6 is still running."],
+			"Threads › fork" => ["A thread started at threads.test.rb:7 is still running."],
+			"Threads › from a thread" => ["A thread started at threads.test.rb:8 is still running."],
+			"Threads › no assertions" => ["A thread started at threads.test.rb:9 is still running."],
+		}
+
+		assert_includes result.stdout, "This test made no assertions."
+	end
+
+	test "reports a failure after a test from a thread that was running before it", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
+		project = project("pool.test.rb" => <<~RUBY)
+			$jobs = Thread::Queue.new
+			Thread.new { loop { $jobs.pop.call } }
+
+			class Pool < Quickdraw::Test
+				test("1 fails late") { $jobs << -> { sleep 0.05; assert false }; assert true }
+				test("2 waits") { sleep 0.2; assert true }
+			end
+		RUBY
+
+		result = project.run("-p", "1", "--no-history", "--seed", "1", "--format", "json")
+		leaks = result.events.flat_map { |event| event["leaks"].to_a.map { |leak| leak["message"] } }
+
+		assert_equal leaks, ["After Pool › 1 fails late (line 5) finished, a thread it started failed an assertion at pool.test.rb:5: expected false to be truthy"]
+	end
+
 	test "--leaks takes warn, fail or off", timeout: 20 do
 		match { leaky.run("--leaks", "fial") => { stderr: /--leaks takes warn, fail or off, not "fial"\.\nDid you mean fail\?/, exit_status: 2 } }
 	end
