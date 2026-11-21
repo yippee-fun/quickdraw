@@ -293,9 +293,9 @@ class Quickdraw::Coordinator
 		end
 	end
 
-	# `processes` is nil to choose the worker count automatically, from `cores`
-	# up to `max_processes`. `selection` identifies what was asked for, so runs
-	# of the same selection can be compared. `history_path` is nil to run without
+	# `processes` is nil to choose the worker count automatically, from the
+	# machine's cores up to `max_processes`. `selection` identifies what was
+	# asked for, so runs of the same selection can be compared. `history_path` is nil to run without
 	# history. `only_keys` limits each file to the tests with those history keys
 	# (a Hash keyed by key), except files in `whole_files`, which run in full.
 	# `capture` and `leaks` are for workers (see Worker#initialize). A selection
@@ -317,7 +317,7 @@ class Quickdraw::Coordinator
 	# are nil unless the command line gave them, and config's apply then (see
 	# #apply_settings).
 	def initialize(
-		files:, processes:, cores:, max_processes:, seed:, reporter:,
+		files:, processes:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
 		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil,
 		browser_tests: :default, named_files: {}
@@ -347,7 +347,6 @@ class Quickdraw::Coordinator
 		@leaks = leaks
 		@seed = seed
 		@processes = processes
-		@cores = cores
 		@max_processes = max_processes
 		@filter = filter
 		@fail_fast = fail_fast
@@ -822,7 +821,7 @@ class Quickdraw::Coordinator
 	# cores, since the machine's idle CPU isn't the container's to use.
 	private def start_elastic
 		idle_cpu = Quickdraw::IdleCPU.start or return
-		cores = [@cores, Quickdraw::Platform.cpu_quota].compact.min
+		cores = [self.cores, Quickdraw::Platform.cpu_quota].compact.min
 		@elastic = Quickdraw::Elastic.new(cores:, cpus: Quickdraw::Platform.cpu_cores, idle_cpu:)
 	end
 
@@ -928,12 +927,18 @@ class Quickdraw::Coordinator
 		Quickdraw::Reporters::Estimate.new(tests: last.tests, duration: last.duration, test_time: last.test_time)
 	end
 
+	# Asked for only when the worker count wasn't given, since finding out can
+	# take a subprocess.
+	private def cores
+		@cores ||= Quickdraw::Platform.non_blocking_cores
+	end
+
 	# Returns [count, how it was chosen].
 	private def choose_processes(capacity)
 		return [@processes.clamp(1, capacity), "manual"] if @processes
-		return [@cores.clamp(1, capacity), "default"] unless @history_path
+		return [cores.clamp(1, capacity), "default"] unless @history_path
 
-		choice = Quickdraw::WorkerTuner.new(cores: @cores, max: capacity).choose(
+		choice = Quickdraw::WorkerTuner.new(cores:, max: capacity).choose(
 			# --failed runs a different subset each time, so its timings aren't comparable.
 			runs: (@only_keys || !@runs) ? [] : @runs.recent_runs,
 			expected: @plan&.expected(@unloaded.map { |_path, display_path| display_path }.uniq) || Quickdraw::History::Expected.new(test_time: 0.0, tests: 0, longest_test: nil),
