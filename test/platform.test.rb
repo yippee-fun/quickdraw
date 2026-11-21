@@ -1,12 +1,21 @@
 # frozen_string_literal: true
 
-require "pty"
 require "io/console"
 
 class PlatformTest < Quickdraw::Test
 	Platform = Quickdraw::Platform
 
+	# TruffleRuby has no PTY.
+	def pty?
+		require "pty"
+		true
+	rescue LoadError
+		false
+	end
+
 	def terminal(rows:, columns:)
+		skip "This Ruby has no PTY" unless pty?
+
 		controller, terminal = PTY.open
 		defer { controller.close }
 		defer { terminal.close }
@@ -14,8 +23,8 @@ class PlatformTest < Quickdraw::Test
 		terminal
 	end
 
-	def cache(contents)
-		File.join(tmpdir, "core-levels").tap { |path| File.write(path, contents) }
+	def cache(levels, kernel: Platform.__send__(:kernel))
+		File.join(tmpdir, "core-levels").tap { |path| File.write(path, "#{levels}\n#{kernel}") }
 	end
 
 	test "a terminal's columns" do
@@ -58,9 +67,25 @@ class PlatformTest < Quickdraw::Test
 	test "cached core levels from another machine, or that aren't core levels, are ignored" do
 		stub(Platform, :cpu_cores, returns: 12)
 
-		["10 4", "12 0", "12", "8 4 0", "eight four", "-4 16", ""].each do |contents|
-			assert_equal Platform.__send__(:cached_core_levels, cache(contents)), nil
+		["10 4", "12 0", "12", "8 4 0", "eight four", "-4 16", ""].each do |levels|
+			assert_equal Platform.__send__(:cached_core_levels, cache(levels)), nil
 		end
+	end
+
+	test "cached core levels from a machine with as many cores but another chip are ignored" do
+		stub(Platform, :cpu_cores, returns: 10)
+		stub(Platform, :kernel, returns: "Darwin Kernel Version 24.0.0; root:xnu-11215~1/RELEASE_ARM64_T8132")
+
+		assert_equal Platform.__send__(:cached_core_levels, cache("8 2", kernel: "Darwin Kernel Version 24.0.0; root:xnu-11215~1/RELEASE_ARM64_T6000")), nil
+		assert_equal Platform.__send__(:cached_core_levels, cache("4 6")), [4, 6]
+	end
+
+	test "cached core levels that don't say whose they are are ignored" do
+		stub(Platform, :cpu_cores, returns: 12)
+		path = File.join(tmpdir, "core-levels")
+		File.write(path, "8 4")
+
+		assert_equal Platform.__send__(:cached_core_levels, path), nil
 	end
 
 	test "no cached core levels without a cache" do

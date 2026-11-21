@@ -49,7 +49,8 @@ module Quickdraw::Platform
 	end
 
 	private def cached_core_levels(path)
-		valid_core_levels(File.read(File.expand_path(path)))
+		levels, kernel = File.read(File.expand_path(path)).split("\n", 2)
+		valid_core_levels(levels) if kernel == self.kernel
 	rescue SystemCallError, ArgumentError
 		nil
 	end
@@ -57,7 +58,7 @@ module Quickdraw::Platform
 	private def cache_core_levels(path, levels)
 		path = File.expand_path(path)
 		Dir.mkdir(File.dirname(path)) unless File.directory?(File.dirname(path))
-		File.write(path, levels.join(" "))
+		File.write(path, "#{levels.join(' ')}\n#{kernel}")
 	rescue SystemCallError, ArgumentError
 		nil
 	end
@@ -67,6 +68,13 @@ module Quickdraw::Platform
 		valid_core_levels(`sysctl -n hw.perflevel0.logicalcpu hw.perflevel1.logicalcpu 2>/dev/null`)
 	rescue SystemCallError
 		nil
+	end
+
+	# Names the chip, as in RELEASE_ARM64_T6000, which tells apart machines
+	# that split as many cores differently. uname(2) takes no subprocess.
+	private def kernel
+		require "etc"
+		Etc.uname[:version]
 	end
 
 	# Levels that don't add up to this machine's cores are another machine's.
