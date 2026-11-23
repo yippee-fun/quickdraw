@@ -460,6 +460,7 @@ end
 
 - Each set loads once into each worker's databases, committed, and tests see it through their transactions, as with Rails' transactional fixtures. A test that commits loads the fixtures again.
 - A later run keeps the sets whose files (with ERB rendered) are unchanged, rather than loading them again. Rows added or removed since, or the schema changing, load them again, but rows another process changed in place are kept. The times Rails fills in (`created_at`) move to when the worker started, as if they'd just loaded; sets with dates it filled in (`created_on`) load again the next day.
+- The sets config wants render their ERB once a run, before workers fork, so every worker gets the same times and random values. A kept set whose ERB renders differently (times, random tokens) is written over its rows by primary key, so the sets that refer to it stay. ERB that queries the database renders in each worker instead.
 - A database keeps every set loaded into it, so, as in Rails, a test can see fixtures it didn't ask for.
 
 ### Test helpers

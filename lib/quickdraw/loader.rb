@@ -149,6 +149,8 @@ class Quickdraw::Loader
 
 		begin
 			self.class.boot(group: @group)
+			# A warm loader runs them for each run it serves (see #serve_run).
+			before_run unless @link
 		rescue Exception => error
 			raise unless @report || @link
 
@@ -219,8 +221,20 @@ class Quickdraw::Loader
 		@report = open_pipe("report", File::WRONLY | File::NONBLOCK)
 		@finished = open_pipe("finished", File::WRONLY | File::NONBLOCK)
 
-		report(@boot_report)
-		success = @boot_report.first == :booted && serve
+		begin
+			if @boot_report.first == :booted
+				before_run
+				# Taken, so workers don't inherit it.
+				Quickdraw::CoverageCollector.take if @coverage
+			end
+
+			run_report = @boot_report
+		rescue Exception => error
+			run_report = [:failed, Quickdraw.serialize_error(error)]
+		end
+
+		report(run_report)
+		success = run_report.first == :booted && serve
 		@finished.write(success ? "1" : "0")
 	rescue SystemCallError
 		nil
@@ -300,6 +314,8 @@ class Quickdraw::Loader
 				rescue Exception => error
 					raise error.exception("The #{group.name} group’s setup failed: #{error.message}")
 				end
+
+				before_run
 			rescue Exception => error
 				next boot_failed(error)
 			end
@@ -419,6 +435,8 @@ class Quickdraw::Loader
 
 		Process.warmup if Process.respond_to?(:warmup)
 	end
+
+	private def before_run = Quickdraw::Config.before_run_callbacks.each(&:call)
 
 	# For the boot report (see #initialize).
 	private def groups
