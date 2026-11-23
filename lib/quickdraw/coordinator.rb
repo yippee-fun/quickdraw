@@ -703,7 +703,7 @@ class Quickdraw::Coordinator
 	# files, or than the run will have, as far as is known before config is read.
 	private def likely_workers(group)
 		files = @unloaded.count { |_path, _display_path, file_group| file_group == group }
-		[@processes || @cores, files].min
+		[@processes || cores, files].min
 	end
 
 	# Once a loader has booted, or failed to (see Loader#initialize). The first
