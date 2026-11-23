@@ -18,6 +18,9 @@ if RUBY_ENGINE == "ruby"
 		gem "activerecord", "~> 8.1"
 		gem "activejob", "~> 8.1"
 		gem "actionmailer", "~> 8.1"
+		# For the Rails integration tests on PostgreSQL, which need
+		# QUICKDRAW_POSTGRES_URL too.
+		gem "pg"
 		# For the debugger integration tests.
 		gem "debug"
 		gem "pry"

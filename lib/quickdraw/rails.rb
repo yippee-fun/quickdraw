@@ -2,14 +2,17 @@
 
 # Set up by `config.rails` (see Configuration#rails). The app boots once, before
 # workers fork. Each worker slot gets its own databases, named like Rails'
-# parallel test databases (test.sqlite3_0, myapp_test_1), created or emptied
-# and loaded from the schema when the worker starts, with fixtures (see
-# Fixtures). Each test runs in a transaction on every database, rolled back
-# afterwards, and counts its SQL queries and factory_bot factories.
+# parallel test databases (test.sqlite3_0, myapp_test_1). On PostgreSQL they're
+# copies of template databases that hold the schema and fixtures (see
+# Templates). Elsewhere they're created or emptied and loaded from the schema
+# when the worker starts, with fixtures (see Fixtures). Each test runs in a
+# transaction on every database, rolled back afterwards, and counts its SQL
+# queries and factory_bot factories.
 module Quickdraw::Rails
 	extend self
 
 	autoload :Fixtures, "quickdraw/rails/fixtures"
+	autoload :Templates, "quickdraw/rails/templates"
 	autoload :MinitestBridge, "quickdraw/rails/minitest_bridge"
 	autoload :TimeHelpers, "quickdraw/rails/time_helpers"
 	autoload :JobHelpers, "quickdraw/rails/job_helpers"
@@ -19,7 +22,7 @@ module Quickdraw::Rails
 
 	def setup(config, environment:, fixtures:, fixture_paths:)
 		config.before_forking { boot(environment, fixtures:, fixture_paths:) }
-		config.before_run { Fixtures.render }
+		config.before_run { prepare_fixtures }
 		config.after_forking { start_worker }
 		config.around_test { |test, run| test.class.use_transactional_tests ? in_transactions(&run) : committing(&run) }
 		config.reloader { |paths| reload(paths) }
@@ -65,12 +68,23 @@ module Quickdraw::Rails
 			raise "Tests empty their databases, so they won’t run in the #{::Rails.env} environment. Set RAILS_ENV=test."
 		end
 
+		# Templates hold every set, which an app that configures none may not expect.
+		@templated = !!fixtures && Templates.apply?
 		Fixtures.paths = fixture_paths.map { |path| File.expand_path(path, ::Rails.root) }
 		Quickdraw::BasicTest.extend(Fixtures::Declarations)
 		Quickdraw::BasicTest.fixtures(*fixtures) if fixtures
 
 		# Forked workers mustn't share the loader's connections.
 		ActiveRecord::Base.connection_handler.clear_all_connections!
+	end
+
+	# Before a run's workers fork.
+	def prepare_fixtures
+		if @templated
+			quietly { Templates.build(Fixtures.paths, Fixtures.all) }
+		else
+			Fixtures.render
+		end
 	end
 
 	def start_worker
@@ -81,7 +95,13 @@ module Quickdraw::Rails
 		@pools = []
 		@shared_pool_configs = []
 		transact_on_new_connections
-		Fixtures.start
+
+		if @templated
+			worker = Process.pid
+			at_exit { Templates.release if Process.pid == worker }
+		else
+			Fixtures.start
+		end
 	end
 
 	# Pins a connection on each writing pool in a transaction, so the test's
@@ -102,26 +122,33 @@ module Quickdraw::Rails
 		end
 	end
 
-	# For tests that commit, which leave their rows behind: empties the tables
-	# that got rows and loads the fixtures again, so the next test starts clean.
+	# For tests that commit, which leave their rows behind: copies the templates
+	# again, or empties the tables that got rows and loads the fixtures again, so
+	# the next test starts clean.
 	def committing
 		return yield unless @pools
 
 		begin
+			Templates.dirty if @templated
 			yield
 		ensure
-			ActiveRecord::Base.connection_handler.connection_pool_list(ActiveRecord.writing_role).each do |pool|
-				next unless pool.db_config.database_tasks?
+			if @templated
+				Templates.restore
+			else
+				ActiveRecord::Base.connection_handler.connection_pool_list(ActiveRecord.writing_role).each do |pool|
+					next unless pool.db_config.database_tasks?
 
-				pool.with_connection { |connection| Fixtures.empty(connection) }
+					pool.with_connection { |connection| Fixtures.empty(connection) }
+				end
+
+				Fixtures.reload
 			end
-
-			Fixtures.reload
 		end
 	end
 
 	# Rolls back every pool even if one fails, so the next test starts clean.
-	# Fixtures load again if the test committed, which may have changed them.
+	# Fixtures load again if the test committed, which may have changed them. With
+	# templates, the databases are copied again then, and if a pool fails too.
 	private def finish_transactions
 		failure = nil
 		committed = false
@@ -136,7 +163,12 @@ module Quickdraw::Rails
 		@shared_pool_configs.each { |manager, role, shard, pool_config| manager.set_pool_config(role, shard, pool_config) }
 		@shared_pool_configs.clear
 
-		Fixtures.reload if committed
+		if @templated
+			Templates.restore if committed || failure
+		elsif committed
+			Fixtures.reload
+		end
+
 		raise failure if failure
 	end
 
@@ -185,20 +217,35 @@ module Quickdraw::Rails
 	# requiring its parallelization, which loads DRb. Fixtures empty the tables
 	# rather than Rails, so they can keep the ones they can reuse.
 	private def create_databases(slot)
+		skip_truncate = ENV["SKIP_TEST_DATABASE_TRUNCATE"]
+
+		quietly do
+			ActiveRecord::Base.configurations.configs_for(env_name: ActiveRecord::ConnectionHandling::DEFAULT_ENV.call, include_hidden: true).each do |db_config|
+				database = db_config.database
+				db_config._database = "#{database}_#{slot}"
+				next unless db_config.database_tasks?
+
+				if @templated
+					Templates.provide(db_config, database)
+				else
+					ActiveRecord::Tasks::DatabaseTasks.reconstruct_from_schema(db_config)
+					ActiveRecord::Tasks::DatabaseTasks.with_temporary_connection(db_config) { |connection| Fixtures.prepare(connection, empty: !skip_truncate) }
+				end
+			end
+		end
+	ensure
+		ActiveRecord::Base.establish_connection
+	end
+
+	# Without what Rails prints as it loads a schema, and leaving emptying tables
+	# to Fixtures.
+	private def quietly
 		verbose = ENV["VERBOSE"]
 		skip_truncate = ENV["SKIP_TEST_DATABASE_TRUNCATE"]
 		ENV["VERBOSE"] = "false"
 		ENV["SKIP_TEST_DATABASE_TRUNCATE"] = "true"
-
-		ActiveRecord::Base.configurations.configs_for(env_name: ActiveRecord::ConnectionHandling::DEFAULT_ENV.call, include_hidden: true).each do |db_config|
-			db_config._database = "#{db_config.database}_#{slot}"
-			next unless db_config.database_tasks?
-
-			ActiveRecord::Tasks::DatabaseTasks.reconstruct_from_schema(db_config)
-			ActiveRecord::Tasks::DatabaseTasks.with_temporary_connection(db_config) { |connection| Fixtures.prepare(connection, empty: !skip_truncate) }
-		end
+		yield
 	ensure
-		ActiveRecord::Base.establish_connection
 		ENV["VERBOSE"] = verbose
 		ENV["SKIP_TEST_DATABASE_TRUNCATE"] = skip_truncate
 	end

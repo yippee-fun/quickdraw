@@ -19,6 +19,9 @@ require "active_support/testing/time_helpers"
 #
 # A worker's databases keep every set loaded into them, so a test may see
 # fixtures it didn't ask for, as in Rails.
+#
+# On PostgreSQL the databases are copies of templates that hold every set (see
+# Templates), and only the declarations and records here are used.
 module Quickdraw::Rails::Fixtures
 	extend self
 
@@ -70,6 +73,8 @@ module Quickdraw::Rails::Fixtures
 	end
 
 	# Absolute paths of the directories with fixture files.
+	attr_reader :paths
+
 	def paths=(paths)
 		@paths = paths.freeze
 		@directories = "{#{paths.join(',')}}"
@@ -90,14 +95,15 @@ module Quickdraw::Rails::Fixtures
 		names
 	end
 
-	# As Rails does, except for file fixtures in files/.
-	private def all
-		@all ||= @paths.flat_map do |path|
+	# Every set in the fixture paths, as Rails finds them, except for file
+	# fixtures in files/.
+	def all
+		@paths.flat_map do |path|
 			Dir[File.join(path, "{**,*}/*.yml")].filter_map do |file|
 				name = file.delete_prefix("#{path}/").delete_suffix(".yml")
 				name unless name.start_with?("files/")
 			end
-		end.uniq.sort.freeze
+		end.uniq.sort
 	end
 
 	# Once the worker's databases are prepared.

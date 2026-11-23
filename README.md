@@ -463,6 +463,12 @@ end
 - The sets config wants render their ERB once a run, before workers fork, so every worker gets the same times and random values. A kept set whose ERB renders differently (times, random tokens) is written over its rows by primary key, so the sets that refer to it stay. ERB that queries the database renders in each worker instead.
 - A database keeps every set loaded into it, so, as in Rails, a test can see fixtures it didn't ask for.
 
+On PostgreSQL 13 or later, when `config.rails` is given `fixtures:`, a template database (`myapp_test_qd_template_0123456789abcdef`) holds the schema and every fixture set instead, and each worker's databases are copies of it.
+
+- The template is named for a digest of the schema files and the fixture files as written. It's built once and kept until either changes, when a new one replaces it. So ERB renders when a template is built, and its databases keep those values: don't render times or random values in fixtures.
+- A worker keeps the databases an earlier run left clean, and copies the template again over any other: one a worker died with, or one from another template. After a test that commits, its worker's databases are copied again.
+- Nothing connects to a template, and concurrent runs build it once. A worker locks its databases while it runs, so a second run at once (watch mode and a manual run, say) fails to start its workers rather than dropping the first run's databases.
+
 ### Test helpers
 
 ```ruby
