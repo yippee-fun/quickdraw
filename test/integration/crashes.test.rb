@@ -52,6 +52,25 @@ class CrashesTest < Quickdraw::Test
 		assert_includes result.output, "failed to start: RuntimeError: no database"
 	end
 
+	test "says why a worker failed to start without fork", timeout: 20 do
+		project = project(
+			"no_fork.rb" => "Process.singleton_class.undef_method(:fork)\n",
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.after_forking { raise \"no database\" } }\n",
+			"a.test.rb" => <<~RUBY,
+				class A < Quickdraw::Test
+					test("passes") { assert true }
+				end
+			RUBY
+		)
+
+		["human", "agent"].each do |format|
+			result = project.run("--no-history", "--format", format, "a.test.rb", env: { "RUBYOPT" => "-r#{File.join(project.directory, 'no_fork.rb')}" })
+
+			refute result.success?
+			assert_includes result.output, "A worker failed to start: RuntimeError: no database"
+		end
+	end
+
 	test "stops replacing workers once its spares are used up", timeout: 20 do
 		result = project("crashes.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--retry", "0", "--seed", "1", "crashes.test.rb")
 			class Crashes < Quickdraw::Test

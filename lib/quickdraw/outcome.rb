@@ -99,10 +99,14 @@ class Quickdraw::Outcome
 		@load_errors += 1
 	end
 
-	# What the reporters say when a process exited with a failure status:
-	# each distinct error that stopped a worker starting, with how many, or
-	# the exit status alone if no worker said why (e.g. an at_exit hook failed).
+	# What the reporters say when a worker failed to start or a process exited
+	# with a failure status: each distinct error that stopped a worker starting,
+	# with how many, or the exit status alone if no worker said why (e.g. an
+	# at_exit hook failed). Without fork, a worker that fails to start has no
+	# process to exit, so its error is the only sign.
 	def process_failure
+		return unless @processes_failed || @worker_errors.any?
+
 		reasons = @worker_errors.map { |error| "#{error['name']}: #{error['message'].to_s.strip.lines.first.to_s.strip}" }.tally
 
 		if reasons.empty?
@@ -118,6 +122,6 @@ class Quickdraw::Outcome
 
 	def passed?
 		@failed == 0 && @errored == 0 && (@flaky == 0 || @allow_flaky) && @load_errors == 0 && @not_run == 0 && @unloaded_files == 0 &&
-			!@processes_failed && !@nothing_matched && !@interrupted && !@refused
+			!@processes_failed && @worker_errors.empty? && !@nothing_matched && !@interrupted && !@refused
 	end
 end
