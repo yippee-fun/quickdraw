@@ -89,10 +89,17 @@ class Quickdraw::HistoryProcess
 			trap("INT", "IGNORE")
 			# Whatever reads the run's output through a pipe would wait for this
 			# process too, which holds the pipe open until it exits. Only stderr
-			# says what went wrong, so it's kept unless it's a pipe.
+			# says what went wrong, so it's kept unless it's a pipe. Without it,
+			# what went wrong is left for the next run to say (see #failed).
 			$stdout.reopen(File::NULL)
-			$stderr.reopen(File::NULL) if $stderr.stat.pipe? || $stderr.stat.socket?
+			@detached = stderr_piped_or_closed?
+			$stderr.reopen(File::NULL) if @detached
 			serve(history_channel, path)
+		rescue Exception => error
+			raise unless @detached
+
+			failed("#{error.class}: #{error.message}")
+			exit!(1)
 		end
 
 		history_channel.close
@@ -246,7 +253,24 @@ class Quickdraw::HistoryProcess
 		exit!(0)
 	end
 
-	# After the run has ended, so problems go straight to stderr.
+	# Closed, it has nowhere to warn either, and its descriptor would go to
+	# the next file opened.
+	private def stderr_piped_or_closed?
+		stat = $stderr.stat
+		stat.pipe? || stat.socket?
+	rescue Errno::EBADF
+		true
+	end
+
+	private def failed(message)
+		if @detached
+			Quickdraw::History.save_failure(@path, message)
+		else
+			warn "Quickdraw couldn’t save the run to its history (#{message})."
+		end
+	end
+
+	# After the run has ended, so problems can't go to the run to say.
 	private def record(history, lock, run, coverage_map)
 		raise history if Quickdraw::History::Error === history
 
@@ -256,6 +280,6 @@ class Quickdraw::HistoryProcess
 		history.save_plan(run[:selection])
 		history.close
 	rescue Quickdraw::History::Error, SystemCallError => error
-		warn "Quickdraw couldn’t save the run to its history (#{error.message})."
+		failed(error.message)
 	end
 end

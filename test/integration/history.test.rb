@@ -98,6 +98,45 @@ class HistoryTest < Quickdraw::Test
 		lock&.close
 	end
 
+	test "the next run says when a run's history couldn't be written", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+		skip "Another process writes run history only with fork" unless Process.respond_to?(:fork)
+
+		# A directory where the plan goes, so writing it fails once the run has ended.
+		project = project(
+			"a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
+			".quickdraw/plan/file" => "",
+		)
+
+		refute_includes project.run("-p", "1").stderr, "couldn’t save"
+		Quickdraw::History.wait_for_writer(File.join(project.directory, ".quickdraw/history.sqlite3"))
+
+		File.delete(File.join(project.directory, ".quickdraw/plan/file"))
+		Dir.rmdir(File.join(project.directory, ".quickdraw/plan"))
+		assert_includes project.run("-p", "1").stderr, "Quickdraw couldn’t save an earlier run to its history ("
+		refute_includes project.run("-p", "1").stderr, "couldn’t save"
+	end
+
+	test "a history process with no stderr leaves why it failed for the next run", timeout: 30 do
+		skip "Run history needs sqlite3" unless bundled?("sqlite3")
+		skip "Another process writes run history only with fork" unless Process.respond_to?(:fork)
+
+		path = File.join(tmpdir, "history.sqlite3")
+		script = <<~RUBY
+			require "quickdraw"
+			history = Quickdraw::HistoryProcess.new(ARGV.fetch(0))
+			# Not a run, so recording it raises.
+			history.save({}, nil)
+			exit!(0)
+		RUBY
+
+		assert system(RbConfig.ruby, "-I", Quickdraw::LIB, "-e", script, path, err: :close)
+		Quickdraw::History.wait_for_writer(path)
+
+		assert_match Quickdraw::History.take_failure(path), /\AArgumentError: missing keyword/
+		assert_equal Quickdraw::History.take_failure(path), nil
+	end
+
 	test "the run says when its history can't be locked for writing", timeout: 30 do
 		skip "Another process writes run history only with fork" unless Process.respond_to?(:fork)
 
