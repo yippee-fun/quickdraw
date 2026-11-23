@@ -135,20 +135,40 @@ class Quickdraw::Coordinator
 	end
 
 	# A loader process, the pipe to send it commands, the pipe it reports on
-	# once booted (see Loader#initialize), and its unused channels. `group` is
-	# the group whose tests its workers run, or nil for tests in none. Without
+	# once booted (see Loader#initialize), and its channels. `group` is the
+	# group whose tests its workers run, or nil for tests in none. Without
 	# fork, the loader is a thread, with no pid or commands.
+	#
+	# `channels` are those the loader has too. It can have `capacity` in all:
+	# the rest are named pipes, made in `directory` as they're taken, which the
+	# loader opens (see Loader#open_channel).
 	class LoaderProcess
-		def initialize(group:, pid:, control:, report:, channels:)
+		def initialize(group:, pid:, control:, report:, channels:, capacity: channels.size, directory: nil)
 			@group = group
 			@pid = pid
 			@control = control
 			@report = report
-			@spares = channels.each_with_index.map { |channel, index| [index, channel] }
+			@channels = channels
+			@capacity = capacity
+			@directory = directory
+			@taken = 0
 			@status = nil
 		end
 
-		attr_reader :group, :pid, :report, :spares
+		attr_reader :group, :pid, :report
+
+		# How many more channels it has to take.
+		def spares = @capacity - @taken
+
+		# A channel no worker has had, and its number for the loader, or nil
+		# when none is left.
+		def take_channel
+			return if spares.zero?
+
+			channel = @channels[@taken] || named_channel(@taken) or return
+			@taken += 1
+			[@taken - 1, channel]
+		end
 
 		# The report, or nil if the loader exited without one.
 		def read_report
@@ -190,8 +210,9 @@ class Quickdraw::Coordinator
 			@control&.close
 			@control = nil
 			close_report
-			@spares.each { |_index, channel| channel.close }
-			@spares.clear
+			@channels.drop(@taken).each(&:close)
+			@capacity = @taken
+			Quickdraw.remove_tree(@directory) if @temporary == Process.pid
 		end
 
 		# Its exit status once it has exited, or nil.
@@ -207,6 +228,31 @@ class Quickdraw::Coordinator
 			Process.kill("KILL", @pid) if @pid && !status
 		rescue Errno::ESRCH
 			nil
+		end
+
+		# Without somewhere to make it, or file descriptors for it, there are
+		# no more channels.
+		private def named_channel(index)
+			unless Dir.exist?(@directory)
+				Dir.mkdir(@directory, 0o700)
+				@temporary = Process.pid
+			end
+
+			up = fifo("#{index}.up", File::RDONLY | File::NONBLOCK)
+			# Opened for reading too, so it doesn't wait for the loader, which
+			# sees the end once this process closes it.
+			Quickdraw::Channel.new(up, fifo("#{index}.down", File::RDWR))
+		rescue SystemCallError => error
+			up&.close
+			@capacity = @taken
+			warn "Quickdraw couldn’t open a pipe for another worker (#{error.message})."
+			nil
+		end
+
+		private def fifo(name, flags)
+			path = File.join(@directory, name)
+			File.mkfifo(path, 0o600)
+			File.open(path, flags, binmode: true)
 		end
 	end
 
@@ -393,6 +439,8 @@ class Quickdraw::Coordinator
 		@forking = Process.respond_to?(:fork)
 		@test_files = @display_paths.keys
 		@workers = {}
+		# The workers with nothing to do, so dispatching can tell when there are none.
+		@idle = {}
 		@process_count = 0
 		@leaving = {}
 		@gemfiles = {}
@@ -432,18 +480,25 @@ class Quickdraw::Coordinator
 
 		load_plan
 		# Retries get the channels left over, so a low file limit costs retries, not workers.
-		@processes, @worker_choice = @forking ? choose_processes([@loaders[nil].spares.size - SPARE_CHANNELS, 1].max) : [1, "default"]
+		@processes, @worker_choice = @forking ? choose_processes([@loaders[nil].spares - SPARE_CHANNELS, 1].max) : [1, "default"]
 
 		# Channels for workers open before config is read, for as many as the machine has cores.
 		if @configured_processes && @processes < @configured_processes
 			warn "config.processes = #{@configured_processes}, but channels for only #{@processes} workers were opened before config was read. -p #{@configured_processes} opens more."
 		end
 
-		@free_slots = Array.new(@processes) { |slot| slot }
 		@scheduler = Scheduler.new(
 			groups:, plan: @plan, core_budget: @processes,
 			unloaded: @unloaded, files: @files, workers: @workers, leaving: @leaving, loaders: @loaders, retries: @retries,
 		)
+		# A worker costs more to start than it saves unless it has work, so the
+		# run starts with as many as its files are worth (see
+		# Scheduler#first_workers), and the rest of its slots are held until
+		# there's work for them (see #release_slots).
+		first = [@processes, @scheduler.first_workers].min
+		@free_slots = Array.new(first) { |slot| slot }
+		@held_slots = Array.new(@processes - first) { |index| first + index }
+		@released_at = []
 		# Including slots added while running, which started at @workers_added_at.
 		@slot_count = @processes
 		@workers_added_at = []
@@ -526,7 +581,7 @@ class Quickdraw::Coordinator
 		finished_at = now
 		@outcome.duration = finished_at - reporting_started_at
 		@outcome.workers_added = @workers_added_at.size
-		@outcome.worker_time = (@processes * @outcome.duration) + @workers_added_at.sum { |added_at| finished_at - added_at }
+		@outcome.worker_time = ((@processes - @held_slots.size - @released_at.size) * @outcome.duration) + [*@released_at, *@workers_added_at].sum { |started_at| finished_at - started_at }
 		# Before the report, which says where it is.
 		write_coverage if @coverage
 		write_timeline if @timeline
@@ -575,7 +630,7 @@ class Quickdraw::Coordinator
 	end
 
 	private def abandon(worker)
-		@workers.delete(worker.channel.reader)
+		remove(worker)
 		worker.channel.close
 		@timeline&.exited(worker)
 		@abandoned << worker.pid if worker.pid
@@ -593,10 +648,13 @@ class Quickdraw::Coordinator
 		end
 	end
 
-	# Forks a loader for `group`, with a channel for every worker it could run,
-	# plus spares for replacing workers that crash. The loader for tests in no
-	# group starts first, before the worker count is chosen, and reports groups.
-	# In watch mode, a warm loader stands in, once there is one for `group`.
+	# Forks a loader for `group`, which can have a channel for every worker it
+	# could run, plus spares for replacing workers that crash. It starts with
+	# those its first workers are likely to use, since every worker inherits
+	# them all (see #likely_workers), and the rest are made as they're needed
+	# (see LoaderProcess). The loader for tests in no group starts first,
+	# before the worker count is chosen, and reports groups. In watch mode, a
+	# warm loader stands in, once there is one for `group`.
 	private def start_loader(group)
 		capacity = @forking ? channel_capacity((@processes || @max_processes) + spare_channels) : 1
 
@@ -607,7 +665,7 @@ class Quickdraw::Coordinator
 		)
 		return session if session
 
-		coordinator_channels, worker_channels = Array.new(capacity) { Quickdraw::Channel.pair }.transpose
+		coordinator_channels, worker_channels = Array.new(@forking ? likely_workers(group).clamp(1, capacity) : 1) { Quickdraw::Channel.pair }.transpose
 		report, report_writer = IO.pipe
 
 		unless @forking
@@ -617,10 +675,11 @@ class Quickdraw::Coordinator
 		end
 
 		control, control_writer = IO.pipe
+		directory = File.join(Quickdraw.temporary_directory, "quickdraw-pipes-#{Process.pid}-#{Random.urandom(8).unpack1('H*')}")
 
 		pid = Quickdraw::Loader.start(
 			worker_channels, @test_files, @seed,
-			gemfile: @gemfiles[group],
+			gemfile: @gemfiles[group], directory:,
 			control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, coverage: !@coverage.nil?, group:, report: report_writer,
 			capture: @capture, capture_loading: @capture_loading, leaks: @leaks,
 		) do
@@ -637,7 +696,14 @@ class Quickdraw::Coordinator
 		control.close
 		report_writer.close
 
-		LoaderProcess.new(group:, pid:, control: control_writer, report:, channels: coordinator_channels)
+		LoaderProcess.new(group:, pid:, control: control_writer, report:, channels: coordinator_channels, capacity:, directory:)
+	end
+
+	# How many workers `group` is likely to start with: no more than it has
+	# files, or than the run will have, as far as is known before config is read.
+	private def likely_workers(group)
+		files = @unloaded.count { |_path, _display_path, file_group| file_group == group }
+		[@processes || @cores, files].min
 	end
 
 	# Once a loader has booted, or failed to (see Loader#initialize). The first
@@ -808,7 +874,7 @@ class Quickdraw::Coordinator
 	end
 
 	private def start_workers
-		@scheduler.allocate(@processes).each do |group, workers|
+		@scheduler.allocate(@free_slots.size).each do |group, workers|
 			workers.times { start_worker(@loaders.fetch(group), @free_slots.shift) }
 		end
 	end
@@ -832,11 +898,13 @@ class Quickdraw::Coordinator
 			busy: @workers.each_value.count { |worker| worker.ready && !worker.idle },
 			waiting: waiting_tests,
 		)
+		# Slots held at the start come first.
+		wanted -= release(wanted)
 		# The tuner can choose more, from history.
 		count = [wanted, @max_processes - @slot_count].min
 		added = 0
 
-		while added < count && (loader = @scheduler.busiest_loader(fitting: false)) && loader.spares.size > spare_channels
+		while added < count && (loader = @scheduler.busiest_loader(fitting: false)) && loader.spares > spare_channels
 			start_worker(loader, @slot_count)
 			@scheduler.added(loader.group)
 			@slot_count += 1
@@ -857,7 +925,7 @@ class Quickdraw::Coordinator
 	private def start_worker(loader, slot)
 		return false unless slot
 
-		index, channel = loader.spares.shift
+		index, channel = loader.take_channel
 		if channel && (!@forking || loader.command("fork #{index} #{slot}"))
 			worker = Worker.new(channel, slot, @process_count += 1, loader)
 			@workers[channel.reader] = worker
@@ -1062,7 +1130,7 @@ class Quickdraw::Coordinator
 
 	# Whether the loader can start a worker for each one leaving it, plus one.
 	private def spare_for?(loader)
-		loader.spares.size > @leaving.each_value.count { |_worker, destination| destination.equal?(loader) }
+		loader.spares > @leaving.each_value.count { |_worker, destination| destination.equal?(loader) }
 	end
 
 	# Each worker needs four file descriptors. Raises the soft limit if needed,
@@ -1160,7 +1228,7 @@ class Quickdraw::Coordinator
 		in [:ready, pid]
 			worker.pid = pid
 			worker.ready = true
-			worker.idle = true
+			idle(worker)
 		in [:started]
 			worker.started = true
 		in [:loaded, path, tests, load_duration]
@@ -1168,7 +1236,7 @@ class Quickdraw::Coordinator
 		in [:load_failed, path, error]
 			worker.loading = nil
 			worker.loaded[path] = false
-			worker.idle = true
+			idle(worker)
 
 			if (attempt = worker.retrying)
 				worker.retrying = nil
@@ -1187,7 +1255,7 @@ class Quickdraw::Coordinator
 
 	private def loaded(worker, path, tests, load_duration)
 		worker.loading = nil
-		worker.idle = true
+		idle(worker)
 		key = [path, worker.group]
 
 		if (file = @files[key])
@@ -1333,7 +1401,7 @@ class Quickdraw::Coordinator
 		# After Ctrl-C, a worker exiting is expected, and its test didn't finish.
 		return abandon(worker) if @interrupted
 
-		@workers.delete(worker.channel.reader)
+		remove(worker)
 		worker.channel.close
 		@timeline&.exited(worker)
 		output = Quickdraw::Capture.collect(worker.output_path) if worker.output_path
@@ -1380,7 +1448,12 @@ class Quickdraw::Coordinator
 	end
 
 	private def dispatch
-		idle = @workers.each_value.select(&:idle)
+		return if @idle.empty? && @free_slots.empty?
+
+		release_slots unless @held_slots.empty? || @stopping
+
+		# In the order they started, not the order they became idle.
+		idle = @idle.empty? ? [] : @workers.each_value.select(&:idle)
 		all_idle = idle.size == @workers.size
 
 		# With --fail-fast, batches already running finish, but nothing new starts.
@@ -1427,6 +1500,39 @@ class Quickdraw::Coordinator
 		end
 
 		@workers.clear
+		@idle.clear
+	end
+
+	# Frees slots held at the start, a worker for each
+	# WorkerTuner::MINIMUM_WORK_PER_WORKER of tests waiting in loaded files,
+	# which workers that start now can take from those running them.
+	private def release_slots
+		waiting = @files.each_value.sum { |file| (file.unstealable || file.pending.empty?) ? 0.0 : file.estimated_pending_time || 0.0 }
+		release((waiting / Quickdraw::WorkerTuner::MINIMUM_WORK_PER_WORKER).floor - @workers.size)
+	end
+
+	# Up to `count` of the slots held at the start, for dispatching to start workers in.
+	private def release(count)
+		released = @held_slots.shift([count, 0].max)
+		@free_slots.concat(released)
+		released.each { @released_at << now }
+		released.size
+	end
+
+	private def idle(worker)
+		worker.idle = true
+		@idle[worker] = true
+	end
+
+	private def busy(worker)
+		worker.idle = false
+		@idle.delete(worker)
+	end
+
+	# No longer one of the run's workers.
+	private def remove(worker)
+		@workers.delete(worker.channel.reader)
+		@idle.delete(worker)
 	end
 
 	# The slowest unloaded file in `group` (see #order_slowest_files_first).
@@ -1441,7 +1547,7 @@ class Quickdraw::Coordinator
 	private def move(worker, loader)
 		worker.channel.write([:stop])
 		@timeline&.stopping(worker)
-		@workers.delete(worker.channel.reader)
+		remove(worker)
 		@leaving[worker.channel.reader] = [worker, loader]
 	end
 
@@ -1534,7 +1640,7 @@ class Quickdraw::Coordinator
 		indices = @fail_fast ? file.pending.shift(1) : file.next_batch
 		worker.batch = [file, indices.dup]
 		worker.started = false
-		worker.idle = false
+		busy(worker)
 		worker.fresh = false
 		@timeline&.running(worker, file, indices)
 		crashed(worker) unless worker.channel.write([:run, file.path, indices])
@@ -1545,7 +1651,7 @@ class Quickdraw::Coordinator
 		attempt = worker.retrying
 		worker.batch = [attempt.file, [attempt.index]]
 		worker.started = false
-		worker.idle = false
+		busy(worker)
 		worker.fresh = false
 		@timeline&.running(worker, attempt.file, [attempt.index])
 		crashed(worker) unless worker.channel.write([:run, attempt.file.path, [attempt.index]])
@@ -1553,7 +1659,7 @@ class Quickdraw::Coordinator
 
 	private def load(worker, path)
 		worker.loading = path
-		worker.idle = false
+		busy(worker)
 		# Loading a file runs its top-level code, which a retry shouldn't follow.
 		worker.fresh = false unless worker.retrying
 		@timeline&.loading(worker, display_path(path))
