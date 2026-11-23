@@ -43,6 +43,24 @@ class SchedulingTest < Quickdraw::Test
 		end
 	end
 
+	test "warms up before forking several workers, but not for one", timeout: 30 do
+		skip "Workers are forked only with fork" unless Process.respond_to?(:fork)
+		skip "Process.warmup needs Ruby 3.3" unless Process.respond_to?(:warmup)
+
+		project = project(
+			"config/quickdraw.rb" => "def Process.warmup = File.write('warmups', '.', mode: 'a')\n",
+			"a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
+			"b.test.rb" => "class B < Quickdraw::Test; test('b') { assert true }; end\n",
+		)
+		warmups = File.join(project.directory, "warmups")
+
+		assert project.run("-p", "1", "--no-history").success?
+		refute File.exist?(warmups)
+
+		assert project.run("-p", "2", "--no-history").success?
+		assert_equal File.read(warmups), "."
+	end
+
 	COUNT_WORKERS = "Quickdraw.configure { |config| config.after_forking { $stderr.puts 'started a worker' } }\n"
 
 	test "starts no more workers than files until there are tests for them to share", timeout: 30 do
