@@ -263,7 +263,7 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
   - each worker slot connects to its own databases, named as Rails' parallel tests name them (`app_test_3`), for every database in `database.yml`;
   - when a worker starts, its databases are created and loaded from the schema, or emptied if the schema is unchanged, as Rails' `reconstruct_from_schema` does.
 - **Creating and keeping databases:**
-  - skip emptying when the database is already empty, to save time on worker start;
+  - skipping emptying when the database is already empty (done: only tables with rows are emptied, and looked at a few at a time, so workers starting at once don't exhaust PostgreSQL's lock table);
   - two runs at once (watch mode and a manual run, say) share slot databases, as Rails' parallel tests do; a run should reserve its slots' databases, or use others;
   - the number of databases follows the worker count, and extras are left for reuse.
 - **Rails' own parallel testing:** Rails' process-based `parallelize` is replaced, since Quickdraw already forks. Its hooks (`parallelize_setup`, `parallelize_teardown`, `parallelize_before_fork`) still run at the matching points, so apps that use them keep working. Threaded `parallelize` is left alone.

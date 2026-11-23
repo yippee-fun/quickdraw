@@ -238,7 +238,7 @@ class RailsTest < Quickdraw::Test
 		YAML
 		"test/fixtures/grace.txt" => "Grace",
 		"test/fixtures/posts.yml" => "hello:\n  title: Hello\n  user: ada\n",
-		# ERB that renders differently each time, so the set loads every run.
+		# ERB that renders differently each time, so the set renders every run.
 		"test/fixtures/events.yml" => "launch:\n  name: <%= Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond) %>\n",
 		"test/fixtures.test.rb" => <<~RUBY,
 			class FixturesTest < Quickdraw::Test
@@ -272,6 +272,45 @@ class RailsTest < Quickdraw::Test
 		RUBY
 	}.freeze
 
+	test "empties only the tables with rows when a worker starts, and none in a database just loaded", timeout: 60 do
+		project = app(
+			"db/schema.rb" => FIXTURES["db/schema.rb"],
+			"app/models/user.rb" => FIXTURES["app/models/user.rb"],
+			"app/models/post.rb" => FIXTURES["app/models/post.rb"],
+			"app/models/event.rb" => FIXTURES["app/models/event.rb"],
+			"config/environment.rb" => <<~RUBY,
+				require_relative "application"
+				Rails.application.initialize!
+
+				ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+					File.write(File.join(__dir__, "..", "emptied.log"), "\#{payload[:sql]}\\n", mode: "a") if payload[:sql].match?(/\\A(DELETE|TRUNCATE)/)
+				end
+			RUBY
+			"test/empty.test.rb" => "class EmptyTest < Quickdraw::Test\n\ttest('starts empty') { assert_equal [User.count, Post.count, Event.count], [0, 0, 0] }\nend\n",
+		)
+		database = File.join(project.directory, "db/test.sqlite3_0")
+		log = File.join(project.directory, "emptied.log")
+
+		first = project.run("-p", "1", "--no-history", timeout: 30)
+		assert first.success? do
+			first.output
+		end
+		refute File.exist?(log)
+
+		sql(
+			database,
+			"INSERT INTO users (id, name, created_at, updated_at) VALUES (1, 'Stray', '2000-01-01', '2000-01-01')",
+			"INSERT INTO posts (title, user_id, created_at, updated_at) VALUES ('Stray', 1, '2000-01-01', '2000-01-01')",
+		)
+
+		second = project.run("-p", "1", "--no-history", timeout: 30)
+		assert second.success? do
+			second.output
+		end
+
+		assert_equal File.read(log).scan(/FROM "(\w+)"/).flatten.sort, ["posts", "users"]
+	end
+
 	test "loads fixtures once into each worker's database, and keeps them for later runs while they're unchanged", timeout: 60 do
 		project = app(FIXTURES)
 		database = File.join(project.directory, "db/test.sqlite3_0")
@@ -284,6 +323,8 @@ class RailsTest < Quickdraw::Test
 
 		loaded = sql(database, manifest)
 		assert_equal loaded.map(&:first), ["events", "posts", "users"]
+		# With the tables its foreign keys refer to, so later runs needn't ask.
+		assert_equal sql(database, "SELECT tables FROM quickdraw_fixtures WHERE name = 'posts'"), [[%({"posts":[1,["created_at","updated_at"],["users"]]})]]
 
 		# As if the users loaded in 2000 and Ada was updated in 1999, with a row
 		# committed to posts since.
@@ -317,6 +358,146 @@ class RailsTest < Quickdraw::Test
 
 		assert_equal sql(database, "SELECT name FROM users ORDER BY name"), [["Ada"], ["Grace"], ["Grace Hopper"]]
 		refute_equal sql(database, manifest).assoc("users")[1], loaded.assoc("users")[1]
+	end
+
+	test "writes a set that renders differently over the rows it had, keeping the sets that refer to it", timeout: 60 do
+		project = app(FIXTURES.merge(
+			"test/fixtures/users.yml" => "ada:\n  name: <%= Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond) %>\n",
+			"test/fixtures.test.rb" => <<~RUBY,
+				class FixturesTest < Quickdraw::Test
+					fixtures :posts, :events
+
+					test("finds the post's user") { assert_equal posts(:hello).user, users(:ada) }
+				end
+			RUBY
+		))
+		database = File.join(project.directory, "db/test.sqlite3_0")
+
+		first = project.run("-p", "1", "--no-history", timeout: 30)
+		assert first.success? do
+			first.output
+		end
+
+		users = sql(database, "SELECT id, name FROM users")
+		# Loading posts again would set the title back.
+		sql(database, "UPDATE posts SET title = 'Kept'")
+
+		second = project.run("-p", "1", "--no-history", timeout: 30)
+		assert second.success? do
+			second.output
+		end
+
+		rendered = sql(database, "SELECT id, name FROM users")
+		assert_equal rendered.map(&:first), users.map(&:first)
+		refute_equal rendered, users
+		assert_equal sql(database, "SELECT title FROM posts"), [["Kept"]]
+
+		# A set that renders differently, with its file gone, is emptied rather than rendered.
+		File.delete(File.join(project.directory, "test/fixtures/events.yml"))
+		project.write("test/fixtures.test.rb" => File.read(File.join(project.directory, "test/fixtures.test.rb")).sub(", :events", ""))
+
+		third = project.run("-p", "1", "--no-history", timeout: 30)
+		assert third.success? do
+			third.output
+		end
+
+		assert_equal sql(database, "SELECT COUNT(*) FROM events"), [[0]]
+	end
+
+	test "replaces rows with no primary key when their set renders differently, keeping the other sets", timeout: 60 do
+		project = app(FIXTURES.merge(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.rails(fixtures: :all) }\n",
+			"db/schema.rb" => FIXTURES["db/schema.rb"].sub(/end\n\z/, <<~RUBY),
+					create_table :tags do |t|
+						t.string :name
+					end
+
+					create_join_table :users, :tags
+
+					create_table :rates, id: false do |t|
+						t.string :name
+					end
+
+					create_table :notes do |t|
+						t.string :name
+					end
+				end
+			RUBY
+			"app/models/user.rb" => "class User < ActiveRecord::Base; has_many :posts; has_and_belongs_to_many :tags; end\n",
+			"app/models/tag.rb" => "class Tag < ActiveRecord::Base; end\n",
+			"test/fixtures/tags.yml" => "ruby:\n  name: Ruby\nrails:\n  name: Rails\n",
+			"test/fixtures/users.yml" => "ada:\n  name: <%= Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond) %>\n  tags: ruby, rails\n",
+			"test/fixtures/rates.yml" => "<% 2.times do |i| %>\nrate_<%= i %>:\n  name: <%= Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond) %>\n<% end %>\n",
+			# With no model, so the database gives its row an id.
+			"test/fixtures/notes.yml" => "note:\n  name: <%= Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond) %>\n",
+			"test/fixtures.test.rb" => <<~RUBY,
+				class FixturesTest < Quickdraw::Test
+					test("finds the user's tags") { assert_equal users(:ada).tags.order(:id).to_a, [tags(:ruby), tags(:rails)].sort_by(&:id) }
+				end
+			RUBY
+		))
+		database = File.join(project.directory, "db/test.sqlite3_0")
+
+		first = project.run("-p", "1", "--no-history", timeout: 30)
+		assert first.success? do
+			first.output
+		end
+
+		rates = sql(database, "SELECT name FROM rates")
+		notes = sql(database, "SELECT name FROM notes")
+		# Loading these again would set them back.
+		sql(database, "UPDATE posts SET title = 'Kept'", "UPDATE tags SET name = 'Kept' WHERE name = 'Ruby'")
+
+		# Fewer rates, which a table with no primary key needn't keep the count of.
+		project.write("test/fixtures/rates.yml" => "rate:\n  name: <%= Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond) %>\n")
+
+		second = project.run("-p", "1", "--no-history", timeout: 30)
+		assert second.success? do
+			second.output
+		end
+
+		assert_equal sql(database, "SELECT name FROM tags ORDER BY name"), [["Kept"], ["Rails"]]
+		assert_equal sql(database, "SELECT title FROM posts"), [["Kept"]]
+		assert_equal sql(database, "SELECT COUNT(*) FROM tags_users"), [[2]]
+		assert_equal sql(database, "SELECT COUNT(*) FROM rates"), [[1]]
+		refute_includes rates, sql(database, "SELECT name FROM rates").first
+		assert_equal sql(database, "SELECT COUNT(*) FROM notes"), [[1]]
+		refute_equal sql(database, "SELECT name FROM notes"), notes
+	end
+
+	test "renders the fixtures config wants once for every worker, except those that need a database", timeout: 60 do
+		project = app(FIXTURES.merge(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.rails(fixtures: :all) }\n",
+			# With what looks like ERB once rendered, which stays as it is.
+			"test/fixtures/users.yml" => %(ada:\n  name: <%= Process.pid %>\ngrace:\n  name: "<%= '<' + '%= 1 %' + '>' %>"\n),
+			# Rendered in each worker, with its database rather than the loader's.
+			"test/fixtures/events.yml" => "launch:\n  name: <%= Process.pid + Event.count * 0 %>\n",
+			"test/fixtures.test.rb" => <<~RUBY,
+				class FixturesTest < Quickdraw::Test
+					test("reads the sets") do
+						assert_equal events(:launch).name, Process.pid.to_s
+						refute_equal users(:ada).name, Process.pid.to_s
+						assert_equal users(:grace).name, "<" + "%= 1 %" + ">"
+						assert_equal posts(:hello).user, users(:ada)
+					end
+				end
+			RUBY
+			"test/more.test.rb" => "class MoreTest < Quickdraw::Test\n\ttest('waits for the other worker') { assert sleep(1) }\nend\n",
+		))
+
+		# The database the loader would connect to, were it to.
+		sql(File.join(project.directory, "db/test.sqlite3"), "CREATE TABLE events (id integer PRIMARY KEY, name varchar)")
+
+		2.times do
+			result = project.run("-p", "2", "--no-history", timeout: 30)
+			assert result.success? do
+				result.output
+			end
+
+			names = [0, 1].map { |slot| sql(File.join(project.directory, "db/test.sqlite3_#{slot}"), "SELECT name FROM users ORDER BY id") }
+			assert_equal names.first, names.last
+			assert_equal names.first.size, 2
+		end
 	end
 
 	test "loads fixtures again after a test commits, even when another database fails to roll back", timeout: 30 do
@@ -456,23 +637,29 @@ class RailsTest < Quickdraw::Test
 		match { result => { summary: /\A4 tests · 6 assertions/ } }
 	end
 
-	# Runs each statement on a SQLite database, returning the last one's rows. In
-	# a fork, so sqlite3 isn't loaded here.
+	# Runs each statement on a SQLite database, returning the last one's rows.
 	private def sql(database, *statements)
+		in_fork do
+			require "sqlite3"
+			db = SQLite3::Database.new(database)
+			statements.map { |statement| db.execute(statement) }.last
+		end
+	end
+
+	# What the block returns in a fork, so what it requires isn't loaded here.
+	private def in_fork
 		reader, writer = IO.pipe
 
 		pid = Process.fork do
 			reader.close
-			require "sqlite3"
-			db = SQLite3::Database.new(database)
-			writer.write(Marshal.dump(statements.map { |statement| db.execute(statement) }.last))
+			writer.write(Marshal.dump(yield))
 			exit!(0)
 		end
 
 		writer.close
-		rows = Marshal.load(reader.read)
+		result = Marshal.load(reader.read)
 		Process.wait(pid)
-		rows
+		result
 	ensure
 		reader&.close
 	end
