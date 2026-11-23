@@ -66,7 +66,7 @@ class Quickdraw::Reporters::Agent
 		print_causes if @problems.any?
 		print_leaks if @leaks.any?
 
-		@io.puts "Workers exited with a failure status (e.g. from an at_exit hook)." if outcome.processes_failed && @problems.empty?
+		@io.puts outcome.process_failure if outcome.processes_failed && @problems.empty?
 		if outcome.interrupted
 			@io.puts "Interrupted (Ctrl-C). Tests that were running or hadn't started weren't run."
 		elsif outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0

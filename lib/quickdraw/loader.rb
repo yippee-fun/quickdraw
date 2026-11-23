@@ -452,7 +452,13 @@ class Quickdraw::Loader
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		# Before the callbacks, so processes they start aren't blamed on tests.
 		Quickdraw::Leaks::ProcessStarts.watch if leaks
-		Quickdraw::Config.after_forking_callbacks.each(&:call)
+		begin
+			Quickdraw::Config.after_forking_callbacks.each(&:call)
+		rescue StandardError, ScriptError => error
+			channel.write([:boot_failed, Quickdraw.serialize_error(error)])
+			raise
+		end
+
 		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:, variant:).call
 	end
 

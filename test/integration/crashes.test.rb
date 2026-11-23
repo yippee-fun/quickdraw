@@ -38,6 +38,20 @@ class CrashesTest < Quickdraw::Test
 		match { result => { summary: /\A4 tests · 3 assertions · 1 errored/ } }
 	end
 
+	test "says why a worker failed to start", timeout: 20 do
+		result = project(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.after_forking { raise \"no database\" if ENV[\"QUICKDRAW_WORKER\"] == \"0\" } }\n",
+			"a.test.rb" => <<~RUBY,
+				class A < Quickdraw::Test
+					4.times { |i| test("passes \#{i}") { assert true } }
+				end
+			RUBY
+		).run("-p", "2", "--no-history", "a.test.rb")
+
+		refute result.success?
+		assert_includes result.output, "failed to start: RuntimeError: no database"
+	end
+
 	test "stops replacing workers once its spares are used up", timeout: 20 do
 		result = project("crashes.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--retry", "0", "--seed", "1", "crashes.test.rb")
 			class Crashes < Quickdraw::Test

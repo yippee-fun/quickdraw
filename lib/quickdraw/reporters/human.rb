@@ -567,7 +567,7 @@ class Quickdraw::Reporters::Human
 		notes << ["Interrupted", "Tests that were running or hadn’t started count as not run."] if outcome.interrupted
 		notes << ["Fail fast", "Stopped after the first problem."] if !outcome.interrupted && outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
 		notes << ["No match", "No tests matched the given lines, --name or --exclude."] if outcome.nothing_matched
-		notes << ["Exit status", "A worker or the loader exited with a failure status, e.g. from an at_exit hook."] if outcome.processes_failed && @problems.empty?
+		notes << ["Exit status", outcome.process_failure] if outcome.processes_failed && @problems.empty?
 
 		skipped = @set_aside.reject { |_path, _test, skipped| skipped["pending"] }
 		notes << ["Skipped", skip_reasons(skipped)] if skipped.any?
