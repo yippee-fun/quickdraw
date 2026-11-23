@@ -185,31 +185,11 @@ class Quickdraw::History
 		WHERE results.run_id = :run_id AND results.test_id = tests.id
 	SQL
 
-	# A test's result, with only what history keeps, so a run's records are
-	# quick to send to the process that saves them. `details` are the failures
-	# and errors of a test that didn't pass.
-	Record = Data.define(:key, :path, :line, :class_name, :description, :variant, :status, :duration, :stats, :assertions, :details, :worker, :slot, :sequence) do
-		def self.from(key:, path:, test:, result:, worker:, slot:, sequence:)
-			status = Quickdraw::History.status(result)
-
-			new(
-				key:,
-				path:,
-				line: test["line"],
-				class_name: test["class_name"],
-				description: test["description"],
-				variant: test["variant"],
-				status:,
-				duration: result["duration"],
-				stats: result["stats"],
-				assertions: result["assertions"],
-				details: ({ "failures" => result["failures"], "errors" => result["errors"] } unless status == "passed"),
-				worker:,
-				slot:,
-				sequence:,
-			)
-		end
-	end
+	# A test's result, with only what history keeps. The test's class name,
+	# description and variant are in its key (see .test), but for whether it
+	# has a description, which is `described`. `details` are the failures and
+	# errors of a test that didn't pass.
+	Record = Data.define(:key, :path, :line, :described, :status, :duration, :stats, :assertions, :details, :worker, :slot, :sequence)
 	KnownTest = Data.define(:id, :path, :line, :average_duration)
 
 	RunSummary = Data.define(:finished_at, :seed, :processes, :worker_choice, :git_sha, :git_branch, :duration, :tests, :failed, :errored, :passed)
@@ -323,14 +303,30 @@ class Quickdraw::History
 	# a run can work them out without opening one.
 	def self.keys(path, tests)
 		require "json"
-		occurrences = Hash.new(0)
+		occurrences = {}
+		path = valid_utf8(path)
 
 		tests.map do |test|
+			class_name = test["class_name"]
 			name = test["description"] || "line #{test['line']}"
-			occurrence = occurrences[[test["class_name"], name]] += 1
-			parts = [path, test["class_name"], name, occurrence, *test["variant"]]
-			JSON.generate(parts.map { |part| (String === part) ? Quickdraw.utf8(part) : part })
+			occurrence = (occurrences[class_name] ||= Hash.new(0))[name] += 1
+			parts = [path, valid_utf8(class_name), valid_utf8(name), occurrence]
+			variant = test["variant"]
+			parts.concat(Array(variant).map { |part| valid_utf8(part) }) if variant
+			JSON.generate(parts)
 		end
+	end
+
+	# Quickdraw.utf8 copies every string, and most are valid already.
+	private_class_method def self.valid_utf8(part)
+		(String === part && !(part.encoding == Encoding::UTF_8 && part.valid_encoding?)) ? Quickdraw.utf8(part) : part
+	end
+
+	# The class name, description and variant of the test with `key`, which
+	# has a description if `described`.
+	def self.test(key, described:)
+		_path, class_name, name, _occurrence, variant = JSON.parse(key)
+		[class_name, (name if described), variant]
 	end
 
 	def keys(...) = self.class.keys(...)
@@ -738,7 +734,7 @@ class Quickdraw::History
 		end
 
 		changed.each_slice(BATCH_SIZE) do |batch|
-			rows = batch.map { |record| [record.key, record.path, record.line, record.class_name, record.description, record.variant] }
+			rows = batch.map { |record| [record.key, record.path, record.line, *self.class.test(record.key, described: record.described)] }
 
 			@db.execute(format(UPSERT_TESTS, tuples(rows)), utf8(rows.flatten(1))).each do |id, key|
 				ids[key] = id

@@ -2,8 +2,9 @@
 
 # Finds state a test left behind, after every test: threads and Ractors it
 # started that are still running, a fiber scheduler it set, child processes it
-# didn't wait for, and changes to ENV. Unless a test changed ENV or started a
-# process, this only compares the thread list, scheduler and Ractor count.
+# didn't wait for, and changes to ENV. Unless a test started a thread or a
+# process, or changed ENV, this only compares the scheduler and the thread and
+# Ractor counts.
 #
 # Runs in the worker alongside user code, so it must only use core Ruby.
 class Quickdraw::Leaks
@@ -80,11 +81,14 @@ class Quickdraw::Leaks
 			@threads << thread if Thread === thread && (!defined?(Ractor) || Ractor.current.equal?(Ractor.main))
 		end
 
+		# Nil if there are none, as after nearly every test.
 		def self.take
-			threads = @raised + @threads
-			@raised = []
-			@threads = []
-			threads
+			return if @threads.empty? && @raised.empty?
+
+			# Swapped first, so a thread started meanwhile isn't dropped.
+			threads, @threads = @threads, []
+			raised, @raised = @raised, []
+			raised.concat(threads)
 		end
 
 		# Forgets threads that ended with nothing to report, so a property
@@ -154,9 +158,14 @@ class Quickdraw::Leaks
 	# Leaks since the last check or reset, as [{ "kind" =>, "message" => }], or nil.
 	def check
 		leaks = nil
+		started = ThreadStarts.take
+
 		threads = Thread.list
 
-		unless threads == @threads
+		# Comparing the lists takes as long as listing, so they're only compared
+		# if a thread was started or the count changed, which also catches one
+		# started with a Thread.new saved before Starting was prepended.
+		if (started || threads.size != @threads.size) && threads != @threads
 			(threads - @threads).each do |thread|
 				location = started_at(thread) or next
 				(leaks ||= []) << { "kind" => "thread", "message" => Quickdraw.utf8("A thread started at #{location} is still running.") }
@@ -186,7 +195,7 @@ class Quickdraw::Leaks
 
 		@ractors = ractors
 
-		if (deaths = thread_deaths).any?
+		if started && (deaths = thread_deaths(started)).any?
 			(leaks ||= []).concat(deaths)
 		end
 
@@ -297,8 +306,8 @@ class Quickdraw::Leaks
 	# Threads started since the last check that ended with an exception which
 	# nothing joined them to see. A thread's status is nil once an exception has
 	# ended it.
-	private def thread_deaths
-		ThreadStarts.take.filter_map do |thread|
+	private def thread_deaths(started)
+		started.filter_map do |thread|
 			next if thread.alive? || !thread.status.nil? || thread.quickdraw_joined?
 
 			location = started_at(thread) or next

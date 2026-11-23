@@ -36,7 +36,7 @@ class Quickdraw::Reporters::Human
 		@command = command
 		@backtrace = backtrace
 		@show_timings = timings
-		@timings = Quickdraw::Timings.new(each_test: timings)
+		@timings = Quickdraw::Timings.new(keep: timings ? SLOWEST_LIMIT : 1)
 		@profile = Quickdraw::Profile.new
 		@color = io.tty? && !ENV.key?("NO_COLOR")
 		@status_line = Quickdraw::Reporters::StatusLine.new(io:, live:, color: @color)
@@ -317,7 +317,7 @@ class Quickdraw::Reporters::Human
 		@io.puts
 		@io.puts bold("Slowest tests")
 
-		@timings.slowest_tests(SLOWEST_LIMIT).each do |test|
+		@timings.slowest_tests.each do |test|
 			total = Quickdraw::PHASES.sum { |phase| test.wall(phase) }
 			split = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(test.wall(phase) / total)}" }.join(", ") if total > 0
 			@io.puts "  #{seconds(test.duration).rjust(8)}  #{location(test)}  #{dim(split.to_s)}"

@@ -39,15 +39,48 @@ module Quickdraw::Platform
 		RUBY_PLATFORM =~ /darwin/
 	end
 
-	# [performance, efficiency] logical cores, from one sysctl, since each takes
-	# ~2ms. Every core counts as a performance core if sysctl can't say.
+	CORE_LEVELS_CACHE = "~/Library/Caches/quickdraw/core-levels"
+
+	# [performance, efficiency] logical cores. sysctl takes ~6ms to run and a
+	# machine's cores don't change, so they're cached. Every core counts as a
+	# performance core if sysctl can't say.
 	private def core_levels
-		@core_levels ||= begin
-			levels = `sysctl -n hw.perflevel0.logicalcpu hw.perflevel1.logicalcpu 2>/dev/null`.split.map { |count| Integer(count, 10, exception: false) }
-			(levels.size == 2 && levels.all?(&:positive?)) ? levels : [cpu_cores, 0]
-		rescue SystemCallError
-			[cpu_cores, 0]
-		end
+		@core_levels ||= cached_core_levels(CORE_LEVELS_CACHE) || sysctl_core_levels&.tap { |levels| cache_core_levels(CORE_LEVELS_CACHE, levels) } || [cpu_cores, 0]
+	end
+
+	private def cached_core_levels(path)
+		levels, kernel = File.read(File.expand_path(path)).split("\n", 2)
+		valid_core_levels(levels) if kernel == self.kernel
+	rescue SystemCallError, ArgumentError
+		nil
+	end
+
+	private def cache_core_levels(path, levels)
+		path = File.expand_path(path)
+		Dir.mkdir(File.dirname(path)) unless File.directory?(File.dirname(path))
+		File.write(path, "#{levels.join(' ')}\n#{kernel}")
+	rescue SystemCallError, ArgumentError
+		nil
+	end
+
+	# From one sysctl, since each takes ~2ms.
+	private def sysctl_core_levels
+		valid_core_levels(`sysctl -n hw.perflevel0.logicalcpu hw.perflevel1.logicalcpu 2>/dev/null`)
+	rescue SystemCallError
+		nil
+	end
+
+	# Names the chip, as in RELEASE_ARM64_T6000, which tells apart machines
+	# that split as many cores differently. uname(2) takes no subprocess.
+	private def kernel
+		require "etc"
+		Etc.uname[:version]
+	end
+
+	# Levels that don't add up to this machine's cores are another machine's.
+	private def valid_core_levels(text)
+		levels = text.split.map { |count| Integer(count, 10, exception: false) }
+		levels if levels.size == 2 && levels.all? { |count| count&.positive? } && levels.sum == cpu_cores
 	end
 
 	def cpu_cores
@@ -86,6 +119,41 @@ module Quickdraw::Platform
 		group = File.foreach("/proc/self/cgroup").find { |line| line.start_with?("0::") }&.chomp&.delete_prefix("0::")
 		path = File.join("/sys/fs/cgroup", group.to_s, name)
 		File.read(path).strip if group && File.readable?(path)
+	rescue SystemCallError
+		nil
+	end
+
+	# Linux's is 0x5413 except where it took its ioctl numbers from BSD.
+	TIOCGWINSZ = case RUBY_PLATFORM
+	in /darwin|bsd|dragonfly/ then 0x40087468
+	in /linux/ then RUBY_PLATFORM.match?(/mips|powerpc|ppc|sparc|alpha/) ? 0x40087468 : 0x5413
+	else nil
+	end
+
+	# How many columns wide `io`'s terminal is, or nil if it isn't one or
+	# can't say. From an ioctl rather than io/console, which group loaders,
+	# forked from this process, would pass on to tests, and rather than stty
+	# where it can be, since running that takes ~2ms.
+	def terminal_columns(io)
+		return unless io.tty?
+
+		columns = ioctl_columns(io) || stty_columns(io)
+		columns if columns&.positive?
+	end
+
+	private def ioctl_columns(io)
+		return unless TIOCGWINSZ
+
+		# struct winsize: rows, columns, then width and height in pixels.
+		size = [0, 0, 0, 0].pack("S!4")
+		io.ioctl(TIOCGWINSZ, size)
+		size.unpack("S!4")[1]
+	rescue SystemCallError, NotImplementedError, ArgumentError
+		nil
+	end
+
+	private def stty_columns(io)
+		Integer(IO.popen(["stty", "size"], in: io, err: File::NULL, &:read).split.last, 10, exception: false)
 	rescue SystemCallError
 		nil
 	end
