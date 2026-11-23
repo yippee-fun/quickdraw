@@ -69,7 +69,7 @@ module Quickdraw::Rails
 		end
 
 		# Templates hold every set, which an app that configures none may not expect.
-		@templated = !!fixtures && Templates.apply?
+		@templated = fixtures.present? && Templates.apply?
 		Fixtures.paths = fixture_paths.map { |path| File.expand_path(path, ::Rails.root) }
 		Quickdraw::BasicTest.extend(Fixtures::Declarations)
 		Quickdraw::BasicTest.fixtures(*fixtures) if fixtures

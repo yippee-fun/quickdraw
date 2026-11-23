@@ -136,11 +136,11 @@ module Quickdraw::Rails::Templates
 		end
 
 		fixture_paths.each do |path|
-			# With the files beside the sets, which their ERB may read, but not the
-			# file fixtures.
+			# With every file beside the sets, file fixtures included, which their ERB
+			# may read.
 			Dir[File.join(path, "{**,*}/*")].uniq.sort.each do |file|
 				name = file.delete_prefix("#{path}/")
-				digest << "\0" << name << "\0" << File.read(file) if File.file?(file) && !name.start_with?("files/")
+				digest << "\0" << name << "\0" << File.read(file) if File.file?(file)
 			end
 		end
 
@@ -161,8 +161,8 @@ module Quickdraw::Rails::Templates
 		maintenance.each do |db_config, connection|
 			template = connection.quote_table_name(template(db_config.database))
 			drop(connection, template(db_config.database))
+			connection.execute("ALTER DATABASE #{connection.quote_table_name(building(db_config.database))} ALLOW_CONNECTIONS false")
 			connection.execute("ALTER DATABASE #{connection.quote_table_name(building(db_config.database))} RENAME TO #{template}")
-			connection.execute("ALTER DATABASE #{template} ALLOW_CONNECTIONS false")
 		end
 	end
 
