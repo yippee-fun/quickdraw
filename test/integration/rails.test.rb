@@ -311,6 +311,51 @@ class RailsTest < Quickdraw::Test
 		assert_equal File.read(log).scan(/FROM "(\w+)"/).flatten.sort, ["posts", "users"]
 	end
 
+	test "lets a class's tests commit with use_transactional_tests = false, then cleans up after each", timeout: 60 do
+		project = app(
+			FIXTURES.except("test/fixtures/posts.yml", "test/fixtures/events.yml", "test/fixtures.test.rb").merge(
+				"test/commit.test.rb" => <<~RUBY,
+					class CommitTest < Quickdraw::Test
+						self.use_transactional_tests = false
+
+						3.times do |i|
+							test("commits \#{i}") do
+								assert_equal Post.count, 0
+								assert_equal Event.count, 0
+								assert_equal User.order(:name).pluck(:name), ["Ada", "Grace"]
+
+								Post.create!(title: "Committed", user: User.find_by!(name: "Ada"))
+								Event.create!(name: "Committed")
+								User.find_by!(name: "Grace").update!(name: "Changed")
+								User.create!(name: "Extra")
+							end
+						end
+
+						describe "nested" do
+							test("commits too") { assert_equal self.class.use_transactional_tests, false }
+						end
+					end
+
+					class RolledBackTest < Quickdraw::Test
+						test("still rolls back") do
+							assert_equal self.class.use_transactional_tests, true
+							Event.create!(name: "Rolled back")
+						end
+					end
+				RUBY
+			),
+		)
+		database = File.join(project.directory, "db/test.sqlite3_0")
+
+		result = project.run("-p", "1", "--no-history", timeout: 45)
+		assert result.success? do
+			result.output
+		end
+
+		assert_equal sql(database, "SELECT COUNT(*) FROM posts", "SELECT COUNT(*) FROM events"), [[0]]
+		assert_equal sql(database, "SELECT name FROM users ORDER BY name"), [["Ada"], ["Grace"]]
+	end
+
 	test "loads fixtures once into each worker's database, and keeps them for later runs while they're unchanged", timeout: 60 do
 		project = app(FIXTURES)
 		database = File.join(project.directory, "db/test.sqlite3_0")
