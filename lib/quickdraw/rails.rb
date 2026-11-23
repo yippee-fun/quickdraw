@@ -19,6 +19,7 @@ module Quickdraw::Rails
 
 	def setup(config, environment:, fixtures:, fixture_paths:)
 		config.before_forking { boot(environment, fixtures:, fixture_paths:) }
+		config.before_run { Fixtures.render }
 		config.after_forking { start_worker }
 		config.around_test { |_test, run| in_transactions(&run) }
 		config.reloader { |paths| reload(paths) }

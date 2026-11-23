@@ -23,7 +23,7 @@ Gem::Specification.new do |spec|
 	spec.bindir = "exe"
 	spec.executables = ["quickdraw", "qd", "qc"]
 
-	spec.add_dependency "phlex", "~> 2.4"
+	spec.add_dependency "phlex", ">= 2.4", "< 4"
 
 	if RUBY_ENGINE == "jruby"
 		spec.platform = "java"
