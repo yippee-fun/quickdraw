@@ -45,6 +45,9 @@ class Quickdraw::Coordinator
 		# workers waiting for it at the end. They're sorted by how many times the
 		# batch budget they take, rounded down to a power of two, so the order a
 		# seed gives only changes when a test gets about twice as fast or slow.
+		#
+		# An after_tests test waits until the tests it follows have their final
+		# results (see BasicTest.after_tests), so `indices` must include them.
 		def initialize(path:, display_path:, group:, variant:, tests:, keys:, indices:, load_duration:, prior_average:, random:, expected: nil)
 			@path = path
 			@display_path = display_path
@@ -56,7 +59,17 @@ class Quickdraw::Coordinator
 			@load_duration = load_duration
 			@prior_average = prior_average
 			@expected = expected || []
-			@pending = indices.shuffle(random:).each_with_index.sort_by do |index, position|
+			@waiting = indices.select { |index| tests[index]["follows"] }
+
+			if (unselected = @waiting.flat_map { |index| tests[index]["follows"] } - indices).any?
+				raise ArgumentError, "Expected tests #{unselected.inspect} of #{display_path} to be selected, as after_tests tests follow them."
+			end
+
+			# What each test an after_tests test waits for gathered, or nil if it didn't pass.
+			@gathered_by = {}
+			# What each after_tests test whose tests passed is given.
+			@gathered = {}
+			@pending = (indices - @waiting).shuffle(random:).each_with_index.sort_by do |index, position|
 				[slow?(index) ? -Math.log2(@expected[index] / BATCH_BUDGET).floor - 1 : 0, position]
 			end.map(&:first)
 
@@ -71,6 +84,7 @@ class Quickdraw::Coordinator
 			@completed = 0
 			@size = indices.size
 			@reported = 0
+			release
 		end
 
 		attr_reader :path, :display_path, :group, :variant, :tests, :keys, :pending, :load_duration
@@ -79,9 +93,24 @@ class Quickdraw::Coordinator
 		# once, for scheduling, and how many have a final result, after retries.
 		attr_reader :size, :completed, :reported
 
-		def reported!
+		# The test's final result, which may let after_tests tests run.
+		def reported!(index, result)
 			@reported += 1
+			# It won't be retried again.
+			@gathered.delete(index)
+			return if @waiting.empty?
+
+			passed = (Quickdraw::Outcome.status(result) in "passed" | "flaky")
+			@gathered_by[index] = passed ? result.fetch("gathered", []) : nil
+			release
+			@gathered_by.clear if @waiting.empty?
 		end
+
+		# Tests not yet started, counting those waiting for others.
+		def unstarted = @pending.size + @waiting.size
+
+		# What the after_tests tests among `indices` are given (see Worker#run).
+		def gathered_for(indices) = @gathered.slice(*indices)
 
 		# Whether every one of its tests was selected to run.
 		def whole? = @whole
@@ -131,6 +160,18 @@ class Quickdraw::Coordinator
 		# A test that takes a batch's budget on its own.
 		def slow?(index)
 			(expected = @expected[index]) && expected >= BATCH_BUDGET
+		end
+
+		# Starts the after_tests tests whose tests all have final results, giving
+		# them what those gathered, in order, if they all passed.
+		private def release
+			ready, @waiting = @waiting.partition { |index| @tests[index]["follows"].all? { |followed| @gathered_by.key?(followed) } }
+
+			ready.each do |index|
+				gathered = @tests[index]["follows"].map { |followed| @gathered_by[followed] }
+				@gathered[index] = gathered.flatten(1) unless gathered.include?(nil)
+				@pending << index
+			end
 		end
 	end
 
@@ -515,10 +556,10 @@ class Quickdraw::Coordinator
 		@outcome.coverage = @coverage
 		# An interrupted run isn't saved (see #save_history).
 		@outcome.recorded = !@history.nil? && @history.recordable? && !@interrupted
-		@outcome.not_run = @files.each_value.sum { |file| file.pending.size }
+		@outcome.not_run = @files.each_value.sum(&:unstarted)
 		@outcome.unloaded_files = @unloaded.size
 		@outcome.files = @file_count
-		@outcome.unfinished_files = @files.each_value.count { |file| file.pending.any? }
+		@outcome.unfinished_files = @files.each_value.count { |file| file.unstarted > 0 }
 		@outcome.processes_failed = processes_failed
 		@outcome.stopped_early = @stopping
 		# A filter that matches nothing is more likely a typo than a pass.
@@ -1098,7 +1139,7 @@ class Quickdraw::Coordinator
 		whole = { Quickdraw::History::BOOT => @every_group_booted }
 
 		@files.each_value do |file|
-			whole[file.display_path] = whole.fetch(file.display_path, true) && !@partly_run.key?(file.display_path) && file.whole? && file.pending.empty?
+			whole[file.display_path] = whole.fetch(file.display_path, true) && !@partly_run.key?(file.display_path) && file.whole? && file.unstarted.zero?
 		end
 		@coverage_map.to_h { |path, sources| [path, [sources.keys, whole.fetch(path, false)]] }
 	end
@@ -1212,6 +1253,8 @@ class Quickdraw::Coordinator
 				indices.select! { |index| @only_keys.key?(keys[index]) }
 			end
 
+			indices = with_followed(tests, indices)
+
 			variant = @variants[worker.group]
 			@selected += indices.size
 			# It won't finish, since nothing in it runs.
@@ -1238,6 +1281,19 @@ class Quickdraw::Coordinator
 		end
 
 		worker.loaded[path] = file
+	end
+
+	# The selected `indices` of `tests`, with the tests each after_tests test
+	# among them follows, since it runs with every one of them or not at all
+	# (see BasicTest.after_tests). Not one that follows a test --exclude leaves out.
+	private def with_followed(tests, indices)
+		indices.flat_map do |index|
+			case tests[index]["follows"]
+			in nil then [index]
+			in follows if follows.none? { |followed| @filter.excluded?(tests[followed]) } then [*follows, index]
+			else []
+			end
+		end.uniq.sort
 	end
 
 	private def record(worker, index, result)
@@ -1302,7 +1358,9 @@ class Quickdraw::Coordinator
 	end
 
 	private def report(file, index, result, (process, slot, sequence))
-		file.reported!
+		file.reported!(index, result)
+		# Only for after_tests tests.
+		result = result.except("gathered") if result.key?("gathered")
 		result = result.merge("quarantined" => true) if @flakes.quarantined?(file, index, result)
 		@outcome.record(result)
 		@flakes.add(file, index, result) if result["passed_on_retry"] && !@warm_loaders
@@ -1537,7 +1595,7 @@ class Quickdraw::Coordinator
 		worker.idle = false
 		worker.fresh = false
 		@timeline&.running(worker, file, indices)
-		crashed(worker) unless worker.channel.write([:run, file.path, indices])
+		crashed(worker) unless worker.channel.write([:run, file.path, indices, file.gathered_for(indices)])
 	end
 
 	# The worker has loaded the file for its retry, and nothing else.
@@ -1548,7 +1606,7 @@ class Quickdraw::Coordinator
 		worker.idle = false
 		worker.fresh = false
 		@timeline&.running(worker, attempt.file, [attempt.index])
-		crashed(worker) unless worker.channel.write([:run, attempt.file.path, [attempt.index]])
+		crashed(worker) unless worker.channel.write([:run, attempt.file.path, [attempt.index], attempt.file.gathered_for([attempt.index])])
 	end
 
 	private def load(worker, path)

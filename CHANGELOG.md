@@ -5,6 +5,7 @@
 - A test that finishes without making an assertion fails, unless it skips. A test without a block is still pending. The summary no longer counts tests without assertions, and JSON drops `without_assertions`.
 - The last run is kept as `.quickdraw/last-run.jsonl`, written as problems are found, with the Ruby, platform and arguments it ran with. `qd last --from FILE` reads one kept elsewhere, such as a CI artifact.
 - GitHub Actions annotations' messages start with the test's name and location, and indent their other lines.
+- `after_tests` defines a test that runs once the class's other tests have passed, in whichever workers, with what they `gather`ed.
 
 ## [0.1.0] - 2023-02-19
 

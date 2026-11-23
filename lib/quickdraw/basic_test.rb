@@ -18,17 +18,34 @@ class Quickdraw::BasicTest
 	# from `quickdraw mutate --unique-kills`, for a test of code that can't be
 	# mutated, such as a template or configuration.
 	def self.test(description = nil, timeout: nil, mutation: true, &block)
+		line = block ? block.source_location[1] : caller_locations(1, 1).first.lineno
+		Quickdraw.register(definition(description, line:, timeout:, mutation:, after_tests: false, &block))
+	end
+
+	# Defines a test that runs once the class's other tests in its file, its
+	# describe groups' included, have passed, in whichever workers they ran.
+	# The block is given what they gathered (see #gather), in the order they're
+	# defined, to check something of them all, such as that between them they
+	# render every branch of a template.
+	#
+	# It's skipped if one of them doesn't pass. Selecting it selects them, and
+	# it isn't selected without them.
+	def self.after_tests(description = nil, timeout: nil, &block)
+		raise ::ArgumentError, "after_tests needs a block." unless block
+
+		Quickdraw.register(definition(description, line: Quickdraw.defining_line(block), timeout:, mutation: false, after_tests: true, &block))
+	end
+
+	# Registered by the method defining the test, whose caller Quickdraw.register
+	# looks at.
+	private_class_method def self.definition(description, line:, timeout:, mutation:, after_tests:, &block)
 		if block
-			location = block.source_location
-			line = location[1]
 			@occurrences ||= {}
 			@description_counts ||= Hash.new(0)
-			@occurrences[location] = @description_counts[description] += 1
-		else
-			line = caller_locations(1, 1).first.lineno
+			@occurrences[block.source_location] = @description_counts[description] += 1
 		end
 
-		Quickdraw.register(Quickdraw::Definition.new(test_class: self, description:, block:, timeout:, line:, mutation:))
+		Quickdraw::Definition.new(test_class: self, description:, block:, timeout:, line:, mutation:, after_tests:)
 	end
 
 	# Which of the class's tests with its description the test with `block` is,
@@ -38,21 +55,36 @@ class Quickdraw::BasicTest
 	# Groups tests under a description, which prefixes their names. The group is
 	# a subclass, so it can define helpers and override setup, calling super.
 	def self.describe(description, &block)
+		parent = self
 		parent_name = name || "(anonymous)"
 
 		Class.new(self) do
 			set_temporary_name("#{parent_name} › #{description}")
+			@described_in = parent
 			class_exec(&block)
 		end
 	end
 
-	def initialize(description:, block:, runner:)
+	# Whether it's `test_class`, or a group describe made in it.
+	def self.within?(test_class) = equal?(test_class) || !!@described_in&.within?(test_class)
+
+	# `gathered` is what an after_tests test is given.
+	def initialize(description:, block:, runner:, gathered: nil)
 		@description = description
 		@block = block
 		@runner = runner
+		@gathered = gathered
 		@deferred = nil
 		@contexts = nil
 		@raised_context = nil
+	end
+
+	# Gives a copy of `value`, which must be plain data (see Quickdraw.plain_copy),
+	# to the class's after_tests tests.
+	def gather(value)
+		@runner.gather(Quickdraw.plain_copy(value))
+
+		nil
 	end
 
 	# Shows what the block returns with each failure or error later in the
@@ -201,7 +233,7 @@ class Quickdraw::BasicTest
 		error!(error)
 	end
 
-	private def run_block = instance_exec(&@block)
+	private def run_block = @gathered ? instance_exec(@gathered, &@block) : instance_exec(&@block)
 
 	private def run_test
 		@runner.measure("setup") { setup }

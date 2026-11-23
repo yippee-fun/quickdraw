@@ -64,6 +64,12 @@ class Quickdraw::Filter
 		end
 	end
 
+	# Whether --exclude leaves out the test (as workers describe it).
+	def excluded?(test)
+		name = self.class.name_of(test)
+		@excludes.any? { |pattern| pattern === name }
+	end
+
 	# The lines asked for in `path` that no test starts at or above.
 	def unmatched_lines(path, tests)
 		(@lines[path] || []).select { |line| tests_at(tests, line).empty? }

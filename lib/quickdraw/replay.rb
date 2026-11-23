@@ -65,6 +65,8 @@ class Quickdraw::Replay
 		@control.puts("fork #{index} #{@slot}")
 		tests = {}
 		statuses = []
+		# What each test that passed gathered, by [path, index].
+		gathered_by = {}
 
 		return Array.new(steps.size, "crashed") unless expect(:ready)
 
@@ -80,11 +82,14 @@ class Quickdraw::Replay
 			end
 
 			test_index = find(tests.fetch(step.path), step) or next statuses << "missing"
-			@channel.write([:run, step.path, [test_index]])
+			@channel.write([:run, step.path, [test_index], gathered_for(tests.fetch(step.path), step.path, test_index, gathered_by)])
 
 			case expect(:result)
 			in [:result, _index, result]
-				statuses << Quickdraw::Outcome.status(Quickdraw::Worker.result(result))
+				result = Quickdraw::Worker.result(result)
+				status = Quickdraw::Outcome.status(result)
+				gathered_by[[step.path, test_index]] = result.fetch("gathered", []) if status == "passed"
+				statuses << status
 				expect(:ready)
 			in nil
 				break statuses << "crashed"
@@ -182,5 +187,13 @@ class Quickdraw::Replay
 	private def find(tests, step)
 		named = tests.each_index.select { |index| Quickdraw::Filter.name_of(tests[index]) == step.name }
 		named.find { |index| tests[index]["line"] == step.line } || named.first
+	end
+
+	# For an after_tests test, what the tests it follows gathered, if they all
+	# passed earlier in the replay. Otherwise nothing, so it skips.
+	private def gathered_for(tests, path, index, gathered_by)
+		follows = tests[index]["follows"] or return {}
+		gathered = follows.map { |followed| gathered_by[[path, followed]] }
+		gathered.include?(nil) ? {} : { index => gathered.flatten(1) }
 	end
 end
