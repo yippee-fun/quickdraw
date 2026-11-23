@@ -506,7 +506,7 @@ class Quickdraw::CLI
 			parser.separator ""
 			parser.separator bold("Workers")
 
-			parser.on("-p N", "--processes N", Integer, "Run N workers, or fewer where a group's use more than one core, as browser tests' do (default: tuned from run history)") do |it|
+			parser.on("-p N", "--processes N", Integer, "Run up to N workers, or fewer where a group's use more than one core, as browser tests' do (default: tuned from run history)") do |it|
 				options[:processes] = it
 			end
 
