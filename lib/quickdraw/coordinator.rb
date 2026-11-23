@@ -1219,6 +1219,8 @@ class Quickdraw::Coordinator
 			worker.timeout = [seconds, threads]
 		in [:pid, pid]
 			worker.pid = pid
+		in [:boot_failed, error]
+			@outcome.worker_errors << error
 		in [:capturing, path]
 			worker.output_path = path
 		in [:printed, output]
