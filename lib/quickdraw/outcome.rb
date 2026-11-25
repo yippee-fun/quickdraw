@@ -36,12 +36,15 @@ class Quickdraw::Outcome
 		@browser_files_left_out = 0
 		@refused = false
 		@processes_failed = false
+		@worker_errors = []
 		@stopped_early = false
 		@nothing_matched = false
 		@interrupted = false
 	end
 
 	attr_reader :tests, :assertions, :flaky, :quarantined, :failed, :errored, :skipped, :pending, :load_errors
+	# The errors that stopped workers starting (see Loader#start_worker), as Quickdraw.serialize_error gives them.
+	attr_reader :worker_errors
 	# Set once config is read (see Coordinator#apply_settings).
 	attr_accessor :allow_flaky
 	# `not_run` counts tests in loaded files. Files never loaded (e.g. after
@@ -96,12 +99,29 @@ class Quickdraw::Outcome
 		@load_errors += 1
 	end
 
+	# What the reporters say when a worker failed to start or a process exited
+	# with a failure status: each distinct error that stopped a worker starting,
+	# with how many, or the exit status alone if no worker said why (e.g. an
+	# at_exit hook failed). Without fork, a worker that fails to start has no
+	# process to exit, so its error is the only sign.
+	def process_failure
+		return unless @processes_failed || @worker_errors.any?
+
+		reasons = @worker_errors.map { |error| "#{error['name']}: #{error['message'].to_s.strip.lines.first.to_s.strip}" }.tally
+
+		if reasons.empty?
+			"A worker or the loader exited with a failure status, e.g. from an at_exit hook."
+		else
+			reasons.map { |reason, count| "#{(count == 1) ? 'A worker' : "#{count} workers"} failed to start: #{reason}" }.join("\n")
+		end
+	end
+
 	def passed
 		@tests - @quarantined - @flaky - @failed - @errored - @skipped - @pending
 	end
 
 	def passed?
 		@failed == 0 && @errored == 0 && (@flaky == 0 || @allow_flaky) && @load_errors == 0 && @not_run == 0 && @unloaded_files == 0 &&
-			!@processes_failed && !@nothing_matched && !@interrupted && !@refused
+			!@processes_failed && @worker_errors.empty? && !@nothing_matched && !@interrupted && !@refused
 	end
 end

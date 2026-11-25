@@ -354,6 +354,7 @@ class Quickdraw::History
 	# recording (see .lock_for_writing) has written its own.
 	def self.plan(path)
 		wait_for_writer(path)
+		warn_of_failure(path)
 		read_plan(path)
 	end
 
@@ -370,7 +371,37 @@ class Quickdraw::History
 	# perhaps its first, has finished.
 	def self.exist?(path)
 		wait_for_writer(path)
+		warn_of_failure(path)
 		File.exist?(path)
+	end
+
+	def self.failure_path(path) = File.join(File.dirname(path), "failure")
+
+	# Why a run couldn't be saved, from a writer with nowhere to say so (see
+	# HistoryProcess), for whatever reads the history next to say.
+	def self.save_failure(path, message)
+		temporary = "#{failure_path(path)}.#{Process.pid}"
+		File.write(temporary, message)
+		File.rename(temporary, failure_path(path))
+	rescue SystemCallError
+		nil
+	end
+
+	# The failure a writer left, or nil. It's renamed first, so of the runs
+	# starting together only one takes it.
+	def self.take_failure(path)
+		taken = "#{failure_path(path)}.#{Process.pid}"
+		File.rename(failure_path(path), taken)
+		message = File.read(taken)
+		File.delete(taken)
+		message
+	rescue SystemCallError
+		nil
+	end
+
+	private_class_method def self.warn_of_failure(path)
+		message = take_failure(path) or return
+		warn "Quickdraw couldn’t save an earlier run to its history (#{message})."
 	end
 
 	# Up to WRITER_WAIT seconds, so a stuck writer can't stop runs. A lock
