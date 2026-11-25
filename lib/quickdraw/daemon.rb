@@ -81,9 +81,11 @@ module Quickdraw::Daemon
 		false
 	end
 
-	# What a daemon and the runs it serves must agree on.
+	# What a daemon and the runs it serves must agree on, as bytes, since a
+	# value that isn't valid in the locale's encoding (UTF-8 when it's C)
+	# compares by its encoding too.
 	def environment(variables)
-		variables.except(*VOLATILE, *OWN)
+		variables.except(*VOLATILE, *OWN).to_h { |name, value| [name.b, value.b] }
 	end
 
 	# In a worker of a daemon's run: takes on what tests can see of the

@@ -165,17 +165,28 @@ class Quickdraw::Daemon::Server
 			status.write("#{answer}\n")
 			Quickdraw.remove_tree(directory)
 		end
-	rescue SystemCallError, ArgumentError, TypeError
-		nil
+	rescue SystemCallError, ArgumentError, TypeError, EncodingError => error
+		# Once it's taken, the run waits for an answer, so it starts cold.
+		warn "Quickdraw’s daemon couldn’t take #{name}: #{error.class}: #{error.message}"
+		decline(status, directory) unless @running
 	ensure
 		status&.close
 	end
 
+	private def decline(status, directory)
+		status&.write("declined\n")
+		Quickdraw.remove_tree(directory)
+	rescue SystemCallError
+		nil
+	end
+
+	# Split before taking the locale's encoding, which a variable's value may
+	# not be valid in (any UTF-8 when the locale is C).
 	private def read(directory)
 		program, umask, input, output, error, count, *rest = File.binread(File.join(directory, "accepted")).split("\0", -1)
 		locale = Encoding.find("locale")
 		arguments = rest.shift(Integer(count)).map { |argument| argument.force_encoding(locale) }
-		environment = rest.to_h { |variable| variable.force_encoding(locale).split("=", 2) }
+		environment = rest.to_h { |variable| variable.split("=", 2).map { |part| part.force_encoding(locale) } }
 		streams = [input, output, error].map { |path| path unless path.empty? }
 
 		Request.new(directory:, program:, umask: Integer(umask, 8), streams:, arguments:, environment:)
@@ -293,7 +304,17 @@ class Quickdraw::Daemon::Server
 		@requests.close
 		File.delete(requests_path)
 		@loaders&.stop
-		Quickdraw.remove_tree(@directory)
+		release
+	end
+
+	# Holding the lock until it's the last thing left, so a daemon that claims
+	# the directory meanwhile (once the lock has gone) keeps what it makes.
+	private def release
+		Dir.each_child(@directory) { |name| Quickdraw.remove_tree(File.join(@directory, name)) unless name == "lock" }
+		File.delete(File.join(@directory, "lock"))
+		Dir.rmdir(@directory)
+	rescue SystemCallError
+		nil
 	end
 
 	# For processes forked from the daemon, which mustn't seem to be it.

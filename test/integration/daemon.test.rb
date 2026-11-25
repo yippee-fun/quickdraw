@@ -200,10 +200,11 @@ class DaemonTest < Quickdraw::Test
 		result = daemon_run(project, "-p", "1", env: { "COLOUR" => "red" })
 
 		assert(result.success?) { result.output }
-		wait_until { daemon?(project) && daemon_pid(project) != first }
+		wait_until { daemon?(project) && daemon_pid(project) && daemon_pid(project) != first }
 		assert daemon_run(project, "-p", "1", env: { "COLOUR" => "red" }).success?
 		assert_equal boots(project), 4
-		refute alive?(first)
+		# It may still be stopping its loaders.
+		wait_until { !alive?(first) }
 	end
 
 	test "runs the daemon can't serve start cold", timeout: 40 do
@@ -308,7 +309,7 @@ class DaemonTest < Quickdraw::Test
 		result = daemon_run(project, "-p", "1")
 
 		assert(result.success?) { result.output }
-		wait_until { daemon?(project) && daemon_pid(project) != killed }
+		wait_until { daemon?(project) && daemon_pid(project) && daemon_pid(project) != killed }
 		assert daemon_run(project, "-p", "1").success?
 		assert_equal boots(project), 4
 	end
