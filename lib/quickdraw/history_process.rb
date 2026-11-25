@@ -87,7 +87,19 @@ class Quickdraw::HistoryProcess
 			# process group, which a terminal, CI or a test may stop as a whole.
 			Process.setpgid(0, 0)
 			trap("INT", "IGNORE")
+			# Whatever reads the run's output through a pipe would wait for this
+			# process too, which holds the pipe open until it exits. Only stderr
+			# says what went wrong, so it's kept unless it's a pipe. Without it,
+			# what went wrong is left for the next run to say (see #failed).
+			$stdout.reopen(File::NULL)
+			@detached = stderr_piped_or_closed?
+			$stderr.reopen(File::NULL) if @detached
 			serve(history_channel, path)
+		rescue Exception => error
+			raise unless @detached
+
+			failed("#{error.class}: #{error.message}")
+			exit!(1)
 		end
 
 		history_channel.close
@@ -133,7 +145,7 @@ class Quickdraw::HistoryProcess
 	# Asks for the run (see History#record_run, but for its records) and the
 	# coverage map, if any, to be recorded. Returns once the process holds the
 	# history's write lock, then it writes and exits by itself, so the run can
-	# end without waiting.
+	# end without waiting. Raises History::Error if it had failed by then.
 	def save(run, coverage_map)
 		return false unless @unsent
 
@@ -141,7 +153,12 @@ class Quickdraw::HistoryProcess
 		return record(Quickdraw::History.new(@path, wait: false), Quickdraw::History.lock_for_writing(@path), run.merge(records: @records.to_a), coverage_map) unless @channel
 
 		@channel.writer.write(@unsent) unless @unsent.empty?
-		@channel.write([:save, run, coverage_map]) && @channel.read
+		return false unless @channel.write([:save, run, coverage_map])
+
+		case @channel.read
+		in [:failed, message] then raise Quickdraw::History::Error, message
+		in reply then reply
+		end
 	rescue Errno::EPIPE
 		false
 	end
@@ -212,14 +229,19 @@ class Quickdraw::HistoryProcess
 		loop do
 			case channel.read
 			in [:save, run, coverage_map]
+				# What has already failed goes to the run to say, since this
+				# process's stderr may go nowhere.
 				begin
+					raise opening.value if !opening.alive? && Quickdraw::History::Error === opening.value
+
 					lock = Quickdraw::History.lock_for_writing(path)
 				rescue Quickdraw::History::Error => error
-					warn "Quickdraw couldn’t save the run to its history (#{error.message})."
+					channel.write([:failed, error.message])
+					break
 				end
 
 				channel.write(:locked)
-				record(opening.value, lock, run.merge(records: records.to_a), coverage_map) if lock
+				record(opening.value, lock, run.merge(records: records.to_a), coverage_map)
 				break
 			in nil
 				break
@@ -231,7 +253,24 @@ class Quickdraw::HistoryProcess
 		exit!(0)
 	end
 
-	# After the run has ended, so problems go straight to stderr.
+	# Closed, it has nowhere to warn either, and its descriptor would go to
+	# the next file opened.
+	private def stderr_piped_or_closed?
+		stat = $stderr.stat
+		stat.pipe? || stat.socket?
+	rescue Errno::EBADF
+		true
+	end
+
+	private def failed(message)
+		if @detached
+			Quickdraw::History.save_failure(@path, message)
+		else
+			warn "Quickdraw couldn’t save the run to its history (#{message})."
+		end
+	end
+
+	# After the run has ended, so problems can't go to the run to say.
 	private def record(history, lock, run, coverage_map)
 		raise history if Quickdraw::History::Error === history
 
@@ -241,6 +280,6 @@ class Quickdraw::HistoryProcess
 		history.save_plan(run[:selection])
 		history.close
 	rescue Quickdraw::History::Error, SystemCallError => error
-		warn "Quickdraw couldn’t save the run to its history (#{error.message})."
+		failed(error.message)
 	end
 end

@@ -42,4 +42,67 @@ class SchedulingTest < Quickdraw::Test
 			events.inspect
 		end
 	end
+
+	test "warms up before forking several workers, but not for one", timeout: 30 do
+		skip "Workers are forked only with fork" unless Process.respond_to?(:fork)
+		skip "Process.warmup needs Ruby 3.3" unless Process.respond_to?(:warmup)
+
+		project = project(
+			"config/quickdraw.rb" => "def Process.warmup = File.write('warmups', '.', mode: 'a')\n",
+			"a.test.rb" => "class A < Quickdraw::Test; test('a') { assert true }; end\n",
+			"b.test.rb" => "class B < Quickdraw::Test; test('b') { assert true }; end\n",
+		)
+		warmups = File.join(project.directory, "warmups")
+
+		assert project.run("-p", "1", "--no-history").success?
+		refute File.exist?(warmups)
+
+		assert project.run("-p", "2", "--no-history").success?
+		assert_equal File.read(warmups), "."
+	end
+
+	COUNT_WORKERS = "Quickdraw.configure { |config| config.after_forking { $stderr.puts 'started a worker' } }\n"
+
+	test "starts no more workers than files until there are tests for them to share", timeout: 30 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
+		project = project(
+			"config/quickdraw.rb" => COUNT_WORKERS,
+			"a.test.rb" => "class A < Quickdraw::Test; 3.times { |i| test(\"quick \#{i}\") { assert true } }; end\n",
+			"b.test.rb" => "class B < Quickdraw::Test; 3.times { |i| test(\"quick \#{i}\") { assert true } }; end\n",
+		)
+
+		result = project.run("-p", "6", "--no-history")
+		assert result.success? { result.output }
+		assert_equal result.stderr.scan("started a worker").size, 2
+	end
+
+	test "counts the machine's cores when --processes isn't given", timeout: 30 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
+		project = project(
+			"config/quickdraw.rb" => COUNT_WORKERS,
+			"a.test.rb" => "class A < Quickdraw::Test; test('quick') { assert true }; end\n",
+			"b.test.rb" => "class B < Quickdraw::Test; test('quick') { assert true }; end\n",
+		)
+
+		result = project.run("--no-history")
+		assert result.success? { result.output }
+		assert_equal result.summary&.slice(/\A\d+ tests/), "2 tests"
+		assert_includes 1..2, result.stderr.scan("started a worker").size
+	end
+
+	test "starts the rest of its workers once a file has tests for them to share", timeout: 30 do
+		skip "More than one worker needs fork" unless Process.respond_to?(:fork)
+
+		project = project(
+			"config/quickdraw.rb" => COUNT_WORKERS,
+			"slow.test.rb" => "class Slow < Quickdraw::Test; 60.times { |i| test(\"slow \#{i}\") { sleep 0.02; puts \"in \#{ENV['QUICKDRAW_WORKER']}\"; assert true } }; end\n",
+		)
+
+		result = project.run("-p", "4", "--no-history", "--no-capture")
+		assert result.success? { result.output }
+		assert_equal result.stderr.scan("started a worker").size, 4
+		assert_equal result.stdout.scan(/^in \d+$/).uniq.sort, ["in 0", "in 1", "in 2", "in 3"]
+	end
 end
