@@ -100,7 +100,8 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
      - An untried estimate 1.5× away from the best is tried on the next run.
      - Runs that ran far fewer tests (e.g. files failed to load) and `--failed` runs are left out.
      - Measured: IO-bound suites jump from 8 to 36 workers on their second run (0.30s → 0.10s). The slow-file suite goes from 0.66s to 0.32s. CPU-bound and 20,000-trivial-test suites stay at 8.
-  3. **How it's wired:** the coordinator creates channels for the maximum count, raising the open-file limit or capping the count to fit. It chooses while the loader boots, then sends the count down a control pipe. Choosing never delays the loader, and sqlite3 never reaches it.
+  3. **How it's wired:** the coordinator allows channels for the maximum count, raising the open-file limit or capping the count to fit. It chooses while the loader boots, then sends the count down a control pipe. Choosing never delays the loader, and sqlite3 never reaches it.
+     - **Channels as they're needed** (done): the loader is forked with only the channels its first workers are likely to use (no more than the files, or the workers asked for), since every worker inherits and closes them all. The rest (more workers than expected, replacements, retries, elastic workers) are named pipes the coordinator makes when a worker starts, in a private temporary directory, as a watch-mode run's are. It used to open every channel up front: 110 pairs of pipes on a 12-CPU Mac (36 workers, 4 spares, 70 for retries). Starting the loader went from 15–27ms to 3–5ms (medians, on a Mac with a load average of 30–60), and a watch-mode run no longer makes 220 named pipes (22–32ms).
   4. **Replacement workers** (done):
      - The loader stays alive for the whole run, taking commands from the coordinator over the control pipe: `start N`, then `fork CHANNEL SLOT`.
      - When a worker crashes and work remains, a replacement starts on one of 4 spare channels, in the same slot. It inherits `QUICKDRAW_WORKER`, so it reuses that slot's database and other resources.
@@ -124,6 +125,7 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
 
        Once history exists, the tuner already picks the count, so elastic only helps a waiting-heavy suite's first run, a new selection (which starts at the core count), or one whose tests have started waiting more. On macOS it can't act until a second into the run.
      - **Before making it the default:** measure on Linux, where it can act four times as often, and on a Rails app, where each new slot creates its databases; retire workers when the CPU is oversubscribed (suites that change from waiting to computing partway through); show added workers in the summary line (it's only in `--timeline` now).
+  6. **No more workers than there's work for** (done): a run starts a worker for each file, up to its count, or more where history (or a group's `file_seconds`) expects a file to take 50ms a worker. The rest of its slots are held until loaded files have that much waiting for each, by their tests' durations so far, and elastic workers take held slots before new ones. Without this, running one file forked a worker for every core, to load nothing. One file of 5 tests, without history: the coordinator's part of the run went from 74ms to 38ms, and the whole command from 128ms to 112ms (medians, same busy Mac). The cost is to a big file's first run, before history knows it: the other workers start once its first test has finished rather than waiting ready, about 30ms later on one file of 3,000 1ms tests (0.65s either way, within the noise).
   
   `-p`, `--max` and `--efficiency` still override all of this; the summary shows how the count was chosen.
 - Shared-memory queue (C extension): only worth it if profiling shows IPC is a meaningful share of runtime after batching.
@@ -140,7 +142,6 @@ Stored in SQLite at `.quickdraw/history.sqlite3` (built; `lib/quickdraw/history.
     - The loader never runs tests, so reloading leaves no stale state: a Spring-like speed-up without Spring's problems.
     - A loader that exits is started again before the next run; quitting or Ctrl-C asks every loader to stop, waits 3s for them to exit (running their `at_exit` hooks), then kills what's left.
     - A group's loader starts warm after the group's first run, which uses a loader of its own as before.
-    - The named pipes of the next run's sessions are made after each run, since making them for every channel a run could use (as many as 3× the cores) took it about 9ms; opening them takes 2ms.
     - **Still to do:** reboots happen when a run needs them, rather than in the background as soon as a file is saved; files config evaluates with `load` (rather than `require`) outside `config/` aren't tracked, so changing one doesn't reboot.
   - **Only affected tests:** a changed test file reruns that file. A changed app file reruns the tests that cover it, using the impact map, then everything that failed.
 - **Warm starts** (experimental): a small Rails app's run takes about 140ms rather than 880ms, and a project with no config 100ms rather than 120ms, of which Ruby starting is 44ms and recording history about 20ms.
@@ -268,7 +269,7 @@ Rails suites are the biggest and slowest Ruby suites, so this is where Quickdraw
   - each worker slot connects to its own databases, named as Rails' parallel tests name them (`app_test_3`), for every database in `database.yml`;
   - when a worker starts, its databases are created and loaded from the schema, or emptied if the schema is unchanged, as Rails' `reconstruct_from_schema` does.
 - **Creating and keeping databases:**
-  - skip emptying when the database is already empty, to save time on worker start;
+  - skipping emptying when the database is already empty (done: only tables with rows are emptied, and looked at a few at a time, so workers starting at once don't exhaust PostgreSQL's lock table);
   - two runs at once (watch mode and a manual run, say) share slot databases, as Rails' parallel tests do; a run should reserve its slots' databases, or use others;
   - the number of databases follows the worker count, and extras are left for reuse.
 - **Rails' own parallel testing:** Rails' process-based `parallelize` is replaced, since Quickdraw already forks. Its hooks (`parallelize_setup`, `parallelize_teardown`, `parallelize_before_fork`) still run at the matching points, so apps that use them keep working. Threaded `parallelize` is left alone.

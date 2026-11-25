@@ -36,7 +36,7 @@ class Quickdraw::Reporters::Human
 		@command = command
 		@backtrace = backtrace
 		@show_timings = timings
-		@timings = Quickdraw::Timings.new(each_test: timings)
+		@timings = Quickdraw::Timings.new(keep: timings ? SLOWEST_LIMIT : 1)
 		@profile = Quickdraw::Profile.new
 		@color = io.tty? && !ENV.key?("NO_COLOR")
 		@status_line = Quickdraw::Reporters::StatusLine.new(io:, live:, color: @color)
@@ -317,7 +317,7 @@ class Quickdraw::Reporters::Human
 		@io.puts
 		@io.puts bold("Slowest tests")
 
-		@timings.slowest_tests(SLOWEST_LIMIT).each do |test|
+		@timings.slowest_tests.each do |test|
 			total = Quickdraw::PHASES.sum { |phase| test.wall(phase) }
 			split = Quickdraw::PHASES.map { |phase| "#{phase} #{percent(test.wall(phase) / total)}" }.join(", ") if total > 0
 			@io.puts "  #{seconds(test.duration).rjust(8)}  #{location(test)}  #{dim(split.to_s)}"
@@ -567,7 +567,8 @@ class Quickdraw::Reporters::Human
 		notes << ["Interrupted", "Tests that were running or hadn’t started count as not run."] if outcome.interrupted
 		notes << ["Fail fast", "Stopped after the first problem."] if !outcome.interrupted && outcome.stopped_early && (outcome.not_run + outcome.unloaded_files) > 0
 		notes << ["No match", "No tests matched the given lines, --name or --exclude."] if outcome.nothing_matched
-		notes << ["Exit status", "A worker or the loader exited with a failure status, e.g. from an at_exit hook."] if outcome.processes_failed && @problems.empty?
+		process_failure = outcome.process_failure
+		notes << ["Exit status", process_failure] if process_failure && @problems.empty?
 
 		skipped = @set_aside.reject { |_path, _test, skipped| skipped["pending"] }
 		notes << ["Skipped", skip_reasons(skipped)] if skipped.any?

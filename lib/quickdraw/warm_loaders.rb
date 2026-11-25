@@ -32,31 +32,18 @@ class Quickdraw::WarmLoaders
 			def success? = success
 		end
 
-		# Makes `directory`, with the named pipes of a session with `capacity`
-		# channels, which takes about 0.3ms a channel.
-		def self.make(directory, capacity)
-			Dir.mkdir(directory, 0o700)
-			channels = Array.new(capacity) { |index| ["#{index}.up", "#{index}.down"] }
-			["finished", "control", "report", *channels.flatten].each { |name| File.mkfifo(File.join(directory, name), 0o600) }
-		end
-
-		# `settings` are for workers (see Loader#serve_run). `directory` may have
-		# been made already, with at least as many channels.
+		# `settings` are for workers (see Loader#serve_run).
 		def initialize(pid, directory, group:, capacity:, settings:)
-			self.class.make(directory, capacity) unless Dir.exist?(directory)
+			Dir.mkdir(directory, 0o700)
 			File.binwrite(File.join(directory, "settings"), Marshal.dump(settings))
 			@directory = directory
-			@finished = pipe("finished", File::RDONLY | File::NONBLOCK)
+			@finished = fifo("finished", File::RDONLY | File::NONBLOCK)
 			# Opened for reading too, so it doesn't wait for the loader, which
 			# sees the end once this process closes it.
-			control = pipe("control", File::RDWR).tap { |io| io.sync = true }
-			report = pipe("report", File::RDONLY | File::NONBLOCK)
+			control = fifo("control", File::RDWR).tap { |io| io.sync = true }
+			report = fifo("report", File::RDONLY | File::NONBLOCK)
 
-			channels = Array.new(capacity) do |index|
-				Quickdraw::Channel.new(pipe("#{index}.up", File::RDONLY | File::NONBLOCK), pipe("#{index}.down", File::RDWR))
-			end
-
-			super(group:, pid:, control:, report:, channels:)
+			super(group:, pid:, control:, report:, channels: [], capacity:, directory:)
 		end
 
 		# Checked before `finished`, since the loader may write to it and exit in between.
@@ -89,10 +76,6 @@ class Quickdraw::WarmLoaders
 			true
 		rescue Errno::ESRCH
 			false
-		end
-
-		private def pipe(name, flags)
-			File.open(File.join(@directory, name), flags, binmode: true)
 		end
 	end
 
@@ -145,9 +128,6 @@ class Quickdraw::WarmLoaders
 		@test_output_to_stderr = test_output_to_stderr
 		@declines = declines
 		@in_loader = in_loader
-		# Sessions made for the next run, each with the number of channels it has.
-		@ahead = []
-		@capacity = 0
 		@directory = directory
 		Dir.mkdir(@directory, 0o700)
 		@loaders = {}
@@ -197,7 +177,7 @@ class Quickdraw::WarmLoaders
 	end
 
 	# In the watch process, after a run: starts the loaders it wanted, for the
-	# next run, removes its named pipes, and makes the next run's.
+	# next run, and removes its named pipes.
 	def warm_up
 		while @wanted.reader.wait_readable(0)
 			group, gemfile = @wanted.read
@@ -209,7 +189,7 @@ class Quickdraw::WarmLoaders
 			end
 		end
 
-		make_ahead
+		remove_sessions
 	end
 
 	# In a run: a session with the warm loader for `group`, or nil if there
@@ -227,9 +207,7 @@ class Quickdraw::WarmLoaders
 			return
 		end
 
-		ahead = @ahead.find { |_directory, channels| channels >= capacity }
-		@ahead.delete(ahead)
-		directory = ahead&.first || File.join(@directory, "#{Process.pid}-#{@sessions += 1}")
+		directory = File.join(@directory, "#{Process.pid}-#{@sessions += 1}")
 		session = Session.new(loader.pid, directory, group:, capacity:, settings: settings.merge(invocation: @invocation))
 		return session if loader.link.write([:run, directory])
 
@@ -332,29 +310,6 @@ class Quickdraw::WarmLoaders
 	# A Gemfile and its lockfile, as Bundler names it.
 	private def bundle_files(gemfile)
 		[gemfile, "#{gemfile}.lock", "#{gemfile.delete_suffix('.rb')}.locked"]
-	end
-
-	# Removes the sessions the last run used, which have its settings, and
-	# makes one for each loader, so the next run doesn't wait for its named
-	# pipes: each with as many channels as the most a run has used.
-	private def make_ahead
-		Dir.each_child(@directory) do |name|
-			session = File.join(@directory, name)
-			next unless File.exist?(File.join(session, "settings"))
-
-			@capacity = [@capacity, Dir.children(session).count { |file| file.end_with?(".up") }].max
-			remove_session(session)
-		end
-
-		@ahead, unusable = @ahead.partition { |directory, channels| channels >= @capacity && Dir.exist?(directory) }
-		unusable.each { |directory, _channels| remove_session(directory) if Dir.exist?(directory) }
-		return if @capacity == 0
-
-		(@loaders.size - @ahead.size).times do
-			directory = File.join(@directory, "ahead-#{@sessions += 1}")
-			Session.make(directory, @capacity)
-			@ahead << [directory, @capacity]
-		end
 	end
 
 	private def remove_sessions

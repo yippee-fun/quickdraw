@@ -7,11 +7,15 @@ class Quickdraw::Loader
 	# How often workers are reaped while waiting for commands, in seconds.
 	REAP_INTERVAL = 0.1
 
-	# `channels` has one per possible worker, including spares. The coordinator
-	# sends commands on `control`, one per line:
+	# `channels` are the first workers'. The coordinator sends commands on
+	# `control`, one per line:
 	#
 	#   start COUNT          start workers on the first COUNT channels
 	#   fork CHANNEL SLOT    start a worker on CHANNEL in SLOT
+	#   warmup               more than one worker is about to start (see #warm_up)
+	#
+	# A channel numbered past `channels` is a pair of named pipes the
+	# coordinator made in `directory` (see Coordinator::LoaderProcess).
 	#
 	# A worker's slot is its QUICKDRAW_WORKER number, so a worker started in a
 	# slot takes over the per-worker resources (such as a database) of the one
@@ -33,7 +37,7 @@ class Quickdraw::Loader
 	# With a `link` instead (see WarmLoaders), the loader stays booted for
 	# watch mode, and serves a run at a time, each with the commands, report
 	# and channels above as named pipes in a directory, rather than once.
-	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, capture_loading: false, leaks: nil, link: nil)
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, capture_loading: false, leaks: nil, link: nil, directory: nil)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
@@ -47,6 +51,8 @@ class Quickdraw::Loader
 		@capture_loading = capture_loading
 		@leaks = leaks
 		@link = link
+		@warmed = false
+		@directory = directory
 		@running = {}
 		@statuses = []
 	end
@@ -150,6 +156,8 @@ class Quickdraw::Loader
 
 		begin
 			self.class.boot(group: @group)
+			# A warm loader runs them for each run it serves (see #serve_run).
+			before_run unless @link
 		rescue Exception => error
 			raise unless @report || @link
 
@@ -159,7 +167,10 @@ class Quickdraw::Loader
 
 		@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage), Quickdraw::Config.settings] if @report || @link
 
-		return serve_runs if @link
+		if @link
+			warm_up
+			return serve_runs
+		end
 
 		report(@boot_report) if @report
 		serve
@@ -223,8 +234,20 @@ class Quickdraw::Loader
 		@report = open_pipe("report", File::WRONLY | File::NONBLOCK)
 		@finished = open_pipe("finished", File::WRONLY | File::NONBLOCK)
 
-		report(@boot_report)
-		success = @boot_report.first == :booted && serve
+		begin
+			if @boot_report.first == :booted
+				before_run
+				# Taken, so workers don't inherit it.
+				Quickdraw::CoverageCollector.take if @coverage
+			end
+
+			run_report = @boot_report
+		rescue Exception => error
+			run_report = [:failed, Quickdraw.serialize_error(error)]
+		end
+
+		report(run_report)
+		success = run_report.first == :booted && serve
 		@finished.write(success ? "1" : "0")
 	rescue SystemCallError
 		nil
@@ -338,6 +361,8 @@ class Quickdraw::Loader
 				rescue Exception => error
 					raise error.exception("The #{group.name} group’s setup failed: #{error.message}")
 				end
+
+				before_run
 			rescue Exception => error
 				next boot_failed(error)
 			end
@@ -359,7 +384,11 @@ class Quickdraw::Loader
 			@control = nil
 			@channels.each(&:close)
 		in ["start", count]
-			Integer(count).clamp(0, @channels.size).times { |index| start(index, index, test_files) }
+			count = Integer(count).clamp(0, @channels.size)
+			warm_up if count > 1
+			count.times { |index| start(index, index, test_files) }
+		in ["warmup"]
+			warm_up
 		in ["fork", channel, slot]
 			start(Integer(channel), Integer(slot), test_files)
 		in ["flakes", size]
@@ -380,6 +409,16 @@ class Quickdraw::Loader
 			frames = error.backtrace&.first(5)&.map { |frame| "\n  #{frame}" }&.join
 			warn "config.on_flaky raised #{error.class}: #{error.message}, reporting #{flake.path}:#{flake.line}#{frames}"
 		end
+	end
+
+	# So workers share what booting loaded, rather than copying it as they run.
+	# It takes as long as a full GC, so a lone worker, which shares with
+	# nothing, starts without it, and a warm loader does it once, not per run.
+	private def warm_up
+		return if @warmed
+
+		@warmed = true
+		Process.warmup if Process.respond_to?(:warmup)
 	end
 
 	private def start(channel_index, slot, test_files)
@@ -403,6 +442,9 @@ class Quickdraw::Loader
 		end
 
 		@running[pid] = true
+	rescue Errno::ENOENT, Errno::ENXIO
+		# The run has gone, and the channel's named pipes with it.
+		nil
 	rescue SystemCallError => error
 		# e.g. EAGAIN at the process limit. Closing the channel tells the
 		# coordinator this worker is gone.
@@ -413,11 +455,9 @@ class Quickdraw::Loader
 		channel&.close
 	end
 
-	# In a warm loader's run, the named pipes the run made for the channel.
+	# One it was started with, or the named pipes the coordinator made for it.
 	private def open_channel(index)
-		return @channels.fetch(index) unless @directory
-
-		Quickdraw::Channel.new(open_pipe("#{index}.down", File::RDONLY | File::NONBLOCK), open_pipe("#{index}.up", File::WRONLY | File::NONBLOCK))
+		@channels[index] || Quickdraw::Channel.new(open_pipe("#{index}.down", File::RDONLY | File::NONBLOCK), open_pipe("#{index}.up", File::WRONLY | File::NONBLOCK))
 	end
 
 	# Binary, since Marshal data can't be transcoded, as it would be if config
@@ -455,9 +495,9 @@ class Quickdraw::Loader
 
 			definition.setup&.call
 		end
-
-		Process.warmup if Process.respond_to?(:warmup)
 	end
+
+	private def before_run = Quickdraw::Config.before_run_callbacks.each(&:call)
 
 	# For the boot report (see #initialize).
 	private def groups
@@ -491,7 +531,13 @@ class Quickdraw::Loader
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		# Before the callbacks, so processes they start aren't blamed on tests.
 		Quickdraw::Leaks::ProcessStarts.watch if leaks
-		Quickdraw::Config.after_forking_callbacks.each(&:call)
+		begin
+			Quickdraw::Config.after_forking_callbacks.each(&:call)
+		rescue StandardError, ScriptError => error
+			channel.write([:boot_failed, Quickdraw.serialize_error(error)])
+			raise
+		end
+
 		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:, variant:).call
 	end
 

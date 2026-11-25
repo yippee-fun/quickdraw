@@ -24,6 +24,7 @@ class Quickdraw::Configuration
 
 	def initialize
 		@before_forking_callbacks = []
+		@before_run_callbacks = []
 		@after_forking_callbacks = []
 		@around_test_callbacks = []
 		@flaky_callbacks = []
@@ -33,6 +34,7 @@ class Quickdraw::Configuration
 	end
 
 	attr_reader :before_forking_callbacks
+	attr_reader :before_run_callbacks
 	attr_reader :after_forking_callbacks
 	attr_reader :flaky_callbacks
 	attr_reader :groups
@@ -152,6 +154,13 @@ class Quickdraw::Configuration
 	# Runs once in the loader, after config and helpers load and before workers fork.
 	def before_forking(&block)
 		@before_forking_callbacks << block
+	end
+
+	# Runs in the loader before a run's workers fork, after the before_forking
+	# callbacks: once, except in watch mode, where the loader stays booted
+	# between runs.
+	def before_run(&block)
+		@before_run_callbacks << block
 	end
 
 	# In watch mode, the loader stays booted between runs. When files it loaded
