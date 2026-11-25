@@ -916,7 +916,9 @@ class Quickdraw::Coordinator
 
 	private def start_workers
 		@scheduler.allocate(@free_slots.size).each do |group, workers|
-			workers.times { start_worker(@loaders.fetch(group), @free_slots.shift) }
+			loader = @loaders.fetch(group)
+			loader.command("warmup") if workers > 1
+			workers.times { start_worker(loader, @free_slots.shift) }
 		end
 	end
 
@@ -946,6 +948,7 @@ class Quickdraw::Coordinator
 		added = 0
 
 		while added < count && (loader = @scheduler.busiest_loader(fitting: false)) && loader.spares > spare_channels
+			loader.command("warmup")
 			start_worker(loader, @slot_count)
 			@scheduler.added(loader.group)
 			@slot_count += 1
@@ -1257,6 +1260,8 @@ class Quickdraw::Coordinator
 			worker.timeout = [seconds, threads]
 		in [:pid, pid]
 			worker.pid = pid
+		in [:boot_failed, error]
+			@outcome.worker_errors << error
 		in [:capturing, path]
 			worker.output_path = path
 		in [:printed, output]
@@ -1519,6 +1524,7 @@ class Quickdraw::Coordinator
 
 		# Slots freed by crashes, or by a group that failed to boot, go where the work is.
 		until @stopping || @free_slots.empty? || !(loader = @scheduler.busiest_loader)
+			loader.command("warmup") if @workers.each_value.any? { |worker| worker.loader.equal?(loader) }
 			start_worker(loader, @free_slots.shift)
 		end
 

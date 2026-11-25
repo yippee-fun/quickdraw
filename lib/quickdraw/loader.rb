@@ -12,6 +12,7 @@ class Quickdraw::Loader
 	#
 	#   start COUNT          start workers on the first COUNT channels
 	#   fork CHANNEL SLOT    start a worker on CHANNEL in SLOT
+	#   warmup               more than one worker is about to start (see #warm_up)
 	#
 	# A channel numbered past `channels` is a pair of named pipes the
 	# coordinator made in `directory` (see Coordinator::LoaderProcess).
@@ -50,6 +51,7 @@ class Quickdraw::Loader
 		@capture_loading = capture_loading
 		@leaks = leaks
 		@link = link
+		@warmed = false
 		@directory = directory
 		@running = {}
 		@statuses = []
@@ -164,7 +166,10 @@ class Quickdraw::Loader
 
 		@boot_report = [:booted, groups, (Quickdraw::CoverageCollector.take if @coverage), Quickdraw::Config.settings] if @report || @link
 
-		return serve_runs if @link
+		if @link
+			warm_up
+			return serve_runs
+		end
 
 		report(@boot_report) if @report
 		serve
@@ -341,7 +346,11 @@ class Quickdraw::Loader
 			@control = nil
 			@channels.each(&:close)
 		in ["start", count]
-			Integer(count).clamp(0, @channels.size).times { |index| start(index, index, test_files) }
+			count = Integer(count).clamp(0, @channels.size)
+			warm_up if count > 1
+			count.times { |index| start(index, index, test_files) }
+		in ["warmup"]
+			warm_up
 		in ["fork", channel, slot]
 			start(Integer(channel), Integer(slot), test_files)
 		in ["flakes", size]
@@ -362,6 +371,16 @@ class Quickdraw::Loader
 			frames = error.backtrace&.first(5)&.map { |frame| "\n  #{frame}" }&.join
 			warn "config.on_flaky raised #{error.class}: #{error.message}, reporting #{flake.path}:#{flake.line}#{frames}"
 		end
+	end
+
+	# So workers share what booting loaded, rather than copying it as they run.
+	# It takes as long as a full GC, so a lone worker, which shares with
+	# nothing, starts without it, and a warm loader does it once, not per run.
+	private def warm_up
+		return if @warmed
+
+		@warmed = true
+		Process.warmup if Process.respond_to?(:warmup)
 	end
 
 	private def start(channel_index, slot, test_files)
@@ -437,8 +456,6 @@ class Quickdraw::Loader
 
 			definition.setup&.call
 		end
-
-		Process.warmup if Process.respond_to?(:warmup)
 	end
 
 	private def before_run = Quickdraw::Config.before_run_callbacks.each(&:call)
@@ -475,7 +492,13 @@ class Quickdraw::Loader
 		ENV["TEST_ENV_NUMBER"] = (index == 0) ? "" : (index + 1).to_s
 		# Before the callbacks, so processes they start aren't blamed on tests.
 		Quickdraw::Leaks::ProcessStarts.watch if leaks
-		Quickdraw::Config.after_forking_callbacks.each(&:call)
+		begin
+			Quickdraw::Config.after_forking_callbacks.each(&:call)
+		rescue StandardError, ScriptError => error
+			channel.write([:boot_failed, Quickdraw.serialize_error(error)])
+			raise
+		end
+
 		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:, variant:).call
 	end
 
