@@ -62,6 +62,9 @@ module Quickdraw::Rails::Templates
 	# its database if it's a clean copy of the template of `database`, and
 	# copies the template over it otherwise.
 	def provide(db_config, database)
+		# Another config for the same database already has it.
+		return if @provided.each_key.any? { |provided| server_database(provided) == server_database(db_config) }
+
 		claim(db_config)
 
 		maintaining(db_config, database) do |connection|
@@ -122,8 +125,14 @@ module Quickdraw::Rails::Templates
 		@claims << connection
 	end
 
+	# Once for each database, as two configs may name the same one, which would
+	# otherwise wait for its own lock.
 	private def managed
-		ActiveRecord::Base.configurations.configs_for(env_name: ActiveRecord::ConnectionHandling::DEFAULT_ENV.call, include_hidden: true).select(&:database_tasks?)
+		ActiveRecord::Base.configurations.configs_for(env_name: ActiveRecord::ConnectionHandling::DEFAULT_ENV.call, include_hidden: true).select(&:database_tasks?).uniq { |db_config| server_database(db_config) }
+	end
+
+	private def server_database(db_config)
+		[*db_config.configuration_hash.values_at(:host, :port), db_config.database]
 	end
 
 	private def digest(fixture_paths)

@@ -828,6 +828,20 @@ class RailsTest < Quickdraw::Test
 		assert_equal databases(name).map(&:first), ["#{name}_0"]
 	end
 
+	test "on PostgreSQL, copies a database two configs name once", timeout: 120 do
+		project, name = postgres_app
+		config = "    adapter: postgresql\n    url: #{POSTGRES}\n    database: #{name}\n    gssencmode: disable\n"
+		project.write("config/database.yml" => "test:\n  primary:\n#{config}  other:\n#{config}")
+
+		result = project.run("-p", "1", "--no-history", timeout: 60)
+		assert result.success? do
+			result.output
+		end
+
+		assert_equal databases(name).map(&:first).grep_v(/_qd_template_/), ["#{name}_0"]
+		assert_equal postgres("#{name}_0", "SELECT name FROM users ORDER BY name"), [["Ada"], ["Grace"]]
+	end
+
 	test "on PostgreSQL, won't start a worker on databases another run's worker holds", timeout: 120 do
 		project, name = postgres_app
 		reader, writer = IO.pipe
