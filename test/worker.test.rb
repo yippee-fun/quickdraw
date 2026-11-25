@@ -114,6 +114,27 @@ class WorkerTest < Quickdraw::Test
 		assert_includes BUSY_SECONDS...(BUSY_SECONDS * 1.8), cpu_seconds(batch.fetch(2))
 	end
 
+	test "a test's CPU time leaves out a process an earlier test leaked, which a later leak check waited for" do
+		children_cpu_needed
+
+		worker = start_worker({ "a.test.rb" => <<~RUBY }, leaks: :warn)
+			#{PROCESSES}
+
+			class Leaks < Quickdraw::Test
+				test("leaves a busy process running") { spawn(*BUSY); assert true }
+				test("starts none while it runs") { assert true }
+				test("waits until it has exited") { sleep(#{BUSY_SECONDS * 2.5}); assert true }
+				test("starts none after") { assert true }
+			end
+		RUBY
+
+		worker.load("a.test.rb")
+		batch = results(worker.run("a.test.rb", [0, 1, 2, 3]))
+
+		assert_equal batch.fetch(0)["leaks"].map { |leak| leak["kind"] }, ["process"]
+		[0, 1, 2, 3].each { |index| assert_operator cpu_seconds(batch.fetch(index)), :<, BUSY_SECONDS / 2 }
+	end
+
 	test "a test's CPU time leaves out an earlier test's process with leak checks off" do
 		children_cpu_needed
 
