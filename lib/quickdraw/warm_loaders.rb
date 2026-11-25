@@ -42,11 +42,7 @@ class Quickdraw::WarmLoaders
 			control = fifo("control", File::RDWR).tap { |io| io.sync = true }
 			report = fifo("report", File::RDONLY | File::NONBLOCK)
 
-			channels = Array.new(capacity) do |index|
-				Quickdraw::Channel.new(fifo("#{index}.up", File::RDONLY | File::NONBLOCK), fifo("#{index}.down", File::RDWR))
-			end
-
-			super(group:, pid:, control:, report:, channels:)
+			super(group:, pid:, control:, report:, channels: [], capacity:, directory:)
 		end
 
 		# Checked before `finished`, since the loader may write to it and exit in between.
@@ -79,12 +75,6 @@ class Quickdraw::WarmLoaders
 			true
 		rescue Errno::ESRCH
 			false
-		end
-
-		private def fifo(name, flags)
-			path = File.join(@directory, name)
-			File.mkfifo(path, 0o600)
-			File.open(path, flags, binmode: true)
 		end
 	end
 
