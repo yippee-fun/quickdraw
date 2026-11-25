@@ -310,6 +310,7 @@ module Integration
 
 		def daemon_directory(project) = Quickdraw::Daemon.directory(project.directory)
 		def daemon?(project) = File.exist?(File.join(daemon_directory(project), "requests"))
+
 		# Nil while a daemon is claiming the directory, or has just left it.
 		def daemon_pid(project)
 			Integer(File.read(File.join(daemon_directory(project), "pid")))

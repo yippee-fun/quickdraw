@@ -40,7 +40,7 @@ class CLIArgumentsTest < Quickdraw::Test
 	def every_name = switches.flat_map { |switch| names(switch) }
 
 	test "reads every switch written plainly, without optparse" do
-		assert_equal every_name.size, 41
+		assert_equal every_name.size, 42
 
 		switches.each do |switch|
 			names(switch).each do |name|
