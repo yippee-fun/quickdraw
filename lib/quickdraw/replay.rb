@@ -84,12 +84,13 @@ class Quickdraw::Replay
 			test_index = find(tests.fetch(step.path), step) or next statuses << "missing"
 			@channel.write([:run, step.path, [test_index], gathered_for(tests.fetch(step.path), step.path, test_index, gathered_by)])
 
-			case expect(:result)
-			in [:result, _index, result]
-				result = Quickdraw::Worker.result(result)
-				status = Quickdraw::Outcome.status(result)
-				gathered_by[[step.path, test_index]] = result.fetch("gathered", []) if status == "passed"
-				statuses << status
+			case expect(:result, :integers)
+			in [:result | :integers, *] => message
+				Quickdraw::Worker.each_result(message) do |_index, result|
+					status = Quickdraw::Outcome.status(result)
+					gathered_by[[step.path, test_index]] = result.fetch("gathered", []) if status == "passed"
+					statuses << status
+				end
 				expect(:ready)
 			in nil
 				break statuses << "crashed"

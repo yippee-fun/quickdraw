@@ -9,8 +9,13 @@
 module Quickdraw::Counters
 	extend self
 
+	EMPTY = {}.freeze
+
 	@counts = {}
 	@mutex = Thread::Mutex.new
+	# Whether anything has been counted since the last start or take. Nearly
+	# every test counts nothing, which saves it collecting and copying.
+	@used = false
 
 	def add(name, seconds = 0.0)
 		raise ::ArgumentError, "A counter's name must be a String, not #{name.inspect}." unless String === name
@@ -18,6 +23,7 @@ module Quickdraw::Counters
 		seconds = Float(seconds)
 
 		@mutex.synchronize do
+			@used = true
 			count = ((Fiber[:quickdraw_counts] || @counts)[name] ||= [0, 0.0])
 			count[0] += 1
 			count[1] += seconds
@@ -28,18 +34,29 @@ module Quickdraw::Counters
 
 	# Starts counting for a test, in this fiber.
 	def start
+		Fiber[:quickdraw_counts] = {}
+
+		# Read without the lock: an add that lands just after counts towards
+		# the test that's starting, as it would have had it waited.
+		return unless @used
+
 		@mutex.synchronize do
 			@counts = {}
-			Fiber[:quickdraw_counts] = {}
+			@used = false
 		end
 	end
 
 	# The counts since #start, as {name => [count, seconds]}.
 	def take
 		@mutex.synchronize do
-			counts = Fiber[:quickdraw_counts] || {}
+			counts = Fiber[:quickdraw_counts]
 			Fiber[:quickdraw_counts] = nil
+			# Checked with the lock, so an add that has finished is never missed.
+			next EMPTY unless @used
+
+			counts ||= {}
 			others, @counts = @counts, {}
+			@used = false
 
 			others.each do |name, (count, seconds)|
 				total = (counts[name] ||= [0, 0.0])

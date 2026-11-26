@@ -2,7 +2,12 @@
 
 module Quickdraw::Assertions
 	def assert_equal(actual, expected)
-		assert(actual == expected) do
+		if actual == expected
+			runner.success!(@description)
+			return nil
+		end
+
+		failure! do
 			# Strings diff by line as they are; anything else, one element per line.
 			expected_text, actual_text = if String === actual && String === expected
 				[expected, actual]

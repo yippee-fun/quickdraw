@@ -6,14 +6,22 @@
 # arrays and hashes, since user objects may not survive Marshal.
 class Quickdraw::Worker
 	ANONYMOUS_MODULE = /#<Module:0x\h+>::/
-	# Keys in a result with no output, leaks or gathered values (see Recorder#to_h).
-	PLAIN_RESULT_SIZE = 8
 
 	# How often to check that a fork running mutation tests is still alive.
 	FORK_CHECK_INTERVAL = 0.1
 
 	# How long past its tests' timeouts to wait for a baseline fork before killing it.
 	BASELINE_GRACE = 5
+
+	# A plain passing test's result waits to be sent with the next ones, as
+	# integers (see Channel#queue), until this many are waiting, or the tests
+	# they're for took this many nanoseconds, so a slow test's result is sent
+	# as it finishes.
+	RESULTS_AT_ONCE = 64
+	UNSENT_TIME = 20_000_000
+
+	# The integers a queued result is: its index, duration, stats and assertions.
+	RESULT_INTEGERS = 3 + Quickdraw::STATS.size
 
 	class Recorder
 		PHASE_INDICES = Quickdraw::PHASES.each_with_index.to_h.freeze
@@ -25,6 +33,8 @@ class Quickdraw::Worker
 		# equals wall time and nothing is reported as waiting.
 		CPU_CLOCK = Process.const_defined?(:CLOCK_PROCESS_CPUTIME_ID) ? Process::CLOCK_PROCESS_CPUTIME_ID : Process::CLOCK_MONOTONIC
 		GC_KEYS = GC.stat.keys.freeze
+		HAS_GC_TIME = GC_KEYS.include?(:time)
+		HAS_ALLOCATIONS = GC_KEYS.include?(:total_allocated_objects)
 
 		def initialize
 			@assertions = 0
@@ -44,7 +54,13 @@ class Quickdraw::Worker
 		# since it's ~30ns against ~200ns for the CPU clock. A phase that runs more
 		# than once (e.g. a retrying around hook) accumulates.
 		def measure(phase)
-			index = PHASE_INDICES.fetch(phase)
+			# Quicker than hashing the name.
+			index = case phase
+			in "test" then 1
+			in "setup" then 0
+			in "teardown" then 2
+			else PHASE_INDICES.fetch(phase)
+			end
 			started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 			yield
 		ensure
@@ -53,11 +69,13 @@ class Quickdraw::Worker
 
 		# Records the whole test's duration, CPU time, GC time and allocations.
 		# CPU time includes that of processes the test started and waited for (and
-		# theirs), since a test waiting on a busy process isn't idle.
-		def measure_test
+		# theirs), since a test waiting on a busy process isn't idle. Reading
+		# theirs takes ~400ns, so `children` is the last test's #children_cpu
+		# where no process has been waited for since.
+		def measure_test(children = nil)
+			children ||= read_children_cpu
 			wall = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 			cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond)
-			children = children_cpu
 			gc = gc_milliseconds
 			allocations = allocated_objects
 			Quickdraw::Counters.start
@@ -66,12 +84,17 @@ class Quickdraw::Worker
 		ensure
 			@counts = Quickdraw::Counters.take
 			@duration = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - wall
-			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (children_cpu - children)
+			@children_cpu = read_children_cpu
+			@stats[CPU] = Process.clock_gettime(CPU_CLOCK, :nanosecond) - cpu + (@children_cpu - children)
 			@stats[GC_TIME] = (gc_milliseconds - gc) * 1_000_000
 			@stats[ALLOCATIONS] = allocated_objects - allocations
 		end
 
-		def success!(_description)
+		# The CPU time, in nanoseconds, of the child processes that had been
+		# waited for when the test ended.
+		attr_reader :children_cpu
+
+		def success!(_description = nil)
 			@assertions += 1
 		end
 
@@ -127,6 +150,16 @@ class Quickdraw::Worker
 			@late = late
 		end
 
+		# A plain passing test's result as just its numbers, which is several
+		# times quicker to send and to read than #to_h. See Worker.result.
+		def to_compact
+			if @failures.empty? && @errors.empty? && !@skipped && !@profile && !@output && !@leaks && !@gathered
+				[@duration, @stats, @assertions, @counts]
+			else
+				to_h
+			end
+		end
+
 		# Output, leaks and gathered values only when there are some, since each
 		# key sent costs about 250ns.
 		def to_h
@@ -147,19 +180,13 @@ class Quickdraw::Worker
 			result
 		end
 
-		# In nanoseconds, of child processes that have been waited for.
-		private def children_cpu
+		private def read_children_cpu
 			times = Process.times
 			((times.cutime + times.cstime) * 1_000_000_000).round
 		end
 
-		private def gc_milliseconds
-			GC_KEYS.include?(:time) ? GC.stat(:time) : 0
-		end
-
-		private def allocated_objects
-			GC_KEYS.include?(:total_allocated_objects) ? GC.stat(:total_allocated_objects) : 0
-		end
+		private def gc_milliseconds = HAS_GC_TIME ? GC.stat(:time) : 0
+		private def allocated_objects = HAS_ALLOCATIONS ? GC.stat(:total_allocated_objects) : 0
 	end
 
 	# `timeouts` is false where the worker shares a process with the coordinator,
@@ -189,6 +216,8 @@ class Quickdraw::Worker
 		# Failures threads made after the tests that started them finished, as
 		# leaks, for the test running when they're found.
 		@late = Thread::Queue.new
+		# The last test's Recorder#children_cpu, while it's still current.
+		@children_cpu = nil
 	end
 
 	def call
@@ -240,11 +269,33 @@ class Quickdraw::Worker
 				Quickdraw.deep_freeze(gathered)
 				@capture&.start
 
+				unsent = 0
+
 				indices.each do |index|
 					seed(path, index)
-					@channel.write([:result, index, self.class.compact(run(tests[index], gathered[index]))])
+					definition = tests[index]
+					# The coordinator takes the first test it has no result for as
+					# the one running, and kills the worker once it's long past its
+					# timeout. Only tests with the same timeout can wait unsent.
+					@channel.flush if definition.timeout
+					result = run(definition, gathered[index], compact: true)
+
+					if Array === result && result[3].empty? && !definition.timeout
+						duration, stats, assertions = result
+						unsent += duration
+
+						if @channel.queue(index, duration, *stats, assertions) >= RESULTS_AT_ONCE * RESULT_INTEGERS || unsent >= UNSENT_TIME
+							@channel.flush
+							unsent = 0
+						end
+					else
+						@channel.write([:result, index, result])
+						unsent = 0
+					end
 				end
 
+				# Processes can be waited for before the next test, as a file loads.
+				@children_cpu = nil
 				@capture&.stop
 				covered(path) if @coverage
 				@channel.write([:ready, Process.pid])
@@ -314,19 +365,33 @@ class Quickdraw::Worker
 		[:load_failed, path, Quickdraw.serialize_error(error)]
 	end
 
-	# A passing test's result as just its numbers, which is several times quicker
-	# to send and to read. See .result.
-	def self.compact(result)
-		plain = result.size == PLAIN_RESULT_SIZE && result["failures"].empty? && result["errors"].empty? && !result["skipped"] && !result["profile"]
-		plain ? [result["duration"], result["stats"], result["assertions"], result["counts"]] : result
-	end
-
-	# A result as Recorder#to_h made it, from what .compact sent.
+	# A result as Recorder#to_h makes it, from what Recorder#to_compact made.
 	def self.result(sent)
 		case sent
 		in Hash then sent
-		in [duration, stats, assertions, counts]
-			{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
+		in [duration, stats, assertions, counts] then plain_pass(duration, stats, assertions, counts)
+		end
+	end
+
+	private_class_method def self.plain_pass(duration, stats, assertions, counts)
+		{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
+	end
+
+	# Yields the index and result, as Recorder#to_h makes it, of each test in a
+	# message a worker sent results in: one, or those that were queued.
+	def self.each_result(message)
+		case message
+		in [:result, index, sent]
+			yield index, result(sent)
+		in [:integers, integers]
+			raise ArgumentError, "Expected #{RESULT_INTEGERS} integers for each result, but got #{integers.size}." unless (integers.size % RESULT_INTEGERS).zero?
+
+			offset = 0
+
+			while offset < integers.size
+				yield integers[offset], plain_pass(integers[offset + 1], integers[offset + 2, Quickdraw::STATS.size], integers[offset + RESULT_INTEGERS - 1], {})
+				offset += RESULT_INTEGERS
+			end
 		end
 	end
 
@@ -364,10 +429,10 @@ class Quickdraw::Worker
 
 	# `gathered` is what an after_tests test's tests gathered, or nil when
 	# they didn't all pass, or weren't run, as when replaying a sequence.
-	private def run(definition, gathered = nil)
+	private def run(definition, gathered = nil, compact: false)
 		recorder = Recorder.new
 
-		recorder.measure_test do
+		recorder.measure_test(@children_cpu) do
 			next recorder.pending! unless definition.block
 			next recorder.skip!("Not every test it runs after passed.") if definition.after_tests && !gathered
 
@@ -401,10 +466,19 @@ class Quickdraw::Worker
 			nil
 		end
 
-		if @leaks
-			leaks = [*@leaks.check, *late_failures]
+		@children_cpu = recorder.children_cpu
 
-			if leaks.any?
+		if @leaks
+			# The check waits for processes the test left, which aren't the next test's.
+			@children_cpu = nil if Quickdraw::Leaks::ProcessStarts.started
+			leaks = @leaks.check
+
+			unless @late.empty?
+				late = late_failures
+				leaks = leaks ? leaks.concat(late) : late
+			end
+
+			if leaks
 				if @leak_mode == :fail
 					recorder.error!({ "name" => "Quickdraw::Leak", "message" => leaks.map { |leak| leak["message"] }.join("\n"), "backtrace" => [] })
 				else
@@ -415,12 +489,14 @@ class Quickdraw::Worker
 
 		recorder.fail_without_assertions(definition.block.source_location[0], definition.line) if definition.block
 		recorder.output = output if output && recorder.problem?
-		result = recorder.to_h
+		result = compact ? recorder.to_compact : recorder.to_h
 
 		# A thread the test left running may fail an assertion yet, which is a leak.
 		if @leaks
-			name = "#{Quickdraw::Filter.name_of(describe(definition))} (line #{definition.line})"
-			recorder.close { |failure| @late << { "kind" => "late failure", "message" => Quickdraw.utf8("After #{name} finished, a thread it started failed an assertion at #{failure['path'].delete_prefix("#{Quickdraw::ROOT}/")}:#{failure['line']}: #{failure['message']}") } }
+			recorder.close do |failure|
+				name = "#{Quickdraw::Filter.name_of(describe(definition))} (line #{definition.line})"
+				@late << { "kind" => "late failure", "message" => Quickdraw.utf8("After #{name} finished, a thread it started failed an assertion at #{failure['path'].delete_prefix("#{Quickdraw::ROOT}/")}:#{failure['line']}: #{failure['message']}") }
+			end
 		end
 
 		result

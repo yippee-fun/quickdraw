@@ -84,6 +84,7 @@ class Quickdraw::Coordinator
 			@completed = 0
 			@size = indices.size
 			@reported = 0
+			@crashes = []
 			release
 		end
 
@@ -118,9 +119,35 @@ class Quickdraw::Coordinator
 		# Set when loading this file crashed a worker, so no other worker tries.
 		attr_accessor :unstealable
 
+		# A worker sends the results of tests that pass together (see
+		# Worker::RESULTS_AT_ONCE), so when one crashes, the tests it has sent
+		# no result for may have passed, crashed it, or not run. They run again,
+		# one at a time, until the one that crashes is known. `output` is what
+		# the worker printed.
+		def suspect(indices, output)
+			@crashes << [indices.dup, output]
+		end
+
+		# Once the test has crashed a worker alone, which explains the crash
+		# it was a suspect of, if any.
+		def crash_found(index)
+			@crashes.reject! { |indices, _output| indices.include?(index) }
+		end
+
+		# Once the test has run without crashing a worker. If it was the last
+		# suspect of a crash, yields what the crashed worker printed.
+		def cleared(index)
+			@crashes.reject! do |indices, output|
+				next false unless indices.delete(index) && indices.empty?
+
+				yield output
+				true
+			end
+		end
+
 		def next_batch
 			# Alone, so other workers can take the slow tests after it.
-			return @pending.shift(1) if slow?(@pending.first)
+			return @pending.shift(1) if @crashes.any? || slow?(@pending.first)
 
 			average = average_duration
 			size = average ? [@batch_size, (BATCH_BUDGET / [average, 1e-9].max).floor].min : 1
@@ -1129,8 +1156,10 @@ class Quickdraw::Coordinator
 	end
 
 	private def kill(worker)
-		file, (index, *) = worker.batch
-		worker.timeout ||= [file.tests[index]["timeout"], []]
+		file, (index, *rest) = worker.batch
+		# With other tests it has sent no result for, which one is stuck isn't
+		# known (see #crashed).
+		worker.timeout ||= [file.tests[index]["timeout"], []] if rest.empty?
 		Process.kill("KILL", worker.pid)
 	rescue Errno::ESRCH
 		nil
@@ -1249,8 +1278,14 @@ class Quickdraw::Coordinator
 
 	private def handle(worker, message)
 		worker.received_message
-		message = [:result, message[1], Quickdraw::Worker.result(message[2])] if message in [:result, *]
 		@timeline&.received(worker, message)
+
+		# However the worker sent them (see Worker#call), results are recorded
+		# one way. Before the other messages, since most messages are results.
+		if message in [:result | :integers, *]
+			Quickdraw::Worker.each_result(message) { |index, result| record(worker, index, result) }
+			return
+		end
 
 		case message
 		in nil
@@ -1292,8 +1327,6 @@ class Quickdraw::Coordinator
 			elsif !@files.key?([path, worker.group])
 				load_failed(path, worker.group, error)
 			end
-		in [:result, index, result]
-			record(worker, index, result)
 		in [:covered, path, sources]
 			(@coverage_map[display_path(path)] ||= {}).merge!(sources.to_h { |source| [source, true] })
 		end
@@ -1387,6 +1420,13 @@ class Quickdraw::Coordinator
 		end
 
 		file.record(result["duration"])
+
+		# A crash that none of the tests it could have been repeats still fails the run.
+		file.cleared(index) do |output|
+			@outcome.unexplained_crash = true
+			@reporter.printed(output) if output && @capture_loading
+		end
+
 		@elastic&.record(result)
 		placement = placement(worker)
 
@@ -1498,10 +1538,19 @@ class Quickdraw::Coordinator
 
 			if worker.started
 				index, *rest = indices
-				file.pending.unshift(*rest)
-				report(file, index, {
-					"assertions" => 0, "failures" => [], "errors" => [crash], "duration" => nil, "output" => output
-				}, placement(worker))
+
+				# A worker that times a test out sends the results it had waiting
+				# first, so the test is the first without one.
+				if rest.empty? || worker.timeout
+					file.pending.unshift(*rest)
+					file.crash_found(index)
+					report(file, index, {
+						"assertions" => 0, "failures" => [], "errors" => [crash], "duration" => nil, "output" => output
+					}, placement(worker))
+				else
+					file.suspect(indices, output)
+					file.pending.unshift(*indices)
+				end
 			else
 				file.pending.unshift(*indices)
 			end
