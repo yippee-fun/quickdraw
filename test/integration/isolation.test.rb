@@ -97,6 +97,26 @@ class IsolationTest < Quickdraw::Test
 		match { result => { summary: /\A3 tests · 3 assertions/ } }
 	end
 
+	test "runs tests a helper file defines when it's the only test file", timeout: 20 do
+		result = project(
+			"a.test.rb" => <<~RUBY,
+				require_relative "shared"
+
+				class A < Quickdraw::Test
+					Shared.define(self)
+					[1, 2].each { |number| test("a\#{number}") { assert true } }
+				end
+			RUBY
+			"shared.rb" => <<~RUBY,
+				module Shared
+					def self.define(test_class) = test_class.test("shared") { assert true }
+				end
+			RUBY
+		).run("-p", "1", "--no-history", "a.test.rb")
+
+		match { result => { summary: /\A3 tests · 3 assertions/ } }
+	end
+
 	test "runs a test once when a required test file calls the helper that defines it", timeout: 20 do
 		project = project(
 			"a.test.rb" => <<~RUBY,

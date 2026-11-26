@@ -75,9 +75,11 @@ class Quickdraw::Test < Quickdraw::BasicTest
 	end
 
 	private def run_block
-		case self.class.fuzz_target(@block)
-		in [generators, cases] then check(*generators, cases:) { |*values| instance_exec(*values, &@block) }
-		in nil then super
+		if (target = self.class.fuzz_target(@block))
+			generators, cases = target
+			check(*generators, cases:) { |*values| instance_exec(*values, &@block) }
+		else
+			super
 		end
 	end
 

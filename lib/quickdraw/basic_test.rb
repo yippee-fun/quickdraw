@@ -52,6 +52,7 @@ class Quickdraw::BasicTest
 		@runner = runner
 		@deferred = nil
 		@contexts = nil
+		@checks = nil
 		@raised_context = nil
 	end
 
@@ -181,6 +182,8 @@ class Quickdraw::BasicTest
 	# What records assertions: a property's case while one of this test's runs
 	# (see Test#check), in its fiber and the threads it starts, or the test's.
 	private def runner
+		return @runner unless @checks
+
 		test, recorder = Fiber[:quickdraw_case]
 		test.equal?(self) ? recorder : @runner
 	end
@@ -214,22 +217,27 @@ class Quickdraw::BasicTest
 	ensure
 		# Cleanup carries on after Ctrl-C, which then stops the worker.
 		interrupted = nil
-		cleanups = [-> { @runner.measure("teardown") { teardown } }]
+
+		begin
+			@runner.measure("teardown") { teardown }
+		rescue Quickdraw::Interrupted => error
+			interrupted = error
+		rescue Exception => error
+			error!(error)
+		end
 
 		# Deferred blocks are taken, so an around_test that runs the test again
 		# doesn't repeat them, including those teardown and cleanup defer.
-		until cleanups.empty?
+		while @deferred
+			cleanups = @deferred.reverse
+			@deferred = nil
 			cleanups.each do |cleanup|
 				cleanup.call
+			rescue Quickdraw::Interrupted => error
+				interrupted = error
 			rescue Exception => error
-				case error
-				in Quickdraw::Interrupted then interrupted = error
-				else error!(error)
-				end
+				error!(error)
 			end
-
-			cleanups = @deferred&.reverse || []
-			@deferred = nil
 		end
 
 		raise interrupted if interrupted

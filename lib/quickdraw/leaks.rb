@@ -239,6 +239,9 @@ class Quickdraw::Leaks
 
 			if status == :running
 				@children = :leaked
+				# Until they've been reaped, checks wait for children, which the
+				# worker must know so as not to charge their CPU to the next test.
+				ProcessStarts.started = true
 				(leaks ||= []).concat(running_children.map { |child| { "kind" => "process", "message" => "Child process #{child} is still running." } })
 			end
 
