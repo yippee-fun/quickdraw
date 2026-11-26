@@ -32,9 +32,7 @@ class Quickdraw::CLI
 			nil
 		end
 
-		# optparse, etc and anything else needed to parse options load in a
-		# throwaway process so they don’t leak into the processes that run tests.
-		options = Quickdraw.isolate { parse }
+		options = parse
 
 		# Ruby reads the timeslice at boot, so it's set by starting again. See Sampler.
 		if options[:profile] && ENV["RUBY_THREAD_TIMESLICE"] != PROFILE_TIMESLICE
@@ -57,12 +55,36 @@ class Quickdraw::CLI
 		end
 	end
 
+	# Arguments spelled out in full are read here. Anything else (abbreviations,
+	# --help, mistakes) goes to optparse, and reports to fileutils, in a throwaway
+	# process, so neither leaks into the processes that run tests.
 	private def parse
-		require "optparse"
+		options, operands = scan
 
-		# Run settings config can set too (see Configuration#settings) are nil
-		# unless given, so config decides.
-		options = {
+		if options && !options[:flakes_path] && options[:outputs].none?(&:last)
+			settle(options, operands)
+		else
+			Quickdraw.isolate do
+				require "optparse"
+
+				options = defaults
+				parser = option_parser(options)
+
+				begin
+					operands = parser.parse(@args)
+				rescue OptionParser::ParseError => error
+					usage_error(*explain(parser, error))
+				end
+
+				settle(options, operands)
+			end
+		end
+	end
+
+	# Run settings config can set too (see Configuration#settings) are nil
+	# unless given, so config decides.
+	private def defaults
+		{
 			backtrace: false,
 			timings: false,
 			timeline: false,
@@ -81,15 +103,127 @@ class Quickdraw::CLI
 			browsers: [],
 			outputs: [],
 		}
+	end
 
-		parser = option_parser(options)
+	# The option each switch turns on, as option_parser has them.
+	FLAGS = {
+		"-f" => :failed,
+		"--failed" => :failed,
+		"--changed" => :changed,
+		"--fail-fast" => :fail_fast,
+		"--allow-flaky" => :allow_flaky,
+		"--quarantine" => :quarantine,
+		"-t" => :timings,
+		"--timings" => :timings,
+		"--timeline" => :timeline,
+		"--profile" => :profile,
+		"-c" => :coverage,
+		"--coverage" => :coverage,
+		"-b" => :backtrace,
+		"--backtrace" => :backtrace,
+		"--capture" => :capture,
+		"-m" => :max,
+		"--max" => :max,
+		"-e" => :efficiency,
+		"--efficiency" => :efficiency,
+		"--elastic" => :elastic,
+		"-w" => :watch,
+		"--watch" => :watch,
+	}.freeze
 
-		begin
-			operands = parser.parse(@args)
-		rescue OptionParser::ParseError => error
-			usage_error(*explain(parser, error))
+	# The option each switch turns off.
+	NEGATIONS = {
+		"--no-allow-flaky" => :allow_flaky,
+		"--no-quarantine" => :quarantine,
+		"--no-capture" => :capture,
+		"--no-elastic" => :elastic,
+		"--no-history" => :history,
+	}.freeze
+
+	# The option each switch that takes a value sets.
+	VALUES = {
+		"-n" => :names,
+		"--name" => :names,
+		"-x" => :excludes,
+		"--exclude" => :excludes,
+		"--browser" => :browsers,
+		"--base" => :base,
+		"--retry" => :retries,
+		"--flakes" => :flakes_path,
+		"-s" => :seed,
+		"--seed" => :seed,
+		"--format" => :outputs,
+		"-p" => :processes,
+		"--processes" => :processes,
+		"--leaks" => :leaks,
+	}.freeze
+
+	# The options and operands, read as optparse would read them, or nil if
+	# any argument is one it would complete, convert differently or reject.
+	private def scan
+		return if ENV.key?("POSIXLY_CORRECT")
+
+		options = defaults
+		operands = []
+		arguments = @args.dup
+
+		while (argument = arguments.shift)
+			if argument == "--"
+				operands.concat(arguments)
+				break
+			elsif argument == "-" || !argument.start_with?("-")
+				operands << argument
+			elsif (key = FLAGS[argument])
+				options[key] = true
+			elsif (key = NEGATIONS[argument])
+				options[key] = false
+			elsif argument.start_with?("--")
+				switch, value = argument.split("=", 2)
+				return unless (key = VALUES[switch])
+
+				return unless (value ||= arguments.shift)
+				return unless assign(options, key, value)
+			elsif (key = FLAGS[argument[0, 2]])
+				# "-ft" is -f -t.
+				return if argument[2] in "-" | "="
+
+				options[key] = true
+				arguments.unshift("-#{argument[2..]}")
+			else
+				return unless (key = VALUES[argument[0, 2]])
+
+				# "-p4" is -p 4.
+				value = (argument.size > 2) ? argument[2..] : arguments.shift
+				return unless value && assign(options, key, value)
+			end
 		end
 
+		[options, operands]
+	end
+
+	# False if optparse wouldn't take the value as it's written.
+	private def assign(options, key, value)
+		case key
+		in :names | :excludes
+			options[key] << value
+		in :browsers
+			options[key] |= [value]
+		in :outputs
+			format, path = value.split(":", 2)
+			options[key] << [format, path]
+		in :retries | :seed | :processes
+			number = Integer(value, 10, exception: false)
+			return false unless number && number.to_s == value && !(key == :retries && number.negative?)
+
+			options[key] = number
+		in :base | :flakes_path | :leaks
+			options[key] = value
+		end
+
+		true
+	end
+
+	private def settle(options, operands)
 		options[:outputs].each do |format, _path|
 			next if FORMATS.include?(format)
 
@@ -199,20 +333,25 @@ class Quickdraw::CLI
 			warn "More than one worker needs fork, which this platform doesn’t support, so tests run in one."
 		end
 
+		# Counting cores loads etc, which mustn't leak into tests either.
+		cpu_cores, efficiency_cores = Quickdraw.isolate do
+			[Quickdraw::Platform.cpu_cores, (Quickdraw::Platform.efficiency_cores if options[:efficiency])]
+		end
+
 		# nil lets the coordinator tune the count from run history.
 		options[:processes] = if !Quickdraw::Platform.supports_forking?
 			1
 		elsif options[:max]
-			Quickdraw::Platform.cpu_cores
+			cpu_cores
 		elsif options[:efficiency]
-			Quickdraw::Platform.efficiency_cores
+			efficiency_cores
 		else
 			options[:processes]
 		end
 
 		# Tests that mostly wait can use more workers than cores; beyond this the
 		# memory and scheduling overhead outweighs it.
-		options[:max_processes] = Quickdraw::Platform.cpu_cores * 3
+		options[:max_processes] = cpu_cores * 3
 
 		options[:seed] ||= ENV["SEED"]&.then do |it|
 			Integer(it, exception: false) || usage_error("SEED must be a whole number, not #{it.inspect}.")
@@ -367,7 +506,7 @@ class Quickdraw::CLI
 			parser.separator ""
 			parser.separator bold("Workers")
 
-			parser.on("-p N", "--processes N", Integer, "Run N workers, or fewer where a group's use more than one core, as browser tests' do (default: tuned from run history)") do |it|
+			parser.on("-p N", "--processes N", Integer, "Run up to N workers, or fewer where a group's use more than one core, as browser tests' do (default: tuned from run history)") do |it|
 				options[:processes] = it
 			end
 
