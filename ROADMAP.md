@@ -32,6 +32,7 @@ quickdraw  (coordinator — never loads user code)
 - The unit of work is a batch of tests from one file. Batches start at one test and double while the file's tests fit a 20ms budget, so a slow file never hands all its tests to one worker. Workers prefer files they've already loaded.
 - Once every file is loaded, an idle worker steals from the file with the most estimated time left, loading it first if the remaining time is worth more than twice the load time.
 - The coordinator knows each batch's order, so a worker crash names the in-flight test and requeues the rest of the batch.
+- **Done:** `after_tests` checks something of a class's tests together, though they run across workers. It's a test of its own, which the coordinator holds back until the tests it follows have final results, after retries, then sends what they `gather`ed (plain data, in their results) with it to any worker. Keeping a class's tests in one worker instead would undo batching and stealing, and a retry of its last test would run without the others.
 - Timing history will seed the batch sizes and file order (slowest first).
 - Every test has a stable id (`path:line` + name) used for filtering, history, retries and bisection.
 - Worker control channel: assign batch, cancel, dump thread backtraces, replay an exact sequence.

@@ -47,6 +47,7 @@ class Quickdraw::Worker
 			@counts = nil
 			@output = nil
 			@leaks = nil
+			@gathered = nil
 		end
 
 		# Records the wall time of a phase of the test. Only the wall clock is read,
@@ -112,6 +113,11 @@ class Quickdraw::Worker
 			@skipped = { "pending" => false, "reason" => reason && Quickdraw.utf8(Quickdraw.plain_string(reason)) }
 		end
 
+		# For its file's after_tests tests (see BasicTest#gather).
+		def gather(value)
+			(@gathered ||= []) << value
+		end
+
 		def pending!
 			@skipped = { "pending" => true, "reason" => nil }
 		end
@@ -147,15 +153,15 @@ class Quickdraw::Worker
 		# A plain passing test's result as just its numbers, which is several
 		# times quicker to send and to read than #to_h. See Worker.result.
 		def to_compact
-			if @failures.empty? && @errors.empty? && !@skipped && !@profile && !@output && !@leaks
+			if @failures.empty? && @errors.empty? && !@skipped && !@profile && !@output && !@leaks && !@gathered
 				[@duration, @stats, @assertions, @counts]
 			else
 				to_h
 			end
 		end
 
-		# Output and leaks only when there are some, since each key sent costs
-		# about 250ns.
+		# Output, leaks and gathered values only when there are some, since each
+		# key sent costs about 250ns.
 		def to_h
 			result = {
 				"assertions" => @assertions,
@@ -170,6 +176,7 @@ class Quickdraw::Worker
 
 			result["output"] = @output if @output
 			result["leaks"] = @leaks if @leaks
+			result["gathered"] = @gathered if @gathered
 			result
 		end
 
@@ -255,9 +262,11 @@ class Quickdraw::Worker
 				Quickdraw::Debugger.hook_debug_gem
 				covered(path) if @coverage
 				@channel.write(loaded)
-			in [:run, path, indices]
+			in [:run, path, indices, gathered]
 				@channel.write([:started])
 				tests = @files.fetch(path)
+				# Frozen, since Marshal shares what several of them were given.
+				Quickdraw.deep_freeze(gathered)
 				@capture&.start
 
 				unsent = 0
@@ -269,7 +278,7 @@ class Quickdraw::Worker
 					# the one running, and kills the worker once it's long past its
 					# timeout. Only tests with the same timeout can wait unsent.
 					@channel.flush if definition.timeout
-					result = run(definition, compact: true)
+					result = run(definition, gathered[index], compact: true)
 
 					if Array === result && result[3].empty? && !definition.timeout
 						duration, stats, assertions = result
@@ -345,7 +354,11 @@ class Quickdraw::Worker
 		@files[path] = tests
 		@file_seeds[path] = Quickdraw.stable_hash("#{@seed}:#{path.delete_prefix("#{Quickdraw::ROOT}/")}")
 
-		[:loaded, path, tests.map { |test| describe(test) }, now - started_at]
+		described = tests.map do |test|
+			test.after_tests ? describe(test).merge("follows" => follows(test, tests)) : describe(test)
+		end
+
+		[:loaded, path, described, now - started_at]
 	rescue Quickdraw::Interrupted
 		raise
 	rescue Exception => error
@@ -401,17 +414,29 @@ class Quickdraw::Worker
 		}
 	end
 
+	# The indices of the tests in `tests`, its file's, that an after_tests test
+	# runs after: the others of its class, and of the groups describe made in it.
+	private def follows(after, tests)
+		tests.each_index.select do |index|
+			test = tests[index]
+			!test.after_tests && test.test_class.within?(after.test_class)
+		end
+	end
+
 	private def without_anonymous_modules(name)
 		name.include?("#<Module:") ? name.gsub(ANONYMOUS_MODULE, "") : name
 	end
 
-	private def run(definition, compact: false)
+	# `gathered` is what an after_tests test's tests gathered, or nil when
+	# they didn't all pass, or weren't run, as when replaying a sequence.
+	private def run(definition, gathered = nil, compact: false)
 		recorder = Recorder.new
 
 		recorder.measure_test(@children_cpu) do
 			next recorder.pending! unless definition.block
+			next recorder.skip!("Not every test it runs after passed.") if definition.after_tests && !gathered
 
-			test = definition.test_class.new(description: definition.description, block: definition.block, runner: recorder)
+			test = definition.test_class.new(description: definition.description, block: definition.block, runner: recorder, **(definition.after_tests ? { gathered: } : {}))
 			seconds = definition.timeout || Quickdraw::Config.timeout
 
 			if @watchdog

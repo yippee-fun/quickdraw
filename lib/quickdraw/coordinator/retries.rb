@@ -89,7 +89,9 @@ class Quickdraw::Coordinator::Retries
 		attempt.attempts << Quickdraw::Flake.attempt(result, attempt.place)
 
 		if Quickdraw::Outcome.status(result) == "passed"
-			attempt.result.merge(
+			# What the retry that passed gathered, for after_tests tests.
+			attempt.result.except("gathered").merge(
+				result.slice("gathered"),
 				"passed_on_retry" => attempt.attempts.size,
 				"flake" => flake_kind(attempt.attempts),
 				"attempts" => attempt.all_attempts,

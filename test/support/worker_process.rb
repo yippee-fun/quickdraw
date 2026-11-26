@@ -25,7 +25,7 @@ module WorkerProcess
 
 		# Has the worker run the tests at `indices` as one batch.
 		def start(name, indices)
-			@channel.write([:run, @paths.fetch(name), indices])
+			@channel.write([:run, @paths.fetch(name), indices, {}])
 		end
 
 		# The next message the worker sends, or nil once it has exited.

@@ -78,8 +78,9 @@ module Quickdraw
 	STATS = [*PHASES, "cpu", "gc", "allocations"].freeze
 
 	# A test as a file defines it. `block` is nil for a pending test, which is
-	# why the line is kept separately.
-	Definition = Data.define(:test_class, :description, :block, :timeout, :line, :mutation)
+	# why the line is kept separately. `after_tests` is whether
+	# BasicTest.after_tests defined it.
+	Definition = Data.define(:test_class, :description, :block, :timeout, :line, :mutation, :after_tests)
 
 	# Raised in a worker on Ctrl-C. Not an Interrupt or StandardError, so tests
 	# can't rescue it by accident; their teardown and deferred blocks still run.
@@ -127,6 +128,15 @@ module Quickdraw
 		end
 
 		@tests << test
+	end
+
+	# The line of the file being loaded that defines a test with `block`: the
+	# block's, or for a block from a helper elsewhere, the line calling it.
+	def self.defining_line(block)
+		path, line = block.source_location
+		return line if path == @loading
+
+		caller_locations.find { |location| location.path == @loading }&.lineno || line
 	end
 
 	# Whether the frame is the top level of the file being loaded or the body of
@@ -206,6 +216,19 @@ module Quickdraw
 	# A copy without subclass or instance variables, which may not survive Marshal.
 	def self.plain_string(value)
 		String.new(value.to_s)
+	end
+
+	# A copy of `value` made of nil, booleans, numbers, strings, symbols, arrays
+	# and hashes, which a worker can send to the coordinator, since it doesn't
+	# load user code. Raises for anything else.
+	def self.plain_copy(value)
+		case value
+		in nil | true | false | Integer | Float | Symbol then value
+		in String then String.new(value)
+		in Array then value.map { |item| plain_copy(item) }
+		in Hash then value.to_h { |key, item| [plain_copy(key), plain_copy(item)] }
+		else raise ::ArgumentError, "Expected plain data (nil, true, false, numbers, strings, symbols, and arrays and hashes of them), not #{value.class}."
+		end
 	end
 
 	def self.serialize_error(error)

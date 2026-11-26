@@ -12,6 +12,7 @@ class Quickdraw::Browser::Recorder
 	def success!(description) = @recorder.success!(description)
 	def skip!(reason) = @recorder.skip!(reason)
 	def measure(phase, &) = @recorder.measure(phase, &)
+	def gather(value) = @recorder.gather(value)
 
 	def failure!(failure)
 		artifacts = @artifacts.call
