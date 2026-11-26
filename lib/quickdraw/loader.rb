@@ -12,6 +12,7 @@ class Quickdraw::Loader
 	#
 	#   start COUNT          start workers on the first COUNT channels
 	#   fork CHANNEL SLOT    start a worker on CHANNEL in SLOT
+	#   yjit                 enable YJIT in workers started from now on
 	#   warmup               more than one worker is about to start (see #warm_up)
 	#
 	# A channel numbered past `channels` is a pair of named pipes the
@@ -55,6 +56,7 @@ class Quickdraw::Loader
 		@directory = directory
 		@running = {}
 		@statuses = []
+		@yjit = false
 	end
 
 	# Starts a loader in a new process and returns its pid, taking the same
@@ -226,6 +228,7 @@ class Quickdraw::Loader
 		@directory = directory
 		@running = {}
 		@statuses = []
+		@yjit = false
 		@control = open_pipe("control", File::RDONLY | File::NONBLOCK)
 		@report = open_pipe("report", File::WRONLY | File::NONBLOCK)
 		@finished = open_pipe("finished", File::WRONLY | File::NONBLOCK)
@@ -353,6 +356,8 @@ class Quickdraw::Loader
 			warm_up
 		in ["fork", channel, slot]
 			start(Integer(channel), Integer(slot), test_files)
+		in ["yjit"]
+			@yjit = true
 		in ["flakes", size]
 			report_flakes(@control.read(Integer(size)))
 		end
@@ -499,6 +504,7 @@ class Quickdraw::Loader
 			raise
 		end
 
+		RubyVM::YJIT.enable if @yjit
 		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:, variant:).call
 	end
 

@@ -127,6 +127,7 @@ class Quickdraw::CLI
 		"-e" => :efficiency,
 		"--efficiency" => :efficiency,
 		"--elastic" => :elastic,
+		"--yjit" => :yjit,
 		"-w" => :watch,
 		"--watch" => :watch,
 	}.freeze
@@ -137,6 +138,7 @@ class Quickdraw::CLI
 		"--no-quarantine" => :quarantine,
 		"--no-capture" => :capture,
 		"--no-elastic" => :elastic,
+		"--no-yjit" => :yjit,
 		"--no-history" => :history,
 	}.freeze
 
@@ -224,6 +226,8 @@ class Quickdraw::CLI
 	end
 
 	private def settle(options, operands)
+		usage_error "--yjit needs a Ruby with YJIT, which this isn’t." if options[:yjit] && !Quickdraw::Platform.yjit_supported?
+
 		options[:outputs].each do |format, _path|
 			next if FORMATS.include?(format)
 
@@ -522,6 +526,10 @@ class Quickdraw::CLI
 				options[:elastic] = it
 			end
 
+			parser.on("--[no-]yjit", "Run tests with YJIT, or without (default: with, when run history expects enough work to repay compiling)") do |it|
+				options[:yjit] = it
+			end
+
 			parser.separator ""
 			parser.separator bold("Other")
 
@@ -793,6 +801,7 @@ class Quickdraw::CLI
 			warm_loaders: options[:warm_loaders],
 			timeline: options[:timeline],
 			elastic: options[:elastic],
+			yjit: options[:yjit],
 			variants: (options[:browsers] if options[:browsers].any?),
 			browser_tests:,
 			named_files:,
