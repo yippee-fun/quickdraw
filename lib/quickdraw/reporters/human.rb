@@ -569,6 +569,7 @@ class Quickdraw::Reporters::Human
 		notes << ["No match", "No tests matched the given lines, --name or --exclude."] if outcome.nothing_matched
 		process_failure = outcome.process_failure
 		notes << ["Exit status", process_failure] if process_failure && @problems.empty?
+		notes << ["Worker exit", "A worker exited while it ran tests, and none of them made a worker exit again when run alone."] if outcome.unexplained_crash
 
 		skipped = @set_aside.reject { |_path, _test, skipped| skipped["pending"] }
 		notes << ["Skipped", skip_reasons(skipped)] if skipped.any?

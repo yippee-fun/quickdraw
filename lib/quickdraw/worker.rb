@@ -13,6 +13,16 @@ class Quickdraw::Worker
 	# How long past its tests' timeouts to wait for a baseline fork before killing it.
 	BASELINE_GRACE = 5
 
+	# A plain passing test's result waits to be sent with the next ones, as
+	# integers (see Channel#queue), until this many are waiting, or the tests
+	# they're for took this many nanoseconds, so a slow test's result is sent
+	# as it finishes.
+	RESULTS_AT_ONCE = 64
+	UNSENT_TIME = 20_000_000
+
+	# The integers a queued result is: its index, duration, stats and assertions.
+	RESULT_INTEGERS = 3 + Quickdraw::STATS.size
+
 	class Recorder
 		PHASE_INDICES = Quickdraw::PHASES.each_with_index.to_h.freeze
 		CPU = Quickdraw::STATS.index("cpu")
@@ -250,9 +260,29 @@ class Quickdraw::Worker
 				tests = @files.fetch(path)
 				@capture&.start
 
+				unsent = 0
+
 				indices.each do |index|
 					seed(path, index)
-					@channel.write([:result, index, run(tests[index], compact: true)])
+					definition = tests[index]
+					# The coordinator takes the first test it has no result for as
+					# the one running, and kills the worker once it's long past its
+					# timeout. Only tests with the same timeout can wait unsent.
+					@channel.flush if definition.timeout
+					result = run(definition, compact: true)
+
+					if Array === result && result[3].empty? && !definition.timeout
+						duration, stats, assertions = result
+						unsent += duration
+
+						if @channel.queue(index, duration, *stats, assertions) >= RESULTS_AT_ONCE * RESULT_INTEGERS || unsent >= UNSENT_TIME
+							@channel.flush
+							unsent = 0
+						end
+					else
+						@channel.write([:result, index, result])
+						unsent = 0
+					end
 				end
 
 				# Processes can be waited for before the next test, as a file loads.
@@ -326,8 +356,29 @@ class Quickdraw::Worker
 	def self.result(sent)
 		case sent
 		in Hash then sent
-		in [duration, stats, assertions, counts]
-			{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
+		in [duration, stats, assertions, counts] then plain_pass(duration, stats, assertions, counts)
+		end
+	end
+
+	private_class_method def self.plain_pass(duration, stats, assertions, counts)
+		{ "assertions" => assertions, "failures" => [], "errors" => [], "skipped" => nil, "stats" => stats, "duration" => duration, "profile" => nil, "counts" => counts }
+	end
+
+	# Yields the index and result, as Recorder#to_h makes it, of each test in a
+	# message a worker sent results in: one, or those that were queued.
+	def self.each_result(message)
+		case message
+		in [:result, index, sent]
+			yield index, result(sent)
+		in [:integers, integers]
+			raise ArgumentError, "Expected #{RESULT_INTEGERS} integers for each result, but got #{integers.size}." unless (integers.size % RESULT_INTEGERS).zero?
+
+			offset = 0
+
+			while offset < integers.size
+				yield integers[offset], plain_pass(integers[offset + 1], integers[offset + 2, Quickdraw::STATS.size], integers[offset + RESULT_INTEGERS - 1], {})
+				offset += RESULT_INTEGERS
+			end
 		end
 	end
 

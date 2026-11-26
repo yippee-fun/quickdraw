@@ -44,6 +44,16 @@ class TimelineTest < Quickdraw::Test
 		assert_match html, %r{<td><code>slow\.test\.rb:1</code> Slow › sleeps</td><td>\d+ms</td>}
 	end
 
+	test "charts how long each test ran for when workers send their results together", timeout: 20 do
+		project = project("naps.test.rb" => "class Naps < Quickdraw::Test; 20.times { |i| test(\"naps \#{i}\") { sleep 0.006; assert true } }; end\n")
+
+		project.run("-p", "1", "--no-history", "--timeline")
+		naps = chart(project).scan(/<span class="running" [^>]*title="naps\.test\.rb:1 Naps › naps (\d+): (\d+)ms">/)
+
+		assert_equal naps.map(&:first).map(&:to_i).sort, (0...20).to_a
+		assert(naps.all? { |_number, milliseconds| milliseconds.to_i.between?(5, 100) }) { naps.inspect }
+	end
+
 	test "shows a test that crashed its worker running until it exited, and the worker that replaced it", timeout: 20 do
 		skip "Replacing crashed workers needs fork" unless Process.respond_to?(:fork)
 

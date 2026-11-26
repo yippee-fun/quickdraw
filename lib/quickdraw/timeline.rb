@@ -50,9 +50,25 @@ class Quickdraw::Timeline
 		in [:ready, _] then @events << [now, worker.process, :ready]
 		in [:started] then @events << [now, worker.process, :started]
 		in [:loaded | :load_failed, _, *] then @events << [now, worker.process, :loaded]
-		in [:result, index, result] then @events << [now, worker.process, :result, index, result["duration"]]
+		in [:result | :integers, *] then results(worker, message)
 		else nil
 		end
+	end
+
+	# Results a worker sent together arrive together, so each is taken to
+	# have finished when the one after it started.
+	private def results(worker, message)
+		durations = []
+		Quickdraw::Worker.each_result(message) { |index, result| durations << [index, result["duration"]] }
+		time = now
+
+		events = durations.reverse_each.map do |index, duration|
+			event = [time, worker.process, :result, index, duration]
+			time -= duration / 1e9
+			event
+		end
+
+		@events.concat(events.reverse)
 	end
 
 	# Workers added during the run (see Elastic), as [seconds, how many].
