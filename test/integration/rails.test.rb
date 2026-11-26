@@ -682,12 +682,205 @@ class RailsTest < Quickdraw::Test
 		match { result => { summary: /\A4 tests · 6 assertions/ } }
 	end
 
+	# The URL of a PostgreSQL server, without a database, such as
+	# postgres://postgres:postgres@localhost.
+	POSTGRES = ENV["QUICKDRAW_POSTGRES_URL"]
+
+	# The FIXTURES app on PostgreSQL, with the name of its database, which is
+	# dropped afterwards with those named after it.
+	def postgres_app(files = {})
+		skip "QUICKDRAW_POSTGRES_URL isn’t set" unless POSTGRES
+		skip "pg isn’t in the bundle" unless bundled?("pg")
+
+		name = "quickdraw_#{Random.urandom(4).unpack1('H*')}_test"
+
+		defer do
+			named = postgres("postgres", "SELECT datname FROM pg_database WHERE datname LIKE '#{name}%'").flatten
+			postgres("postgres", *named.map { |database| %(DROP DATABASE "#{database}" WITH (FORCE)) })
+		end
+
+		[app(FIXTURES.merge("config/database.yml" => "test:\n  adapter: postgresql\n  url: #{POSTGRES}\n  database: #{name}\n  gssencmode: disable\n", **files)), name]
+	end
+
+	def databases(name)
+		postgres("postgres", "SELECT datname, oid, datallowconn, shobj_description(oid, 'pg_database') FROM pg_database WHERE datname LIKE '#{name}%' ORDER BY datname")
+	end
+
+	test "on PostgreSQL, copies each worker's database from a template with the schema and fixtures, and keeps both while they're unchanged", timeout: 180 do
+		project, name = postgres_app
+
+		first = project.run("-p", "1", "--no-history", timeout: 60)
+		assert first.success? do
+			first.output
+		end
+
+		worker, template = built = databases(name)
+		assert_equal built.size, 2
+		assert_equal worker.first, "#{name}_0"
+		assert_match template.first, /\A#{name}_qd_template_\h{16}\z/
+		# Clean, as every test rolled back.
+		assert_equal worker.last, "Quickdraw #{template.first[-16..]} clean"
+		# Nothing can connect to the template.
+		assert_equal template[2], "f"
+		launch = postgres("#{name}_0", "SELECT name FROM events")
+		assert_equal postgres("#{name}_0", "SELECT name FROM users ORDER BY name", "SELECT title FROM posts"), [["Hello"]]
+
+		second = project.run("-p", "1", "--no-history", timeout: 60)
+		assert second.success? do
+			second.output
+		end
+
+		# The same databases, rather than new ones with their names, with what the
+		# ERB rendered when the template was built.
+		assert_equal databases(name), built
+		assert_equal postgres("#{name}_0", "SELECT name FROM events"), launch
+
+		project.write("test/fixtures/users.yml" => "#{FIXTURES['test/fixtures/users.yml']}hopper:\n  name: Grace Hopper\n")
+
+		third = project.run("-p", "1", "--no-history", timeout: 60)
+		assert third.success? do
+			third.output
+		end
+
+		# A new template in place of the old one, and a copy of it.
+		changed_worker, changed_template = changed = databases(name)
+		assert_equal changed.size, 2
+		refute_equal changed_template.first, template.first
+		refute_equal changed_worker[1], worker[1]
+		assert_equal changed_worker.last, "Quickdraw #{changed_template.first[-16..]} clean"
+		assert_equal postgres("#{name}_0", "SELECT name FROM users ORDER BY name"), [["Ada"], ["Grace"], ["Grace Hopper"]]
+
+		project.write("db/schema.rb" => FIXTURES["db/schema.rb"].sub("t.string :title", "t.string :title\n\t\tt.string :subtitle"))
+
+		fourth = project.run("-p", "2", "--no-history", timeout: 60)
+		assert fourth.success? do
+			fourth.output
+		end
+
+		assert_equal databases(name).map(&:first).grep_v(changed_template.first).size, 3
+		assert_equal postgres("#{name}_1", "SELECT subtitle FROM posts"), [[nil]]
+	end
+
+	test "on PostgreSQL, copies the templates again after a test commits, and over a database a worker died with", timeout: 180 do
+		project, name = postgres_app(
+			"test/commit.test.rb" => <<~RUBY,
+				class CommitTest < Quickdraw::Test
+					self.use_transactional_tests = false
+
+					3.times do |i|
+						test("commits \#{i}") do
+							assert_equal User.order(:name).pluck(:name), ["Ada", "Grace"]
+							assert_equal Event.count, 1
+
+							User.find_by!(name: "Grace").update!(name: "Changed")
+							Event.create!(name: "Committed")
+							Process.kill(:KILL, Process.pid) if ENV["DIE"]
+						end
+					end
+				end
+			RUBY
+			"test/fixtures.test.rb" => <<~RUBY,
+				class TransactionTest < Quickdraw::Test
+					test("commits its transaction") do
+						assert_equal Event.count, 1
+						Event.create!(name: "Committed")
+						Event.connection.commit_transaction
+					end
+
+					3.times do |i|
+						test("rolls back \#{i}") do
+							assert_equal Event.count, 1
+							assert_equal users(:grace).name, "Grace"
+							Event.create!(name: "Rolled back")
+						end
+					end
+				end
+			RUBY
+		)
+
+		# Each worker dies with its first test, and the last leaves what it committed.
+		died = project.run("test/commit.test.rb", "-p", "1", "--retry", "0", "--no-history", env: { "DIE" => "1" }, timeout: 60)
+		refute died.success?
+		assert_equal postgres("#{name}_0", "SELECT name FROM users ORDER BY name"), [["Ada"], ["Changed"]]
+		assert_match databases(name).first.last, /\AQuickdraw \h{16} dirty\z/
+
+		result = project.run("-p", "1", "--no-history", timeout: 60)
+		assert result.success? do
+			result.output
+		end
+
+		assert_equal postgres("#{name}_0", "SELECT name FROM users ORDER BY name", "SELECT COUNT(*) FROM events"), [["1"]]
+		assert_equal postgres("#{name}_0", "SELECT name FROM users ORDER BY name"), [["Ada"], ["Grace"]]
+		assert_match databases(name).first.last, /\AQuickdraw \h{16} clean\z/
+	end
+
+	test "on PostgreSQL, builds no template when config wants no fixtures", timeout: 120 do
+		project, name = postgres_app(
+			"config/quickdraw.rb" => "Quickdraw.configure { |config| config.rails }\n",
+			"test/fixtures.test.rb" => "class EmptyTest < Quickdraw::Test\n\ttest('starts empty') { assert_equal User.count, 0 }\nend\n",
+		)
+
+		result = project.run("-p", "1", "--no-history", timeout: 60)
+		assert result.success? do
+			result.output
+		end
+
+		assert_equal databases(name).map(&:first), ["#{name}_0"]
+	end
+
+	test "on PostgreSQL, copies a database two configs name once", timeout: 120 do
+		project, name = postgres_app
+		config = "    adapter: postgresql\n    url: #{POSTGRES}\n    database: #{name}\n    gssencmode: disable\n"
+		project.write("config/database.yml" => "test:\n  primary:\n#{config}  other:\n#{config}")
+
+		result = project.run("-p", "1", "--no-history", timeout: 60)
+		assert result.success? do
+			result.output
+		end
+
+		assert_equal databases(name).map(&:first).grep_v(/_qd_template_/), ["#{name}_0"]
+		assert_equal postgres("#{name}_0", "SELECT name FROM users ORDER BY name"), [["Ada"], ["Grace"]]
+	end
+
+	test "on PostgreSQL, won't start a worker on databases another run's worker holds", timeout: 120 do
+		project, name = postgres_app
+		reader, writer = IO.pipe
+
+		holder = Process.fork do
+			reader.close
+			require "pg"
+			connection = PG.connect("#{POSTGRES}/postgres?gssencmode=disable")
+			connection.exec("SELECT pg_advisory_lock(hashtext('quickdraw worker'), hashtext('#{name}_0'))")
+			writer.puts
+			sleep
+		end
+
+		writer.close
+		reader.gets
+		defer { Process.kill(:KILL, holder) && Process.wait(holder) }
+
+		result = project.run("-p", "1", "--no-history", "--retry", "0", timeout: 60)
+		refute result.success?
+		assert_includes result.output, "Another Quickdraw run is using the #{name}_0 database."
+		assert_equal databases(name).map(&:first).grep(/_0\z/), []
+	end
+
 	# Runs each statement on a SQLite database, returning the last one's rows.
 	private def sql(database, *statements)
 		in_fork do
 			require "sqlite3"
 			db = SQLite3::Database.new(database)
 			statements.map { |statement| db.execute(statement) }.last
+		end
+	end
+
+	# As #sql, on a database of the PostgreSQL server. Without GSSAPI, which
+	# macOS aborts a fork for using.
+	private def postgres(database, *statements)
+		in_fork do
+			require "pg"
+			connection = PG.connect("#{POSTGRES}/#{database}?gssencmode=disable")
+			statements.map { |statement| connection.exec(statement).values }.last
 		end
 	end
 
