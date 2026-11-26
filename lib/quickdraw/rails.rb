@@ -21,7 +21,7 @@ module Quickdraw::Rails
 		config.before_forking { boot(environment, fixtures:, fixture_paths:) }
 		config.before_run { Fixtures.render }
 		config.after_forking { start_worker }
-		config.around_test { |_test, run| in_transactions(&run) }
+		config.around_test { |test, run| test.class.use_transactional_tests ? in_transactions(&run) : committing(&run) }
 		config.reloader { |paths| reload(paths) }
 	end
 
@@ -51,6 +51,9 @@ module Quickdraw::Rails
 		if ::Rails.gem_version < Gem::Version.new(MINIMUM_RAILS)
 			raise "config.rails needs Rails #{MINIMUM_RAILS} or later, and this is Rails #{::Rails.gem_version}."
 		end
+
+		# As in Rails, `self.use_transactional_tests = false` lets a class's tests commit.
+		Quickdraw::BasicTest.class_attribute(:use_transactional_tests, default: true, instance_accessor: false)
 
 		unless defined?(ActiveRecord::Base)
 			raise "Fixtures need Active Record." if fixtures
@@ -96,6 +99,24 @@ module Quickdraw::Rails
 		ensure
 			@transacting = false
 			finish_transactions
+		end
+	end
+
+	# For tests that commit, which leave their rows behind: empties the tables
+	# that got rows and loads the fixtures again, so the next test starts clean.
+	def committing
+		return yield unless @pools
+
+		begin
+			yield
+		ensure
+			ActiveRecord::Base.connection_handler.connection_pool_list(ActiveRecord.writing_role).each do |pool|
+				next unless pool.db_config.database_tasks?
+
+				pool.with_connection { |connection| Fixtures.empty(connection) }
+			end
+
+			Fixtures.reload
 		end
 	end
 

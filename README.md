@@ -439,7 +439,7 @@ Quickdraw.configure(&:rails)
 
 - The app boots once, before workers start, and workers share it.
 - Each worker gets its own databases, named as Rails' parallel tests name them (`myapp_test_2`, `test.sqlite3_2`). They're created and loaded from the schema when a worker starts, or emptied if the schema hasn't changed.
-- Each test runs in a transaction on every database, rolled back afterwards. Threads the test starts share it.
+- Each test runs in a transaction on every database, rolled back afterwards. Threads the test starts share it. A class that sets `self.use_transactional_tests = false` (as in Rails) has its tests commit instead; after each, the tables that got rows are emptied and the fixtures load again.
 - The summary shows SQL queries and factory_bot factories per test, and their time.
 - In watch mode, the app stays booted between runs. With `config.enable_reloading = true` in the test environment, app code that booting loaded (all of it, with eager loading) is reloaded when it changes, rather than booting again.
 

@@ -202,11 +202,11 @@ module Quickdraw::Rails::Fixtures
 	# Empties the tables that have rows, with any that refer to them, which the
 	# database requires to be emptied with them. A database loaded from the schema
 	# has no rows to empty.
-	private def truncate(connection, tables)
+	private def truncate(connection, tables, among: tables)
 		filled = with_rows(connection, tables)
 		return if filled.empty?
 
-		references = (tables - filled).to_h { |table| [table, connection.foreign_keys(table).map(&:to_table)] }
+		references = (among - filled).to_h { |table| [table, connection.foreign_keys(table).map(&:to_table)] }
 
 		loop do
 			referring = references.select { |_table, to| to.intersect?(filled) }.keys
@@ -217,6 +217,18 @@ module Quickdraw::Rails::Fixtures
 		end
 
 		connection.truncate_tables(*filled)
+	end
+
+	# After a test committed to the database, empties the tables that have rows
+	# apart from the sets', and those that refer to them. #reload loads the sets again.
+	def empty(connection)
+		pool = connection.pool
+		database = pool.db_config.name
+		kept = [pool.schema_migration.table_name, pool.internal_metadata.table_name, TABLE]
+		held = @loaded.each_value.select { |entry| entry.database == database }.flat_map { |entry| entry.tables.keys }
+		tables = connection.tables - kept
+
+		truncate(connection, tables - held, among: tables)
 	end
 
 	# After a test committed, which may have changed them.
