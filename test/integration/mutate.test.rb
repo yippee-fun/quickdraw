@@ -98,6 +98,38 @@ class MutateTest < Quickdraw::Test
 		match { project.run("mutate", "--survivors", "lib/pricing.rb") => { exit_status: 2, stderr: /can’t be used with files/ } }
 	end
 
+	test "lists survivors that only empty an error's message apart, counting them the same", timeout: 30 do
+		project = project(
+			"lib/age.rb" => <<~RUBY,
+				class Age
+					def self.check(age)
+						raise ArgumentError, "age can't be negative" if age.negative?
+						age
+					end
+				end
+			RUBY
+			"test/age.test.rb" => <<~RUBY,
+				require_relative "../lib/age"
+				class AgeTest < Quickdraw::Test
+					test("passes ages") { assert_equal Age.check(3), 3 }
+					test("refuses negative ages") { assert_raises(ArgumentError) { Age.check(-1) } }
+				end
+			RUBY
+		)
+
+		agent = project.run("mutate", "lib/age.rb", "--format", "agent")
+		refute_match agent.stdout, /^SURVIVED \h{12} .*age can't be negative/
+		assert_match agent.stdout, %r{^SURVIVED MESSAGES: 1 mutant only empties an error’s message, which no test checks, such as \h{12} lib/age.rb:3 \(\S+ mutate --show all lists them\)$}
+		assert_match agent.stdout, /^MUTATION SCORE: .*1 survived/
+
+		human = project.run("mutate", "lib/age.rb", "--format", "human")
+		assert_includes human.stdout, "SURVIVED 1 mutant emptying an error’s message"
+		assert_match human.stdout, %r{^    lib/age.rb:3 Age.check  "age can't be negative" → "" · \h{12}$}
+
+		report = JSON.parse(project.run("mutate", "lib/age.rb", "--format", "json").stdout)
+		assert_equal report["survivors"].map { |survivor| survivor["message"] }, [true]
+	end
+
 	test "notices code the tests can do without, such as a call to strip", timeout: 30 do
 		greeter = <<~'RUBY'
 			module Greeter

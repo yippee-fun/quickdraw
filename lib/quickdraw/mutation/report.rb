@@ -48,6 +48,9 @@ class Quickdraw::Mutation::Report
 		# Including those run only to judge the tests this changes, which then can't be.
 		@errors = outcomes.reject { |_job, (status, *)| KILLED.include?(status) || status == "survived" }
 		@survived.sort_by! { |job, _outcome| [job.mutant.subject.path, job.mutant.line, job.mutant.id] }
+		# Those that only empty an error's message, listed apart so they don't
+		# bury the rest, though they count the same.
+		@messages, @listed = @survived.partition { |job, _outcome| job.mutant.message }
 		tested = @killed.size + @survived.size
 		@score = (100.0 * @killed.size / tested if tested > 0)
 		@kill_matrix = Quickdraw::Mutation::KillMatrix.new(rows) if matrix || unique_tests
@@ -99,13 +102,23 @@ class Quickdraw::Mutation::Report
 	private def report_for_people
 		# As test runs show problems: a badge, what changed and where, then the
 		# change as a diff of the original (-) and the mutant (+).
-		@survived.each do |job, _outcome|
+		@listed.each do |job, _outcome|
 			mutant = job.mutant
 			@io.puts "#{label('SURVIVED', 43)} #{bold(mutant.description)}  #{dim("#{mutant.subject.label} · #{relative(mutant.subject.path)}:#{mutant.line} · #{@keys.fetch(mutant.id)}")}"
 			@io.puts
 			snippet(mutant).each { |line| @io.puts "    #{line.start_with?('-') ? red(line) : green(line)}" }
 			@io.puts
 			@io.puts "  #{dim("#{pluralize(job.tests.size, 'test')} ran it and passed: #{tests(job)}")}"
+			@io.puts
+		end
+
+		if @messages.any?
+			@io.puts "#{label('SURVIVED', 43)} #{bold("#{pluralize(@messages.size, 'mutant')} emptying an error’s message")}  #{dim('no test checks the message')}"
+			@io.puts
+			@messages.each do |job, _outcome|
+				mutant = job.mutant
+				@io.puts "    #{relative(mutant.subject.path)}:#{mutant.line} #{mutant.subject.label}  #{dim("#{mutant.description} · #{@keys.fetch(mutant.id)}")}"
+			end
 			@io.puts
 		end
 
@@ -138,13 +151,18 @@ class Quickdraw::Mutation::Report
 	# A line per survivor, with its id. Each one's change, and the tests that
 	# ran it, are a command away (see Survivors.show), since agents pay for every line.
 	private def report_for_agents(survivors_saved:)
-		@survived.first(SHOWN_SURVIVORS).each do |job, _outcome|
+		@listed.first(SHOWN_SURVIVORS).each do |job, _outcome|
 			mutant = job.mutant
 			@io.puts "SURVIVED #{@keys.fetch(mutant.id)} #{relative(mutant.subject.path)}:#{mutant.line} #{mutant.subject.label}: #{mutant.description} (#{pluralize(job.tests.size, 'test')} ran it)"
 		end
 
-		if @survived.size > SHOWN_SURVIVORS
-			@io.puts "and #{pluralize(@survived.size - SHOWN_SURVIVORS, 'more survivor')}#{", which #{Quickdraw::Reporters.command} mutate --show all lists with the rest" if survivors_saved}"
+		if @listed.size > SHOWN_SURVIVORS
+			@io.puts "and #{pluralize(@listed.size - SHOWN_SURVIVORS, 'more survivor')}#{", which #{Quickdraw::Reporters.command} mutate --show all lists with the rest" if survivors_saved}"
+		end
+
+		if @messages.any?
+			job, _outcome = @messages.first
+			@io.puts "SURVIVED MESSAGES: #{pluralize(@messages.size, 'mutant')} only #{@messages.one? ? 'empties' : 'empty'} an error’s message, which no test checks, such as #{@keys.fetch(job.mutant.id)} #{relative(job.mutant.subject.path)}:#{job.mutant.line}#{" (#{Quickdraw::Reporters.command} mutate --show all lists them)" if survivors_saved}"
 		end
 
 		problems.each { |problem| @io.puts problem }
@@ -207,6 +225,7 @@ class Quickdraw::Mutation::Report
 					"line" => mutant.line,
 					"method" => mutant.subject.label,
 					"description" => mutant.description,
+					"message" => mutant.message,
 					"before" => mutant.before,
 					"after" => mutant.after,
 					"tests" => job.tests.map { |test| { "path" => relative(test.path), "line" => test.line, "name" => test.name } },

@@ -293,6 +293,54 @@ class MutatorTest < Quickdraw::Test
 		assert_equal mutants(source).filter_map { |mutant| mutant.covering_line if mutant.description == "removed the statement" }, [5, 8, 9]
 	end
 
+	test "marks the mutants that only empty a raised error's message" do
+		source = <<~RUBY
+			class A
+				def call(a)
+					raise ArgumentError, "bad \#{a}" if a.nil?
+					raise Error.new("worse") if a == 1
+					fail "worst" if a == 2
+					log("not a message")
+				end
+			end
+		RUBY
+
+		messages = mutants(source).select(&:message).map(&:description)
+		assert_equal messages, ["\"bad \#{a}\" → \"\"", "\"worse\" → \"\"", "\"worst\" → \"\""]
+		assert mutants(source).any? { |mutant| mutant.description == "\"not a message\" → \"\"" && !mutant.message }
+	end
+
+	test "doesn't remove an instance variable set to nil in initialize, which only names it" do
+		source = <<~RUBY
+			class A
+				def initialize(a)
+					@a = a
+					@b = nil
+					@c = nil
+				end
+
+				def reset
+					@a = nil
+					@b = 1
+				end
+			end
+
+			class B
+				def initialize
+					@a = nil
+				end
+			end
+		RUBY
+
+		removed = mutants(source).select { |mutant| mutant.description.start_with?("removed the statement", "replaced the body") }
+		assert_equal removed.map { |mutant| [mutant.subject.name, mutant.description, mutant.line] }, [
+			[:initialize, "replaced the body with nil", 3],
+			[:initialize, "removed the statement", 3],
+			[:reset, "replaced the body with nil", 9],
+			[:reset, "removed the statement", 9],
+		]
+	end
+
 	test "covers a multi-line literal by the first line in it that runs" do
 		source = <<~RUBY
 			class A

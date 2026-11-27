@@ -93,6 +93,8 @@ class Quickdraw::Mutation::Mutator
 		@unused = {}.compare_by_identity
 		@removed = {}.compare_by_identity
 		@interpolated = {}.compare_by_identity
+		# Strings that are the messages of errors raised.
+		@messages = {}.compare_by_identity
 		@mutants = []
 		scope(result.value.statements, [], [])
 
@@ -276,9 +278,9 @@ class Quickdraw::Mutation::Mutator
 				add(node.location, value.to_s, "#{node.slice} → #{value}", statement_line) unless value == node.value
 			end
 		in Prism::StringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || node.unescaped.empty?
-			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
+			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line, message: @messages.key?(node))
 		in Prism::InterpolatedStringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<")
-			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
+			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line, message: @messages.key?(node))
 		in Prism::RegularExpressionNode | Prism::InterpolatedRegularExpressionNode
 			add(node.location, "/(?!)/", "regexp → never matches", statement_line)
 		in Prism::ArrayNode[opening_loc: Prism::Location => opening, elements: [_, *] => elements]
@@ -298,6 +300,8 @@ class Quickdraw::Mutation::Mutator
 	end
 
 	private def invocation(node, line)
+		messages(node)
+
 		case node
 		in { name: :! | :not, receiver: Prism::Node => receiver, arguments: nil }
 			add(node.location, receiver.slice, "removed the negation", line)
@@ -314,6 +318,20 @@ class Quickdraw::Mutation::Mutator
 			fetch_to_index(node, line)
 			remove_arguments(node, line)
 			remove_block(node, line)
+		end
+	end
+
+	# Notes the strings `raise` or `fail` is given as an error's message, as in
+	# `raise Error, "message"`, `raise "message"` or `raise Error.new("message")`.
+	private def messages(node)
+		return unless node in Prism::CallNode[receiver: nil, name: :raise | :fail, arguments: Prism::ArgumentsNode[arguments:]]
+
+		arguments.each do |argument|
+			case argument
+			in Prism::StringNode | Prism::InterpolatedStringNode then @messages[argument] = true
+			in Prism::CallNode[name: :new, arguments: Prism::ArgumentsNode[arguments: [Prism::StringNode | Prism::InterpolatedStringNode => message, *]]] then @messages[message] = true
+			else nil
+			end
 		end
 	end
 
@@ -634,22 +652,31 @@ class Quickdraw::Mutation::Mutator
 			nil
 		in Prism::NilNode | Prism::TrueNode | Prism::FalseNode | Prism::IntegerNode | Prism::StringNode | Prism::SymbolNode
 			nil
+		in Prism::InstanceVariableWriteNode if nil_instance_variable?(statement)
+			nil
 		else
 			add(statement.location, "nil", "removed the statement", covering_line(statement))
 		end
+	end
+
+	# An instance variable set to nil in `initialize`, which only names it, as
+	# one that isn't set reads as nil anyway.
+	private def nil_instance_variable?(statement)
+		@method.name == :initialize && !@method.receiver && (statement in Prism::InstanceVariableWriteNode[value: Prism::NilNode])
 	end
 
 	private def replace_body(body)
 		statements = (Prism::BeginNode === body) ? body.statements : body
 		return unless Prism::StatementsNode === statements
 		return if statements.body in [Prism::NilNode]
+		return if statements.body.all? { |statement| nil_instance_variable?(statement) }
 
 		# Any test that calls the method, whose call event is on the definition's
 		# line, since its first statement's line may have no line event.
 		add(statements.location, "nil", "replaced the body with nil", @method.location.start_line)
 	end
 
-	private def add(location, replacement, description, covering_line)
+	private def add(location, replacement, description, covering_line, message: false)
 		return if location.slice == replacement
 		# Leaving a heredoc's body behind, which then runs as code.
 		return if @heredocs.any? { |heredoc| location.start_offset <= heredoc.start_offset && heredoc.start_offset < location.end_offset && location.end_offset < heredoc.end_offset }
@@ -681,6 +708,7 @@ class Quickdraw::Mutation::Mutator
 			frozen_string_literal: @frozen_string_literal,
 			before: Quickdraw.utf8(@source.byteslice(line_start, line_end - line_start).chomp),
 			after: after.strip.empty? ? "" : Quickdraw.utf8(after),
+			message:,
 		)
 	end
 

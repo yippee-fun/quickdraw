@@ -3,8 +3,9 @@
 # A change to one method of `subject`: its whole definition as mutated, in
 # `source`. The change spans `line` to `last_line`, shown as `before` and
 # `after`. A test can only kill it if it runs `covering_line`, the line of the
-# statement it's in.
-Quickdraw::Mutation::Mutant = Data.define(:id, :subject, :line, :last_line, :covering_line, :description, :source, :frozen_string_literal, :before, :after) do
+# statement it's in. `message` is whether it only empties the message of an
+# error the method raises, which reports list apart.
+Quickdraw::Mutation::Mutant = Data.define(:id, :subject, :line, :last_line, :covering_line, :description, :source, :frozen_string_literal, :before, :after, :message) do
 	# Defines the mutated method in place of the original, in a worker, within
 	# the same classes and modules so constants resolve as they did. Keeps the
 	# original's visibility, which a `private` before it set. Raises if the
