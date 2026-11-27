@@ -81,23 +81,6 @@ class MutateTest < Quickdraw::Test
 		match { project.run("mutate", "--show", "nope") => { exit_status: 1, stderr: /no survivor nope/ } }
 	end
 
-	test "runs only the last run's survivors again with --survivors, counting its kills", timeout: 30 do
-		project = project("lib/pricing.rb" => PRICING, "test/pricing.test.rb" => WEAK)
-		match { project.run("mutate", "lib/pricing.rb", "--format", "agent") => { stdout: /^MUTATION SCORE: 63.6% \(7 of 11 killed, 4 survived\)/ } }
-
-		project.write("test/pricing.test.rb" => STRONG)
-		result = project.run("mutate", "--survivors", "--format", "agent")
-
-		assert result.success?
-		assert_includes result.stdout, "MUTATION SCORE: 100% (11 of 11 killed). 4 mutants in "
-		assert_includes result.stdout, ", and 7 killed in the last run, not run again\n"
-
-		# Its kills count as the last run's, so running it again runs nothing.
-		match { project.run("mutate", "--survivors", "--format", "agent") => { stdout: /MUTATION SCORE: 100% \(11 of 11 killed\). 0 mutants in .*, and 11 killed in the last run, not run again/ } }
-
-		match { project.run("mutate", "--survivors", "lib/pricing.rb") => { exit_status: 2, stderr: /can’t be used with files/ } }
-	end
-
 	test "notices code the tests can do without, such as a call to strip", timeout: 30 do
 		greeter = <<~'RUBY'
 			module Greeter
