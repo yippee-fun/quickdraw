@@ -293,7 +293,7 @@ class MutatorTest < Quickdraw::Test
 		assert_equal mutants(source).filter_map { |mutant| mutant.covering_line if mutant.description == "removed the statement" }, [5, 8, 9]
 	end
 
-	test "marks the mutants that only empty a raised error's message" do
+	test "doesn't empty a raised error's message, since what's raised is its class" do
 		source = <<~RUBY
 			class A
 				def call(a)
@@ -305,9 +305,8 @@ class MutatorTest < Quickdraw::Test
 			end
 		RUBY
 
-		messages = mutants(source).select(&:message).map(&:description)
-		assert_equal messages, ["\"bad \#{a}\" → \"\"", "\"worse\" → \"\"", "\"worst\" → \"\""]
-		assert mutants(source).any? { |mutant| mutant.description == "\"not a message\" → \"\"" && !mutant.message }
+		emptied = mutants(source).map(&:description).select { |description| description.end_with?(' → ""') }
+		assert_equal emptied, ["\"not a message\" → \"\""]
 	end
 
 	test "doesn't remove an instance variable set to nil in initialize, which only names it" do

@@ -277,10 +277,11 @@ class Quickdraw::Mutation::Mutator
 			[node.value + 1, 0.0].each do |value|
 				add(node.location, value.to_s, "#{node.slice} → #{value}", statement_line) unless value == node.value
 			end
-		in Prism::StringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || node.unescaped.empty?
-			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line, message: @messages.key?(node))
-		in Prism::InterpolatedStringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<")
-			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line, message: @messages.key?(node))
+		# Not an error's message: what's raised is its class.
+		in Prism::StringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || node.unescaped.empty? || @messages.key?(node)
+			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
+		in Prism::InterpolatedStringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || @messages.key?(node)
+			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
 		in Prism::RegularExpressionNode | Prism::InterpolatedRegularExpressionNode
 			add(node.location, "/(?!)/", "regexp → never matches", statement_line)
 		in Prism::ArrayNode[opening_loc: Prism::Location => opening, elements: [_, *] => elements]
@@ -531,7 +532,7 @@ class Quickdraw::Mutation::Mutator
 		line = first_line(node)
 		return line if traced?(line)
 
-		(line..node.location.end_line).find { |candidate| traced?(candidate) } || line
+		(line..(node.location.end_line)).find { |candidate| traced?(candidate) } || line
 	end
 
 	# An `if` or `unless` after the statement it runs, as in `a if b`.
@@ -676,7 +677,7 @@ class Quickdraw::Mutation::Mutator
 		add(statements.location, "nil", "replaced the body with nil", @method.location.start_line)
 	end
 
-	private def add(location, replacement, description, covering_line, message: false)
+	private def add(location, replacement, description, covering_line)
 		return if location.slice == replacement
 		# Leaving a heredoc's body behind, which then runs as code.
 		return if @heredocs.any? { |heredoc| location.start_offset <= heredoc.start_offset && heredoc.start_offset < location.end_offset && location.end_offset < heredoc.end_offset }
@@ -708,7 +709,6 @@ class Quickdraw::Mutation::Mutator
 			frozen_string_literal: @frozen_string_literal,
 			before: Quickdraw.utf8(@source.byteslice(line_start, line_end - line_start).chomp),
 			after: after.strip.empty? ? "" : Quickdraw.utf8(after),
-			message:,
 		)
 	end
 

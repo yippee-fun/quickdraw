@@ -18,7 +18,7 @@ class Quickdraw::Test < Quickdraw::BasicTest
 		description = arguments.shift unless Quickdraw::Generator === arguments.first
 		raise ::ArgumentError, "fuzz needs a block." unless block
 		raise ::ArgumentError, "fuzz needs a generator, as in fuzz(\"parses anything\", bytes) { |input| … }, or a block that calls check." if arguments.empty? && block.arity != 0
-		raise ::ArgumentError, "hang_after needs a positive number of seconds." unless hang_after.nil? || (Numeric === hang_after && hang_after.positive?)
+		raise ::ArgumentError, "hang_after needs a positive number of seconds." if hang_after && !(Numeric === hang_after && hang_after.positive?)
 
 		(@fuzz_targets ||= {}.compare_by_identity)[block] = FuzzTarget.new(generators: arguments, cases:, hang_after:)
 		test(description, timeout:, mutation:, &block)
