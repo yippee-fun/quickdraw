@@ -15,8 +15,8 @@ Quickdraw::Mutation::Subject = Data.define(:id, :path, :line, :nesting, :usings,
 	# { subject id => the instruction sequences of their blocks } for those of
 	# `subjects` that are blocks something still holds once their calls have
 	# returned: a method `define_method` made from one, or a Proc kept to call.
-	# Not the blocks inside them, which can open on the same line. With one
-	# pass over the heap for all of them.
+	# Some Rubies give a block's Procs copies of it, so it can have more than
+	# one. With one pass over the heap for all of them.
 	def self.blocks(subjects)
 		wanted = subjects.select do |subject|
 			next false unless subject.block
@@ -37,31 +37,22 @@ Quickdraw::Mutation::Subject = Data.define(:id, :path, :line, :nesting, :usings,
 				nil
 			end
 		end
-		found = Hash.new { |hash, id| hash[id] = [] }
+		found = {}
 
 		ObjectSpace.each_object(Proc) do |block|
 			path, line = block.source_location
 			candidates = (wanted[line] if path) or next
-			candidates.each do |subject|
-				found[subject.id] << RubyVM::InstructionSequence.of(block) if realpaths[path] && realpaths[path] == realpaths[subject.path]
-			end
+			candidates = candidates.select { |subject| realpaths[path] && realpaths[path] == realpaths[subject.path] }
+			next if candidates.empty?
+
+			# Where it opens, as a block inside it can open on the same line.
+			iseq = RubyVM::InstructionSequence.of(block)
+			opening = iseq.to_a[4][:code_location].first(2)
+			candidates.each { |subject| (found[subject.id] ||= []) << iseq if opening == subject.block }
 		end
 
-		found.transform_values do |iseqs|
-			iseqs = iseqs.uniq(&:object_id)
-			nested = {}.compare_by_identity
-			iseqs.each { |iseq| descendants(iseq).each { |child| nested[child] = true } }
-			iseqs.reject { |iseq| nested.key?(iseq) }
-		end
+		found.transform_values { |iseqs| iseqs.uniq(&:__id__) }
 	end
-
-	def self.descendants(iseq)
-		children = []
-		iseq.each_child { |child| children << child << descendants(child) }
-		children.flatten
-	end
-
-	private_class_method :descendants
 
 	# The class or module the method is defined on. Raises NameError if one of
 	# those around it isn't defined, and TypeError if it isn't a module.

@@ -38,8 +38,8 @@ class SubjectTest < Quickdraw::Test
 
 		blocks = Quickdraw::Mutation::Subject.blocks([visit, convert, once])
 
-		# Not `once`'s, which nothing keeps.
-		assert_equal blocks.transform_values { |iseqs| iseqs.map(&:first_lineno) }, { visit.id => [6], convert.id => [8] }
+		# Not `once`'s, which nothing keeps, nor the one in `visit`'s, which opens on its line.
+		assert_equal blocks.transform_values { |iseqs| iseqs.map(&:first_lineno).uniq }, { visit.id => [6], convert.id => [8] }
 	ensure
 		Object.__send__(:remove_const, name) if Object.const_defined?(name, false)
 	end
