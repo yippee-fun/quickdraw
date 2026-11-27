@@ -188,6 +188,51 @@ class MutatorTest < Quickdraw::Test
 		]
 	end
 
+	test "mutates the bodies of blocks given to calls in classes and modules, but not those that define methods" do
+		source = <<~RUBY
+			module Example
+				some_method do
+				end
+
+				class Visitor
+					self.visit(Node, deep: true) do |node|
+						node.children.map { |child| visit(child) }
+					end
+
+					on(:save) { |record| record.save! if record.valid? }
+
+					included do
+						def name = "included"
+					end
+
+					def call(nodes) = nodes.each { |node| visit(node) }
+				end
+			end
+
+			configure do
+				1 + 1
+			end
+		RUBY
+
+		found = mutants(source)
+		subjects = found.map(&:subject).uniq
+
+		assert_equal subjects.map(&:label), ["Example::Visitor self.visit(Node, deep: true) do", "Example::Visitor on(:save) do", "Example::Visitor#call"]
+		assert_equal subjects.map(&:block), [[6, 31], [10, 12], nil]
+		assert_equal subjects.map(&:id), ["lib/example.rb:6:2", "lib/example.rb:10:2", "lib/example.rb:16:2"]
+		assert_equal subjects.first.nesting, [["module", "Example"], ["class", "Visitor"]]
+
+		visit = found.select { |mutant| mutant.subject == subjects.first }
+		assert_equal visit.map { |mutant| [mutant.description, mutant.covering_line, mutant.after.strip] }, [
+			["replaced the body with nil", 6, "nil"],
+			["map → each", 7, "node.children.each { |child| visit(child) }"],
+			["removed the block", 7, "node.children.map"],
+		]
+		# The whole call, as a worker makes it again.
+		assert visit.first.source.start_with?("self.visit(Node, deep: true) do |node|\n")
+		assert visit.first.source.end_with?("\tend")
+	end
+
 	test "mutates only what touches the lines given, and knows each mutant's statement" do
 		source = <<~RUBY
 			class Example
