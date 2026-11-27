@@ -87,7 +87,7 @@ When a case fails, Quickdraw shrinks it to the simplest case it can find that fa
 
 - **Generators:** `integer(-10..10)`, `float(0.0..1.0)`, `boolean`, `string` (any Unicode, or `string("a".."z", length: 1..8)`, or `string(:ascii)`, with `dictionary: ["true", "null"]` to mix in words), `bytes` (binary, with a `dictionary:` too), `symbol`, `array(integer, length: 0..5)`, `hash_of(symbol, integer)`, `fixed_hash(name: string, age: integer(0..))`, `tuple(integer, string)`, `one_of(:red, :green, integer)`, `constant(value)` and `nilable(string)`. Ranges of numbers can be open-ended. Where a generator is expected inside `tuple`, `fixed_hash`, `array`, `hash_of` and `one_of`, a plain value is a constant, so `tuple(:add, integer)` makes `[:add, 3]`. `string` raises when it's defined if its characters aren't valid, or their encodings don't mix.
 - **Your own:** `map`, `filter` and `flat_map` build generators from others, and `generator { |choices| User.new(name: choices.draw(string)) }` draws from several. They shrink as well as the built-in ones. Outside a test, call generators on `Quickdraw::Generators`.
-- **How many:** `cases: 1000`, or `seconds: 2` to stop sooner if time runs out. A property counts as one assertion.
+- **How many:** `cases: 1000`, or `seconds: 2` to stop sooner if time runs out. A property counts as one assertion. `qd --cases-scale 10` checks every property with ten times its cases, for a long run on CI, say, and `--cases-scale 0.1` a tenth (at least one), in place of an environment variable of your own.
 
 ## Fuzzing
 

@@ -35,6 +35,28 @@ class PropertiesTest < Quickdraw::Test
 		assert_equal Dir.children(saved), []
 	end
 
+	test "--cases-scale checks every property with that many times its cases", timeout: 30 do
+		project = project("counting.test.rb" => <<~RUBY)
+			class Counting < Quickdraw::Test
+				test("ten") { check(integer, cases: 10) { |n| File.write("ten", "x", mode: "a"); assert true } }
+				test("three") { check(integer, cases: 3) { |n| File.write("three", "x", mode: "a"); assert true } }
+			end
+		RUBY
+
+		counts = -> { ["ten", "three"].map { |name| File.size(File.join(project.directory, name)).tap { File.delete(File.join(project.directory, name)) } } }
+
+		assert project.run("-p", "1", "--no-history").success?
+		assert_equal counts.(), [10, 3]
+
+		assert project.run("-p", "1", "--no-history", "--cases-scale", "2.5").success?
+		assert_equal counts.(), [25, 8]
+
+		assert project.run("-p", "1", "--no-history", "--cases-scale=0.01").success?
+		assert_equal counts.(), [1, 1]
+
+		match { project.run("--cases-scale", "0") => { exit_status: 2, stderr: /--cases-scale needs a positive number/ } }
+	end
+
 	test "tests with the same description keep their own saved cases", timeout: 30 do
 		project = project("same.test.rb" => <<~RUBY)
 			class Same < Quickdraw::Test
