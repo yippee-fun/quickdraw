@@ -32,6 +32,26 @@ class LeaksTest < Quickdraw::Test
 		refute_includes result.output, "TIDY"
 	end
 
+	test "doesn't count a killed child that Process.detach is still to reap", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
+		result = project("detached.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--leaks", "fail", "--format", "agent")
+			class Detached < Quickdraw::Test
+				20.times do |index|
+					test("kills a detached child \#{index}") do
+						pid = spawn("sleep", "10")
+						Process.detach(pid)
+						Process.kill(:KILL, pid)
+						assert true
+					end
+				end
+			end
+		RUBY
+
+		assert(result.success?) { result.output }
+		refute_includes result.output, "LEAK"
+	end
+
 	test "reports a child process that exited without being waited for", timeout: 20 do
 		skip "Leak checks need fork" unless Process.respond_to?(:fork)
 

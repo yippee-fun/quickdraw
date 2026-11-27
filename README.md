@@ -239,7 +239,7 @@ After each test, Quickdraw checks for state it left behind, which can make later
 - a thread it started that ended with an exception nobody saw, since it wasn't joined;
 - a failed assertion from a thread it started, made after it finished, which is reported with the test running then, naming the one that started the thread;
 - a fiber scheduler it set and didn't unset, in which later tests' fibers would run;
-- child processes it started and didn't wait for (unless config started some too, which can't be told apart);
+- child processes it started and didn't wait for (unless config started some too, which can't be told apart). One handed to `Process.detach` counts as waited for once it exits, even if the test ends, say after killing it, before the detach thread has reaped it;
 - changes to `ENV` it didn't undo. Only the names are reported, since values can be secrets.
 
 Leaks are listed as warnings after the run. `--leaks fail` makes them errors, and `--leaks off` turns the checks off. They cost about a microsecond per test.

@@ -12,6 +12,9 @@ class Quickdraw::Leaks
 	THREAD_ADDRESS = /\A#<Thread:0x\h+/
 	THREAD_LOCATION = /\A (?<path>.+):(?<line>\d+) \w+>\z/m
 
+	# How long to wait for Process.detach's threads to reap children that have exited.
+	DETACH_GRACE = 0.1
+
 	# Comparing ENV takes several microseconds, so its writers set a flag.
 	module ENVChanges
 		singleton_class.attr_accessor :changed
@@ -230,6 +233,7 @@ class Quickdraw::Leaks
 
 			ProcessStarts.started = false
 			leaks = nil
+			settle_detached
 			pid, status = wait_for_child
 
 			while pid
@@ -257,6 +261,17 @@ class Quickdraw::Leaks
 
 			nil
 		end
+	end
+
+	# Gives Process.detach's threads a moment to reap children that have just
+	# exited, such as one a test killed, so they aren't taken for children
+	# nobody waited for. One that's still running is still a leak.
+	private def settle_detached
+		waiters = Thread.list.select { |thread| Process::Waiter === thread && thread.alive? }
+		return if waiters.empty?
+
+		deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + DETACH_GRACE
+		waiters.each { |waiter| waiter.join((deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)).clamp(0, nil)) }
 	end
 
 	# [pid, status] for a child that has exited, which this reaps, or [nil,
