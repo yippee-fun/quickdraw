@@ -7,6 +7,21 @@ class MutatorTest < Quickdraw::Test
 		Quickdraw::Mutation::Mutator.new("/project/lib/example.rb", source, relative_path: "lib/example.rb").call(lines:)
 	end
 
+	# The first of `lines` Ruby fires a line event on, which differs between
+	# versions: 3.3 fires a multi-line literal's on its first element, later
+	# ones on its first line.
+	def first_traced(source, lines)
+		traced = {}
+		pending = [RubyVM::InstructionSequence.compile(source)]
+
+		while (iseq = pending.pop)
+			iseq.trace_points.each { |line, event| traced[line] = true if event == :line }
+			iseq.each_child { |child| pending << child }
+		end
+
+		lines.find { |line| traced.key?(line) }
+	end
+
 	def changes(source)
 		mutants(source).map { |mutant| [mutant.description, mutant.after.strip] }
 	end
@@ -363,8 +378,10 @@ class MutatorTest < Quickdraw::Test
 
 		# Ruby fires each literal's line event on its first element's line, not the brace's.
 		covering = mutants(source).to_h { |mutant| [mutant.description, mutant.covering_line] }
-		assert_equal covering.values_at("removed the statement", "{ a: 1, b: \"b\", } → {}", "removed b: \"b\"", "\"b\" → \"\""), [3, 5, 5, 5]
-		assert_equal covering.values_at("removed a: a", "[1, 2] → []"), [12, 12]
+		hash = first_traced(source, 4..7)
+		options = first_traced(source, 11..15)
+		assert_equal covering.values_at("removed the statement", "{ a: 1, b: \"b\", } → {}", "removed b: \"b\"", "\"b\" → \"\""), [3, hash, hash, hash]
+		assert_equal covering.values_at("removed a: a", "[1, 2] → []"), [options, options]
 	end
 
 	test "removes an element or argument with the comma after it, keeping a trailing comma's line to itself" do
@@ -753,11 +770,13 @@ class MutatorTest < Quickdraw::Test
 			end
 		RUBY
 
+		# 3.3 fires no line event on `case`, so its statement runs from its first `in`.
+		first_case_line = first_traced(source, 3..4)
 		assert_equal mutants(source).map { |mutant| [mutant.description, mutant.after.strip, mutant.covering_line] }, [
 			["replaced the body with nil", "nil", 2],
-			["removed the statement", "nil", 4],
-			["removed the in branch", "", 4],
-			["removed the in branch", "", 4],
+			["removed the statement", "nil", first_case_line],
+			["removed the in branch", "", first_case_line],
+			["removed the in branch", "", first_case_line],
 			["removed the statement", "nil", 7],
 			["removed the rescue", "risky", 7],
 			["rescued value → nil", "risky rescue nil", 7],
