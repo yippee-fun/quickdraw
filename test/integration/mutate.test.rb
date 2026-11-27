@@ -434,6 +434,87 @@ class MutateTest < Quickdraw::Test
 		assert_includes result.stdout, "MUTATION SCORE: 50% (3 of 6 killed, 3 survived)"
 	end
 
+	test "mutates the blocks given to calls in a class's body, as a DSL's are, and runs only the tests that run them", timeout: 30 do
+		project = project(
+			"lib/dsl.rb" => <<~RUBY,
+				module DSL
+					def visit(type, &) = define_method("visit_\#{type}", &)
+
+					def convert(type, &block)
+						define_method("convert_\#{type}") { |value| instance_exec(value, &block) }
+					end
+				end
+			RUBY
+			"lib/visitor.rb" => <<~RUBY,
+				require_relative "dsl"
+
+				class Visitor
+					extend DSL
+
+					visit :number do |value|
+						value * 2
+					end
+
+					convert :text do |value|
+						value.upcase
+					end
+				end
+			RUBY
+			"test/visitor.test.rb" => <<~RUBY,
+				require_relative "../lib/visitor"
+				class VisitorTest < Quickdraw::Test
+					test("doubles numbers") { assert_equal Visitor.new.visit_number(3), 6 }
+					test("shouts text") { assert_equal Visitor.new.convert_text("a"), "A" }
+				end
+			RUBY
+		)
+
+		result = project.run("mutate", "lib/visitor.rb", "--format", "agent")
+
+		assert result.success?
+		assert_includes result.stdout, "MUTATION SCORE: 100% (6 of 6 killed)"
+
+		project.write("test/visitor.test.rb" => <<~RUBY)
+			require_relative "../lib/visitor"
+			class VisitorTest < Quickdraw::Test
+				test("doubles numbers") { assert_equal Visitor.new.visit_number(3), 6 }
+				test("converts text") { assert Visitor.new.convert_text("a") }
+			end
+		RUBY
+
+		result = project.run("mutate", "lib/visitor.rb", "--format", "agent")
+
+		# Only the test that runs the block runs its mutants.
+		assert_match result.stdout, %r{^SURVIVED \h{12} lib/visitor.rb:11 Visitor convert :text do: upcase → downcase \(1 test ran it\)$}
+		assert_includes result.stdout, "MUTATION SCORE: 83.3% (5 of 6 killed, 1 survived)"
+	end
+
+	test "doesn't count a mutated block as surviving when its call keeps the original block too", timeout: 30 do
+		result = project(
+			"lib/hooks.rb" => <<~RUBY,
+				class Hooks
+					def self.hooks = (@hooks ||= [])
+					def self.hook(&block) = hooks << block
+
+					hook do |log|
+						log << :saved
+					end
+
+					def self.run(log) = hooks.each { |hook| hook.call(log) }
+				end
+			RUBY
+			"test/hooks.test.rb" => <<~RUBY,
+				require_relative "../lib/hooks"
+				class HooksTest < Quickdraw::Test
+					test("logs") { assert_equal [].tap { |log| Hooks.run(log) }.uniq, [:saved] }
+				end
+			RUBY
+		).run("mutate", "lib/hooks.rb", "--format", "agent")
+
+		refute_includes result.stdout, "SURVIVED"
+		assert_includes result.stdout, "couldn’t be applied, such as at lib/hooks.rb:6: Hooks hook do kept the original block as well as the mutated one, and the original still ran"
+	end
+
 	test "mutates methods in files with another encoding", timeout: 30 do
 		result = project(
 			"lib/menu.rb" => "# encoding: iso-8859-1\n# frozen_string_literal: true\nmodule Menu\n\tdef self.item(hot) = hot ? \"caf\xE9\" : \"th\xE9\"\n\tdef self.acute?(word) = word.match?(/\\xE9/)\nend\n",

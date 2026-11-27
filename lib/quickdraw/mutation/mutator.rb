@@ -6,7 +6,10 @@ require "prism"
 # a test running that code should notice. Only methods defined directly in
 # classes, modules, `class << self`, and the blocks of `Data.define`,
 # `Struct.new` (assigned to a constant) and `class_methods`, which a worker
-# can redefine.
+# can redefine. And the blocks given to calls directly in those, as in a DSL
+# such as `visit Node do |node| … end`, which a worker makes the call again
+# with (see Mutant#apply), but not those that define methods, which are more
+# like classes.
 #
 # Mutations that can't change behaviour (x + 0 to x - 0) or that only break
 # code any test running it would notice anyway (removing a local variable's
@@ -126,6 +129,8 @@ class Quickdraw::Mutation::Mutator
 				block: nil,
 			]
 				definition(method, nesting, usings)
+			in Prism::CallNode[block: Prism::BlockNode[body: Prism::Node]] if nesting.any?
+				block_definition(node, nesting, usings)
 			else nil
 			end
 		end
@@ -189,17 +194,46 @@ class Quickdraw::Mutation::Mutator
 
 		return unless node.body
 
+		subject(node, node.body, nesting, usings, name: node.name, singleton:, block: nil)
+		replace_body(node.body, node.location.start_line)
+		visit(node.body, node.location.start_line)
+	end
+
+	# Only the block's body, since what the call is given runs as the file
+	# loads, before any test.
+	private def block_definition(node, nesting, usings)
+		body = node.block.body
+		statements = (Prism::BeginNode === body) ? body.statements : body
+		return if statements&.body&.any? { |statement| defines?(statement) }
+
+		opening = node.block.opening_loc
+		before = [node.receiver&.location, node.message_loc, node.arguments&.location, node.closing_loc].compact.max_by(&:end_offset)
+		name = @source.byteslice(node.location.start_offset, before.end_offset - node.location.start_offset)
+		subject(node, body, nesting, usings, name: abbreviate(name), singleton: false, block: [opening.start_line, opening.start_column])
+		# A block's call event is on the line it opens on.
+		replace_body(body, opening.start_line)
+		visit(body, opening.start_line)
+	end
+
+	# Whether a statement in a class's body defines a method, as `def` or `private def` do.
+	private def defines?(statement)
+		case statement
+		in Prism::DefNode then true
+		in Prism::CallNode[receiver: nil, arguments: Prism::ArgumentsNode[arguments: [Prism::DefNode]]] then true
+		else false
+		end
+	end
+
+	private def subject(node, body, nesting, usings, name:, singleton:, block:)
 		line = node.location.start_line
 		@method = node
 		@locals = locals(node)
 		@local_calls = local_calls(node)
 		# With the column, since two methods can share a line.
 		id = "#{@relative_path}:#{line}:#{node.location.start_column}"
-		@subject = Quickdraw::Mutation::Subject.new(id:, path: @path, line:, nesting:, usings:, name: node.name, singleton:)
+		@subject = Quickdraw::Mutation::Subject.new(id:, path: @path, line:, nesting:, usings:, name:, singleton:, block:)
 		@seen = {}
-		@heredocs = heredocs(node.body)
-		replace_body(node.body)
-		visit(node.body, line)
+		@heredocs = heredocs(body)
 	end
 
 	# `statement_line` is the line of the innermost statement around `node`.
@@ -630,6 +664,8 @@ class Quickdraw::Mutation::Mutator
 
 	# The method's parameters but its block, which `super` passes on.
 	private def forwarded_parameters
+		return [] unless Prism::DefNode === @method
+
 		parameters = @method.parameters or return []
 		[*parameters.requireds, *parameters.optionals, parameters.rest, *parameters.posts, *parameters.keywords, parameters.keyword_rest].compact
 	end
@@ -663,18 +699,18 @@ class Quickdraw::Mutation::Mutator
 	# An instance variable set to nil in `initialize`, which only names it, as
 	# one that isn't set reads as nil anyway.
 	private def nil_instance_variable?(statement)
-		@method.name == :initialize && !@method.receiver && (statement in Prism::InstanceVariableWriteNode[value: Prism::NilNode])
+		(@method in Prism::DefNode[name: :initialize, receiver: nil]) && (statement in Prism::InstanceVariableWriteNode[value: Prism::NilNode])
 	end
 
-	private def replace_body(body)
+	# `line` is where its call event is: any test that calls the method or
+	# block fires it, while its first statement's line may have no line event.
+	private def replace_body(body, line)
 		statements = (Prism::BeginNode === body) ? body.statements : body
 		return unless Prism::StatementsNode === statements
 		return if statements.body in [Prism::NilNode]
 		return if statements.body.all? { |statement| nil_instance_variable?(statement) }
 
-		# Any test that calls the method, whose call event is on the definition's
-		# line, since its first statement's line may have no line event.
-		add(statements.location, "nil", "replaced the body with nil", @method.location.start_line)
+		add(statements.location, "nil", "replaced the body with nil", line)
 	end
 
 	private def add(location, replacement, description, covering_line)

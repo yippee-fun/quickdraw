@@ -8,6 +8,7 @@
 - GitHub Actions annotations' messages start with the test's name and location, and indent their other lines.
 - With `config.rails` on PostgreSQL, each worker's databases are copies of a template database that holds the schema and every fixture set, built once and kept until either changes.
 - A run with fewer files than workers starts a worker for each file, and the rest once a file has enough tests waiting for them to share, so running one file no longer starts a worker for every core.
+- `qd mutate` also mutates the blocks given to calls directly in a class or module, such as a DSL's `visit Node do |node| … end`, making the call again with each change, and runs each change against only the tests that run the block.
 - `after_tests` defines a test that runs once the class's other tests have passed, in whichever workers, with what they `gather`ed.
 
 ## [0.1.0] - 2023-02-19

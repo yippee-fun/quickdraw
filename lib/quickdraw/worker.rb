@@ -538,7 +538,8 @@ class Quickdraw::Worker
 	# take its one of `timeouts` seconds, so a mutant that hangs is stopped as
 	# soon as the test it hangs in overruns, not after all of theirs. Returns
 	# the outcome: ["killed", [path, index]] with the first test that failed,
-	# ["survived"], ["timeout"], ["crashed"], or ["unapplied", why]. Then, with
+	# ["survived"], ["timeout"], ["crashed"], or ["unapplied", why], as when a
+	# mutated block's call kept its original block, which ran. Then, with
 	# `every`, a row of which tests killed it: { "killed" => [[path, index]],
 	# "ran" => count, "complete" => whether every test ran }. Each test's
 	# outcome comes as it's known, so a later test that crashes or hangs the
@@ -557,7 +558,7 @@ class Quickdraw::Worker
 			@watchdog = nil
 
 			begin
-				mutant.apply
+				original_ran = mutant.apply
 			rescue Quickdraw::Interrupted
 				raise
 			rescue Exception => error
@@ -573,6 +574,7 @@ class Quickdraw::Worker
 				break if failed && !every
 			end
 
+			writer.write(Quickdraw::Channel.encode([:original])) if original_ran&.call
 			writer.write(Quickdraw::Channel.encode([:done]))
 		ensure
 			exit!(0)
@@ -602,6 +604,8 @@ class Quickdraw::Worker
 				# The next test's own time, from now.
 				deadline = timeouts[ran] && (now + timeouts[ran])
 			in [:unapplied, reason] then return [["unapplied", reason], nil]
+			in [:original]
+				return [["unapplied", "#{mutant.subject.label} kept the original block as well as the mutated one, and the original still ran"], nil] if killed.empty?
 			in [:done] then ending = :done
 			in nil then ending = :crashed
 			end
