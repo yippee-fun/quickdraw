@@ -9,22 +9,19 @@ class Quickdraw::Test < Quickdraw::BasicTest
 
 	# Defines a test that checks the block with values from the generators, as
 	# `check` does, and that `quickdraw fuzz` fuzzes for longer, guided by the
-	# code it reaches. Without generators, the block is an ordinary test that
-	# calls `check`, so it can set up before its cases and check something after
-	# them all, and `quickdraw fuzz` fuzzes its first property. Under `quickdraw
-	# fuzz`, a case that runs for `hang_after` seconds hangs, in place of
-	# --timeout's.
+	# code it reaches. Under `quickdraw fuzz`, a case that runs for
+	# `hang_after` seconds hangs, in place of --timeout's.
 	def self.fuzz(*arguments, cases: 100, timeout: nil, hang_after: nil, mutation: true, &block)
 		description = arguments.shift unless Quickdraw::Generator === arguments.first
+		raise ::ArgumentError, "fuzz needs a generator, as in fuzz(\"parses anything\", bytes) { |input| … }." if arguments.empty?
 		raise ::ArgumentError, "fuzz needs a block." unless block
-		raise ::ArgumentError, "fuzz needs a generator, as in fuzz(\"parses anything\", bytes) { |input| … }, or a block that calls check." if arguments.empty? && block.arity != 0
 		raise ::ArgumentError, "hang_after needs a positive number of seconds." if hang_after && !(Numeric === hang_after && hang_after.positive?)
 
 		(@fuzz_targets ||= {}.compare_by_identity)[block] = FuzzTarget.new(generators: arguments, cases:, hang_after:)
 		test(description, timeout:, mutation:, &block)
 	end
 
-	# A test fuzz defined: its generators, if its block is a property's, and how many cases it checks.
+	# A test fuzz defined: its generators, how many cases it checks, and how long a case may run under `quickdraw fuzz`.
 	FuzzTarget = Data.define(:generators, :cases, :hang_after)
 
 	# The FuzzTarget of the test that fuzz defined with `block`, if it did.
@@ -83,7 +80,7 @@ class Quickdraw::Test < Quickdraw::BasicTest
 	end
 
 	private def run_block
-		if (target = self.class.fuzz_target(@block)) && target.generators.any?
+		if (target = self.class.fuzz_target(@block))
 			check(*target.generators, cases: target.cases) { |*values| instance_exec(*values, &@block) }
 		else
 			super
