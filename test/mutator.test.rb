@@ -11,6 +11,8 @@ class MutatorTest < Quickdraw::Test
 	# versions: 3.3 fires a multi-line literal's on its first element, later
 	# ones on its first line.
 	def first_traced(source, lines)
+		skip "The mutator reads CRuby's compiled lines, and mutate needs fork anyway" unless defined?(RubyVM::InstructionSequence)
+
 		traced = {}
 		pending = [RubyVM::InstructionSequence.compile(source)]
 
