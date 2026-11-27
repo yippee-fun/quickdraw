@@ -47,6 +47,8 @@ class Quickdraw::Fuzz::Session
 		# A pending test has nothing to run.
 		return @channel.write([:fuzzed, ["unchecked"]]) unless @definition.block
 
+		# The test's own, as fuzz(…, hang_after: 30) sets it.
+		@timeout = fuzz_target&.hang_after || @timeout
 		@last_case = open_last_case
 		deadline = now + @seconds
 		skip = []
@@ -95,9 +97,11 @@ class Quickdraw::Fuzz::Session
 		@last_case&.close
 	end
 
-	private def target?
+	private def target? = !!fuzz_target
+
+	private def fuzz_target
 		test_class = @definition.test_class
-		!!(test_class <= Quickdraw::Test && test_class.fuzz_target(@definition.block))
+		test_class.fuzz_target(@definition.block) if test_class <= Quickdraw::Test
 	end
 
 	# Relays the fuzzer's messages until the test finishes: [:finished, result],

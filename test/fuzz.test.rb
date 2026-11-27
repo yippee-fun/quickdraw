@@ -165,6 +165,56 @@ class FuzzTest < Quickdraw::Test
 		assert_equal inputs.size, 20
 		assert inputs.all? { |n| (0..9).cover?(n) }
 		assert_equal runner.successes, 1
-		assert_raises(ArgumentError) { test_class.fuzz("no generator") { nil } }
+		assert_raises(ArgumentError) { test_class.fuzz("no generator") { |input| input } }
+		assert_raises(ArgumentError) { test_class.fuzz("hangs", integer, hang_after: 0) { |n| n } }
+	end
+
+	test "fuzz without generators defines a test whose block calls check, with setup before its cases and checks after" do
+		test_class = Class.new(Quickdraw::Test)
+		events = []
+
+		definition = Quickdraw.collect_tests("fuzz body", {}) do
+			test_class.fuzz("around its cases", hang_after: 30) do
+				events << :before
+				check(integer(0..9), cases: 5) { |n| events << n }
+				events << :after
+				assert true
+			end
+		end.first
+
+		runner = Runner.new
+		test_class.new(description: definition.description, block: definition.block, runner:).run
+
+		assert_equal events.first, :before
+		assert_equal events.last, :after
+		assert_equal events.size, 7
+		assert_equal test_class.fuzz_target(definition.block).hang_after, 30
+		assert_equal runner.failures, []
+	end
+
+	test "a case runs for a fuzz test's hang_after, not --timeout, before it hangs" do
+		skip "fuzz needs fork" unless Process.respond_to?(:fork)
+
+		root = tmpdir
+		stub(Quickdraw::Fuzz::Corpus, :root) { File.join(root, "fuzz") }
+		directory = Quickdraw::Property.directory
+		Quickdraw::Property.directory = File.join(root, "properties")
+		defer { Quickdraw::Property.directory = directory }
+
+		test_class = Class.new(Quickdraw::Test)
+		definition = Quickdraw.collect_tests("slow", {}) do
+			test_class.fuzz("starts slowly", integer(0..3), hang_after: 2) do |n|
+				sleep 0.3 if n == 3
+				assert true
+			end
+		end.first
+
+		messages = []
+		channel = Object.new
+		channel.define_singleton_method(:write) { |message| messages << message }
+		Quickdraw::Fuzz::Session.new(channel, definition, seconds: 1, timeout: 0.1, seed: 1, test_seed: 1, explicit: false).call
+
+		assert_equal messages.filter_map { |message| message in [:fuzz_finding, finding] and finding.kind }, []
+		assert_equal messages.last, [:fuzzed, ["fuzzed"]]
 	end
 end

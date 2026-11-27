@@ -132,6 +132,17 @@ ParserTest › parses anything  test/parser.test.rb:3
 - **Guided by:** which edges between lines of your project's methods a case runs (not gems', tests' or Quickdraw's), and roughly how many times (1, 2–3, 4–7…), as AFL does. A case that reaches a new edge, or a new count, joins the corpus, kept in `.quickdraw/fuzz/`, which later runs start from, and every worker shares.
 - **New cases:** made by changing a kept case's choices rather than its value, so they keep its shape: a choice replaced or nudged, a value (an array's item, a string's character) deleted, duplicated or swapped for one from another case, or the end made afresh. A tenth are fresh. A `dictionary:` on `string` or `bytes` mixes in words a format uses, which random characters would rarely spell.
 - **Which property:** a test's first `check`. Its others run as usual.
+- **Setup, and checks after every case:** `fuzz` without generators defines an ordinary test whose block calls `check`, so it can set up before the cases and check something after them all. `qd fuzz` picks it up like any other `fuzz` test, and fuzzes its first property. A plain `test` that calls `check` is fuzzed only when given by line.
+
+  ```ruby
+  fuzz "survives any request" do
+    server = start_server
+    check(bytes) { |request| server.handle(request) }
+    assert server.healthy?
+  end
+  ```
+
+- **Slow cases:** `fuzz(…, hang_after: 30)` gives that test's cases 30 seconds, in place of `--timeout`'s, for a case that starts a real process, say.
 - **Results:** `--format human`, `agent` or `json`, with what's found, cases a second, edges reached, and when it reached them: if the last came long before the end, more time is unlikely to find more. It exits with 1 if it finds anything. `--seed N` makes the same cases on one worker, as long as nothing else changes the corpus.
 - **Speed:** 29,000–37,000 cases a second on one worker on a small JSON-like parser, and 70,000–113,000 on four. Tracing the edges costs about 9µs a case there, and saving each case before its generators run and again before it runs, so a crash or hang can be traced to it, about 6µs.
 
