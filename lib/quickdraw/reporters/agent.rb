@@ -18,6 +18,8 @@ class Quickdraw::Reporters::Agent
 	COVERAGE_LIMIT = 20
 	OUTPUT_LINES = 20
 	LEAK_LIMIT = 5
+	# Flaky tests shown in full.
+	FLAKY_LIMIT = 3
 
 	# `kept` says, once the run finishes, whether it was kept for `quickdraw
 	# last`, which has the details. `replay` is for `quickdraw last`, which
@@ -63,6 +65,7 @@ class Quickdraw::Reporters::Agent
 		print_profile if @profile.any? && !@replay
 		print_coverage(outcome.coverage) if outcome.coverage && !@replay
 		print_problem(*@problems.first) if @problems.any? && !kept
+		print_flaky(kept ? [] : @problems.first(1))
 		print_causes if @problems.any?
 		print_leaks if @leaks.any?
 
@@ -105,6 +108,14 @@ class Quickdraw::Reporters::Agent
 
 	private def at?(problem_path, test, path, line)
 		problem_path == path && (line.nil? || test&.[]("line") == line)
+	end
+
+	# Flaky tests in full, as a failure that passed when retried may not happen
+	# again, and the next run replaces the one `last` reads. Not those in `shown`.
+	private def print_flaky(shown)
+		flaky = @problems.select { |_path, test, result| test && result["passed_on_retry"] && !result["quarantined"] } - shown
+		flaky.first(FLAKY_LIMIT).each { |problem| print_problem(*problem) }
+		@io.puts "and #{pluralize(flaky.size - FLAKY_LIMIT, 'more flaky test')}, which #{@last} --list lists" if flaky.size > FLAKY_LIMIT
 	end
 
 	# Every problem and leak, one line each.

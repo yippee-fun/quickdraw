@@ -208,6 +208,13 @@ class GeneratorsTest < Quickdraw::Test
 		check(tuple(boolean, symbol)) { |pair| match { pair => [true | false, Symbol] } }
 	end
 
+	test "tuple, fixed_hash, array and hash_of take constants as one_of does" do
+		check(tuple(:add, integer(1..3))) { |pair| match { pair => [:add, 1..3] } }
+		check(fixed_hash(kind: :user, age: integer(0..9))) { |hash| match { hash => { kind: :user, age: 0..9 } } }
+		check(array(:x, length: 0..3)) { |list| assert_equal list, [:x] * list.size }
+		check(hash_of(:k, 1, length: 0..1)) { |hash| assert_includes [{}, { k: 1 }], hash }
+	end
+
 	test "one_of mixes constants and generators" do
 		assert_equal samples(one_of(:a, :b, integer(1..1))).uniq.sort_by(&:to_s), [1, :a, :b]
 		assert_equal simplest(one_of(:a, integer)), :a

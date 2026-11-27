@@ -53,6 +53,18 @@ end
 - **Timeouts:** tests time out after 300 seconds, or set one per test with `test "…", timeout: 5 do`.
 - **Scope:** methods and constants defined at the top of a test file are only visible to that file's tests.
 
+### Porting from Minitest
+
+Most of a Minitest suite ports by renaming `def test_adds` to `test "adds" do` and `< Minitest::Test` to `< Quickdraw::Test`. What differs:
+
+- **`assert_equal actual, expected`:** the value you have comes first, then the one you expect, the other way round from Minitest's `assert_equal expected, actual`. A test passes either way, so a mechanical port that keeps Minitest's order only shows it in failure output, where Expected and Actual are swapped. The same goes for `refute_equal`, `assert_same`, `assert_in_delta` and `assert_match` (value, then pattern, where Minitest has `assert_match pattern, value`). `assert_includes collection, member` is in Minitest's order.
+- **Messages:** assertions don't take a message argument. Give `assert` and `refute` a block that returns one (`assert(user.valid?) { user.errors.full_messages }`), or add `context { … }` to the test, which shows with any failure after it.
+- **`assert_raises`** takes one class, and no message: `error = assert_raises(ArgumentError) { parse("") }`, then `assert_equal error.message, "empty input"`. For one of several classes, pass a class they share and check `error.class` after.
+- **Not there, and what to use instead:** `assert_kind_of` and `assert_instance_of` are `assert_match value, Class` (which uses `===`) and `assert_equal value.class, Class`; `assert_predicate x, :empty?` and `assert_empty x` are `assert x.empty?`; `assert_respond_to` is `assert x.respond_to?(:name)`; `assert_output` is `context` or `--capture`; `flunk` is `assert(false) { "why" }`; `pass` is `assert true`. `assert_nil`, `assert_operator` and `assert_includes` are as in Minitest.
+- **Setup and teardown:** `setup` and `teardown` methods work as in Minitest, and `defer { … }` cleans up right where something is made. A `describe` block's `setup` should call `super`.
+- **Mocks:** `stub` and `spy` replace Minitest::Mock and `Object#stub`, and are undone after the test.
+- **Files:** test files end in `.test.rb`, and there's no `test_helper` to require: put what it did in `config/quickdraw.rb`.
+
 ## Properties
 
 `check` runs a block with values from generators, 100 times by default, to test something that should hold for any input:
@@ -73,7 +85,7 @@ end
 
 When a case fails, Quickdraw shrinks it to the simplest case it can find that fails in the same place, and reports it with the original and how many cases ran. The case is saved in `.quickdraw/properties/` and tried first next time, until it passes. Cases come from the run's seed, so `--seed N` repeats them.
 
-- **Generators:** `integer(-10..10)`, `float(0.0..1.0)`, `boolean`, `string` (any Unicode, or `string("a".."z", length: 1..8)`, or `string(:ascii)`, with `dictionary: ["true", "null"]` to mix in words), `bytes` (binary, with a `dictionary:` too), `symbol`, `array(integer, length: 0..5)`, `hash_of(symbol, integer)`, `fixed_hash(name: string, age: integer(0..))`, `tuple(integer, string)`, `one_of(:red, :green, integer)`, `constant(value)` and `nilable(string)`. Ranges of numbers can be open-ended. `string` raises when it's defined if its characters aren't valid, or their encodings don't mix.
+- **Generators:** `integer(-10..10)`, `float(0.0..1.0)`, `boolean`, `string` (any Unicode, or `string("a".."z", length: 1..8)`, or `string(:ascii)`, with `dictionary: ["true", "null"]` to mix in words), `bytes` (binary, with a `dictionary:` too), `symbol`, `array(integer, length: 0..5)`, `hash_of(symbol, integer)`, `fixed_hash(name: string, age: integer(0..))`, `tuple(integer, string)`, `one_of(:red, :green, integer)`, `constant(value)` and `nilable(string)`. Ranges of numbers can be open-ended. Where a generator is expected inside `tuple`, `fixed_hash`, `array`, `hash_of` and `one_of`, a plain value is a constant, so `tuple(:add, integer)` makes `[:add, 3]`. `string` raises when it's defined if its characters aren't valid, or their encodings don't mix.
 - **Your own:** `map`, `filter` and `flat_map` build generators from others, and `generator { |choices| User.new(name: choices.draw(string)) }` draws from several. They shrink as well as the built-in ones. Outside a test, call generators on `Quickdraw::Generators`.
 - **How many:** `cases: 1000`, or `seconds: 2` to stop sooner if time runs out. A property counts as one assertion.
 
@@ -120,6 +132,7 @@ ParserTest › parses anything  test/parser.test.rb:3
 - **Guided by:** which edges between lines of your project's methods a case runs (not gems', tests' or Quickdraw's), and roughly how many times (1, 2–3, 4–7…), as AFL does. A case that reaches a new edge, or a new count, joins the corpus, kept in `.quickdraw/fuzz/`, which later runs start from, and every worker shares.
 - **New cases:** made by changing a kept case's choices rather than its value, so they keep its shape: a choice replaced or nudged, a value (an array's item, a string's character) deleted, duplicated or swapped for one from another case, or the end made afresh. A tenth are fresh. A `dictionary:` on `string` or `bytes` mixes in words a format uses, which random characters would rarely spell.
 - **Which property:** a test's first `check`. Its others run as usual.
+- **Slow cases:** `fuzz(…, hang_after: 30)` gives that test's cases 30 seconds, in place of `--timeout`'s, for a case that starts a real process, say.
 - **Results:** `--format human`, `agent` or `json`, with what's found, cases a second, edges reached, and when it reached them: if the last came long before the end, more time is unlikely to find more. It exits with 1 if it finds anything. `--seed N` makes the same cases on one worker, as long as nothing else changes the corpus.
 - **Speed:** 29,000–37,000 cases a second on one worker on a small JSON-like parser, and 70,000–113,000 on four. Tracing the edges costs about 9µs a case there, and saving each case before its generators run and again before it runs, so a crash or hang can be traced to it, about 6µs.
 
@@ -136,6 +149,14 @@ qd --failed                # what failed last time
 qd --changed               # tests affected by uncommitted changes
 qd --changed --base main   # or by everything since this branched from main
 qd --watch                 # run again when files change
+```
+
+From Rake, run it as a task, which passes `qd`'s exit status on:
+
+```ruby
+# Rakefile
+task(:test) { sh "bundle exec qd" }
+task default: :test
 ```
 
 `quickdraw` and `qd` are the same command. `qd --help` lists every option. `qd all` and `qd browser` take the same options and paths (see Browser testing for which runs include browser tests).
@@ -239,7 +260,7 @@ After each test, Quickdraw checks for state it left behind, which can make later
 - a thread it started that ended with an exception nobody saw, since it wasn't joined;
 - a failed assertion from a thread it started, made after it finished, which is reported with the test running then, naming the one that started the thread;
 - a fiber scheduler it set and didn't unset, in which later tests' fibers would run;
-- child processes it started and didn't wait for (unless config started some too, which can't be told apart);
+- child processes it started and didn't wait for (unless config started some too, which can't be told apart). One handed to `Process.detach` counts as waited for, since its thread reaps it, even if the test ends before then, say just after killing it;
 - changes to `ENV` it didn't undo. Only the names are reported, since values can be secrets.
 
 Leaks are listed as warnings after the run. `--leaks fail` makes them errors, and `--leaks off` turns the checks off. They cost about a microsecond per test.
@@ -258,7 +279,7 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
   - passing again in the same worker means it fails some of the time on its own, from timing, randomness or the network;
   - failing again there but passing in a fresh worker means it likely depends on a test that ran before it, which `qd bisect` can find.
 
-  Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times in fresh workers, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
+  A flaky test's first failure is shown in full, for agents too, since it may not happen again, and `--seed` repeats the order but not timing or the network. `--flakes FILE` keeps every attempt of each flaky test, which the next run won't overwrite. Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times in fresh workers, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
 - **Reporting flakes**, from CI, say. `config.on_flaky` is called with each flaky test once the tests have finished, in the process that booted your config, so your app and its error reporting are loaded:
 
   ```ruby
@@ -307,15 +328,15 @@ Mutation score 90% · 18 killed · 2 survived
 - **Changes:** only in methods, including those in `Data.define`, `Struct.new` (assigned to a constant) and `class_methods` blocks.
   - Conditions: negating one, or making it `true` or `false` (in `if`, `unless`, ternaries, loops and `in … if` guards); `a && b` to `a || b`, `a` or `b`; removing a `!`.
   - Operators: comparisons (`>` to `>=`, `==` to `!=`), arithmetic (`+` to `-`, `*` to `/`, `+=` to `-=`), `..` to `...`, and `||=` to `=`.
-  - Literals: `true` to `false`, a number to one more or to 0, emptying a string, array or hash or dropping one of its elements or pairs, and a regexp to one that never matches.
+  - Literals: `true` to `false`, a number to one more or to 0, emptying a string (but not a raised error's message, as what matters is the error's class), array or hash or dropping one of its elements or pairs, and a regexp to one that never matches.
   - Calls: methods such as `select` to `reject`, `first` to `last`, `map` to `each` or `is_a?` to `instance_of?`; dropping a call that changes its receiver (`name.strip` to `name`), a block, an argument the method doesn't need, or `&.`'s check for nil; `fetch(key)` to `[key]`; `super(a)` and `super` to `super()`, and `yield(a)` to `yield`.
   - Control flow: removing a statement, a `when` or `in` branch, a `return`, `next` or `break` value, or a modifier `rescue`; doing nothing in a `rescue` or `ensure`; and replacing a method's body with `nil`.
-  - Not changes that can't make a difference, such as `x + 0` to `x - 0`, `map` to `each` where the value isn't used, or dropping `to_s` in interpolation, and not changes that could only raise, such as removing an argument the method requires, or a block `tap` needs.
+  - Not changes that can't make a difference, such as `x + 0` to `x - 0`, removing `@x = nil` in `initialize` (an unset instance variable is nil anyway), `map` to `each` where the value isn't used, or dropping `to_s` in interpolation, and not changes that could only raise, such as removing an argument the method requires, or a block `tap` needs.
 - **Which tests:** the test files that run a file, from the last `qd --coverage` run, or else its counterpart by name. Those run once unchanged, tracing which lines of the changed methods each test runs, so each change runs only the tests that reach it, fastest first, and stops at the first failure. Tests that fail without changes don't count, and changes no test reaches aren't run, but are listed by line.
-- **Safely:** your files never change. Config boots once, and each change is made by redefining its method in a process forked for it, which exits when its tests finish. A change that makes tests run three times as long as they did (plus half a second) is taken to loop forever, and counts as noticed.
+- **Safely:** your files never change. Config boots once, and each change is made by redefining its method in a process forked for it, which exits when its tests finish. A change that makes any one test run three times as long as it did (plus half a second) is taken to loop forever, and counts as noticed, so a hang is stopped in the first test it hangs, not after all its tests' time.
 - **Results:** `--format human`, `agent` or `json`. It exits with 1 if any change survives, or with `--threshold 80`, if fewer than 80% are noticed, and also if some tests or changes couldn't run. Tests' `rand` is seeded the same way every time (`--seed N` changes it), so results don't vary between runs. On GitHub Actions, each surviving change, and each test that fails `--unique-kills`, is also an error annotation on its line, so it shows in the pull request's diff.
 - **Only what changed runs again:** a mutant's outcome is kept in `.quickdraw/mutants.json`, and reused while nothing it depends on has changed: its file, the test files that run it, the files those tests ran in the last `qd --coverage` run, `Gemfile.lock` and `config/quickdraw.rb`. So after you add a test for a survivor, only the mutants that test file runs are tried again. `--no-cache` runs every mutant.
-- **Survivors** have ids that stay the same while their method's code does, since they don't include line numbers. For agents, each survivor is one line with its id, and `qd mutate --show ID` shows its change and the tests that ran it (`--show all` lists them all again).
+- **Survivors** have ids that stay the same while their method's code does, since they don't include line numbers. For agents, each survivor is one line with its id (the first 20, then a count), and `qd mutate --show ID` shows its change and the tests that ran it (`--show all` lists every survivor). A long run prints a `PROGRESS:` line each tenth of the way, at most every 30 seconds, so an agent can tell it's still going.
 - **Which tests do the work:** `--matrix` runs every test that reaches each change, rather than stopping at the first failure, and lists **blind** tests, which ran changed code and noticed none of the changes, so they run code without checking it, and **redundant** tests, which only noticed changes another test noticed too. Since each change only runs the tests that reached its line, a blind test really did run the changed code. Redundancy is judged one test at a time, so remove redundant tests one at a time. It takes longer, since every test runs, but doesn't change the score.
 - **Equivalent changes:** some changes can't make a difference, such as `>` to `>=` where the two are never equal. Mark one with a comment on its line, naming the change as the output does and saying why, and it's left out of the score and listed as marked equivalent. A mark without a name covers every change on its line. Quickdraw warns about a mark with no reason, or one that matches no change.
 

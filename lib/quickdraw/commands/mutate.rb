@@ -13,10 +13,8 @@ class Quickdraw::Commands::Mutate
 
 	FORMATS = ["human", "agent", "json"].freeze
 
-	# A mutant's tests may take this many times as long as they did unmutated,
-	# plus TIMEOUT_MARGIN seconds, before it counts as looping forever, which kills it.
-	TIMEOUT_FACTOR = 3
-	TIMEOUT_MARGIN = 0.5
+	# The least time between progress lines for agents.
+	PROGRESS_INTERVAL = 30
 
 	# Fixed, so a test that uses rand, such as a property, kills the same mutants every time.
 	DEFAULT_SEED = 0
@@ -182,6 +180,7 @@ class Quickdraw::Commands::Mutate
 		end
 
 		jobs = @jobs.reject { |job| from_cache(job) }
+		@io.puts "RUNNING: #{pluralize(jobs.size, 'mutant')}#{", and #{@cached.size} unchanged since an earlier run" if @cached.any?}" if @format == "agent" && jobs.any?
 
 		runner.call(jobs) do |job, outcome, row|
 			@outcomes << [job, outcome]
@@ -238,7 +237,7 @@ class Quickdraw::Commands::Mutate
 
 	private def job(mutant, tests)
 		tests = tests.sort_by(&:duration)
-		Quickdraw::Mutation::Runner::Job.new(mutant:, tests:, seconds: (tests.sum(&:duration) * TIMEOUT_FACTOR) + TIMEOUT_MARGIN)
+		Quickdraw::Mutation::Runner::Job.new(mutant:, tests:)
 	end
 
 	# The tests (Baselines) this adds or changes.
@@ -274,7 +273,28 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def progress
-		@io.print "\r\e[KMutants: #{@outcomes.size} of #{@jobs.size}" if progress?
+		if progress?
+			@io.print "\r\e[KMutants: #{@outcomes.size} of #{@jobs.size}"
+		elsif @format == "agent"
+			agent_progress
+		end
+	end
+
+	# A line every tenth of the way, but no more often than every
+	# PROGRESS_INTERVAL seconds, so a long run shows it's going without
+	# costing an agent many lines.
+	private def agent_progress
+		done = @outcomes.size
+		return if done == @jobs.size
+
+		step = done * 10 / @jobs.size
+		return if step <= (@progress_step || 0) || now - (@progress_at || @started_at) < PROGRESS_INTERVAL
+
+		@progress_step = step
+		@progress_at = now
+		survived = @outcomes.count { |job, (status, *)| status == "survived" && !@reach_ids.key?(job.mutant.id) }
+		@io.puts "PROGRESS: #{done} of #{pluralize(@jobs.size, 'mutant')} in #{format('%.0fs', now - @started_at)}, #{survived} survived so far"
+		@io.flush
 	end
 
 	private def progress?

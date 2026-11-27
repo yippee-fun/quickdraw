@@ -166,5 +166,32 @@ class FuzzTest < Quickdraw::Test
 		assert inputs.all? { |n| (0..9).cover?(n) }
 		assert_equal runner.successes, 1
 		assert_raises(ArgumentError) { test_class.fuzz("no generator") { nil } }
+		assert_raises(ArgumentError) { test_class.fuzz("hangs", integer, hang_after: 0) { |n| n } }
+	end
+
+	test "a case runs for a fuzz test's hang_after, not --timeout, before it hangs" do
+		skip "fuzz needs fork" unless Process.respond_to?(:fork)
+
+		root = tmpdir
+		stub(Quickdraw::Fuzz::Corpus, :root) { File.join(root, "fuzz") }
+		directory = Quickdraw::Property.directory
+		Quickdraw::Property.directory = File.join(root, "properties")
+		defer { Quickdraw::Property.directory = directory }
+
+		test_class = Class.new(Quickdraw::Test)
+		definition = Quickdraw.collect_tests("slow", {}) do
+			test_class.fuzz("starts slowly", integer(0..3), hang_after: 2) do |n|
+				sleep 0.3 if n == 3
+				assert true
+			end
+		end.first
+
+		messages = []
+		channel = Object.new
+		channel.define_singleton_method(:write) { |message| messages << message }
+		Quickdraw::Fuzz::Session.new(channel, definition, seconds: 1, timeout: 0.1, seed: 1, test_seed: 1, explicit: false).call
+
+		assert_equal messages.filter_map { |message| message in [:fuzz_finding, finding] and finding.kind }, []
+		assert_equal messages.last, [:fuzzed, ["fuzzed"]]
 	end
 end

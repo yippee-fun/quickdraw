@@ -93,6 +93,8 @@ class Quickdraw::Mutation::Mutator
 		@unused = {}.compare_by_identity
 		@removed = {}.compare_by_identity
 		@interpolated = {}.compare_by_identity
+		# Strings that are the messages of errors raised.
+		@messages = {}.compare_by_identity
 		@mutants = []
 		scope(result.value.statements, [], [])
 
@@ -210,7 +212,7 @@ class Quickdraw::Mutation::Mutator
 					@removed[statement] = true if remove(statement)
 				end
 
-				visit(statement, first_line(statement))
+				visit(statement, covering_line(statement))
 			end
 
 			return
@@ -275,9 +277,10 @@ class Quickdraw::Mutation::Mutator
 			[node.value + 1, 0.0].each do |value|
 				add(node.location, value.to_s, "#{node.slice} → #{value}", statement_line) unless value == node.value
 			end
-		in Prism::StringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || node.unescaped.empty?
+		# Not an error's message: what's raised is its class.
+		in Prism::StringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || node.unescaped.empty? || @messages.key?(node)
 			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
-		in Prism::InterpolatedStringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<")
+		in Prism::InterpolatedStringNode[opening_loc: Prism::Location => opening] unless opening.slice.start_with?("<<") || @messages.key?(node)
 			add(node.location, '""', "#{abbreviate(node.slice)} → \"\"", statement_line)
 		in Prism::RegularExpressionNode | Prism::InterpolatedRegularExpressionNode
 			add(node.location, "/(?!)/", "regexp → never matches", statement_line)
@@ -298,6 +301,8 @@ class Quickdraw::Mutation::Mutator
 	end
 
 	private def invocation(node, line)
+		messages(node)
+
 		case node
 		in { name: :! | :not, receiver: Prism::Node => receiver, arguments: nil }
 			add(node.location, receiver.slice, "removed the negation", line)
@@ -314,6 +319,20 @@ class Quickdraw::Mutation::Mutator
 			fetch_to_index(node, line)
 			remove_arguments(node, line)
 			remove_block(node, line)
+		end
+	end
+
+	# Notes the strings `raise` or `fail` is given as an error's message, as in
+	# `raise Error, "message"`, `raise "message"` or `raise Error.new("message")`.
+	private def messages(node)
+		return unless node in Prism::CallNode[receiver: nil, name: :raise | :fail, arguments: Prism::ArgumentsNode[arguments:]]
+
+		arguments.each do |argument|
+			case argument
+			in Prism::StringNode | Prism::InterpolatedStringNode then @messages[argument] = true
+			in Prism::CallNode[name: :new, arguments: Prism::ArgumentsNode[arguments: [Prism::StringNode | Prism::InterpolatedStringNode => message, *]]] then @messages[message] = true
+			else nil
+			end
 		end
 	end
 
@@ -505,6 +524,17 @@ class Quickdraw::Mutation::Mutator
 		end
 	end
 
+	# The line a test is seen to run when it runs `node`: its first line, or if
+	# Ruby fires no line event there, as for a multi-line hash or array literal
+	# whose event is on its first element's line, the first line in it that
+	# does.
+	private def covering_line(node)
+		line = first_line(node)
+		return line if traced?(line)
+
+		(line..(node.location.end_line)).find { |candidate| traced?(candidate) } || line
+	end
+
 	# An `if` or `unless` after the statement it runs, as in `a if b`.
 	private def modifier?(node)
 		node in Prism::IfNode[if_keyword_loc: Prism::Location, end_keyword_loc: nil] | Prism::UnlessNode[end_keyword_loc: nil]
@@ -623,15 +653,24 @@ class Quickdraw::Mutation::Mutator
 			nil
 		in Prism::NilNode | Prism::TrueNode | Prism::FalseNode | Prism::IntegerNode | Prism::StringNode | Prism::SymbolNode
 			nil
+		in Prism::InstanceVariableWriteNode if nil_instance_variable?(statement)
+			nil
 		else
-			add(statement.location, "nil", "removed the statement", first_line(statement))
+			add(statement.location, "nil", "removed the statement", covering_line(statement))
 		end
+	end
+
+	# An instance variable set to nil in `initialize`, which only names it, as
+	# one that isn't set reads as nil anyway.
+	private def nil_instance_variable?(statement)
+		@method.name == :initialize && !@method.receiver && (statement in Prism::InstanceVariableWriteNode[value: Prism::NilNode])
 	end
 
 	private def replace_body(body)
 		statements = (Prism::BeginNode === body) ? body.statements : body
 		return unless Prism::StatementsNode === statements
 		return if statements.body in [Prism::NilNode]
+		return if statements.body.all? { |statement| nil_instance_variable?(statement) }
 
 		# Any test that calls the method, whose call event is on the definition's
 		# line, since its first statement's line may have no line event.

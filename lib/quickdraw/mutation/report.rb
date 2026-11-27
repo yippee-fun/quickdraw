@@ -139,7 +139,9 @@ class Quickdraw::Mutation::Report
 			@io.puts "SURVIVED #{@keys.fetch(mutant.id)} #{relative(mutant.subject.path)}:#{mutant.line} #{mutant.subject.label}: #{mutant.description} (#{pluralize(job.tests.size, 'test')} ran it)"
 		end
 
-		@io.puts "and #{pluralize(@survived.size - SHOWN_SURVIVORS, 'more survivor')}" if @survived.size > SHOWN_SURVIVORS
+		if @survived.size > SHOWN_SURVIVORS
+			@io.puts "and #{pluralize(@survived.size - SHOWN_SURVIVORS, 'more survivor')}#{", which #{Quickdraw::Reporters.command} mutate --show all lists with the rest" if survivors_saved}"
+		end
 
 		problems.each { |problem| @io.puts problem }
 

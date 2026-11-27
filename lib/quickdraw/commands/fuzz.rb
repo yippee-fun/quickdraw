@@ -525,7 +525,8 @@ class Quickdraw::Commands::Fuzz
 			fuzzes each test in turn, keeping cases that reach new code in .quickdraw/fuzz/.
 
 			        --seconds N       Fuzz each test for N seconds (default #{DEFAULT_SECONDS})
-			        --timeout N       Count a case that runs for N seconds as hanging (default #{DEFAULT_TIMEOUT})
+			        --timeout N       Count a case that runs for N seconds as hanging (default #{DEFAULT_TIMEOUT}), unless
+			                          its test sets hang_after
 			    -p, --processes N     Run N workers
 			    -s, --seed N          Seed the fuzzers with N, for the same cases as another run
 			        --format FORMAT   human, agent or json

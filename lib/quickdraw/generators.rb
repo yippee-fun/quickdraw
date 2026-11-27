@@ -86,7 +86,9 @@ module Quickdraw::Generators
 		string(characters, length:).map(&:to_sym)
 	end
 
+	# `generator` can be a constant, as in tuple.
 	def array(generator, length: 0..)
+		generator = Quickdraw::Generators.lift(generator)
 		lengths = Quickdraw::Generators.lengths(length)
 
 		Quickdraw::Generator.new do |choices|
@@ -97,6 +99,8 @@ module Quickdraw::Generators
 	# Hashes of keys and values from the generators. A key already in the hash is
 	# drawn again, a few times, before the case is discarded.
 	def hash_of(keys, values, length: 0..)
+		keys = Quickdraw::Generators.lift(keys)
+		values = Quickdraw::Generators.lift(values)
 		lengths = Quickdraw::Generators.lengths(length)
 
 		Quickdraw::Generator.new do |choices|
@@ -107,15 +111,21 @@ module Quickdraw::Generators
 		end
 	end
 
-	# Hashes with these keys, and values from their generators.
+	# Hashes with these keys, and values from their generators. A value that
+	# isn't a generator is a constant, as in tuple.
 	def fixed_hash(shape)
+		shape = shape.transform_values { |value| Quickdraw::Generators.lift(value) }
+
 		Quickdraw::Generator.new do |choices|
 			shape.transform_values { |generator| choices.draw(generator) }
 		end
 	end
 
-	# Arrays of a value from each generator.
+	# Arrays of a value from each generator. One that isn't a generator is a
+	# constant, as in one_of, so `tuple(:add, integer)` makes [:add, 3].
 	def tuple(*generators)
+		generators = generators.map { |generator| Quickdraw::Generators.lift(generator) }
+
 		Quickdraw::Generator.new do |choices|
 			generators.map { |generator| choices.draw(generator) }
 		end
@@ -146,6 +156,11 @@ module Quickdraw::Generators
 	# `generator { |choices| User.new(name: choices.draw(string)) }`.
 	def generator(&)
 		Quickdraw::Generator.new(&)
+	end
+
+	# A generator as it is, or anything else as a constant.
+	def self.lift(value)
+		(Quickdraw::Generator === value) ? value : Quickdraw::Generator.new { value }
 	end
 
 	# A choice favouring small values and the limit, as bugs are found there.
