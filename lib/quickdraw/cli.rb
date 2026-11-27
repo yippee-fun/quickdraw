@@ -222,11 +222,8 @@ class Quickdraw::CLI
 		in :base | :flakes_path | :leaks
 			options[key] = value
 		in :cases_scale
-			# Only plainly written numbers, which optparse reads the same.
-			return false unless value.match?(/\A\d+(?:\.\d+)?\z/)
-
-			number = Float(value)
-			return false unless number.positive?
+			number = Float(value, exception: false)
+			return false unless number&.positive? && number.finite?
 
 			options[key] = number
 		end
