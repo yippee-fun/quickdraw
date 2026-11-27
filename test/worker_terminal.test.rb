@@ -79,10 +79,11 @@ class WorkerTerminalTest < Quickdraw::Test
 			Thread.pass until waiting.status == "sleep"
 			worker.instance_variable_get(:@terminal_turn) << true
 			waiting.raise(Stopped)
-			# Stopped, or, if it took the turn first, the closed channel's error.
+			# Stopped, or, if it took the turn first, the closed channel's error,
+			# which JRuby raises as EBADF from the write.
 			begin
 				waiting.join(5)
-			rescue Stopped, RuntimeError
+			rescue Stopped, RuntimeError, Errno::EBADF
 				nil
 			end
 
