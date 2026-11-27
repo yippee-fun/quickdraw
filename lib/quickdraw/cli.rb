@@ -158,7 +158,6 @@ class Quickdraw::CLI
 		"-p" => :processes,
 		"--processes" => :processes,
 		"--leaks" => :leaks,
-		"--cases-scale" => :cases_scale,
 	}.freeze
 
 	# The options and operands, read as optparse would read them, or nil if
@@ -221,11 +220,6 @@ class Quickdraw::CLI
 			options[key] = number
 		in :base | :flakes_path | :leaks
 			options[key] = value
-		in :cases_scale
-			number = Float(value, exception: false)
-			return false unless number&.positive? && number.finite?
-
-			options[key] = number
 		end
 
 		true
@@ -471,11 +465,6 @@ class Quickdraw::CLI
 
 			parser.on("-s N", "--seed N", Integer, "Order tests and seed rand with N (or set SEED)") do |it|
 				options[:seed] = it
-			end
-
-			parser.on("--cases-scale N", Float, "Check N times as many cases in each property, as in 10 for a long run or 0.1 for a quick one") do |it|
-				usage_error "--cases-scale needs a positive number, as in --cases-scale 10." unless it.positive? && it.finite?
-				options[:cases_scale] = it
 			end
 
 			parser.separator ""
@@ -803,7 +792,6 @@ class Quickdraw::CLI
 			# What loading prints goes through the reporter, so it isn't mixed into its lines.
 			capture_loading: reporter.shows_loading_output?,
 			leaks: options[:leaks]&.to_sym,
-			cases_scale: options[:cases_scale],
 			retries: options[:retries],
 			allow_flaky: options[:allow_flaky],
 			quarantine: options[:quarantine],

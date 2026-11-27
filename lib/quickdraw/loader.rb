@@ -38,7 +38,7 @@ class Quickdraw::Loader
 	# With a `link` instead (see WarmLoaders), the loader stays booted for
 	# watch mode, and serves a run at a time, each with the commands, report
 	# and channels above as named pipes in a directory, rather than once.
-	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, capture_loading: false, leaks: nil, cases_scale: nil, link: nil, directory: nil)
+	def initialize(channels, test_files, seed, control: nil, test_output_to_stderr: false, profile: false, coverage: false, group: nil, report: nil, capture: false, capture_loading: false, leaks: nil, link: nil, directory: nil)
 		@channels = channels
 		@test_files = test_files
 		@seed = seed
@@ -51,7 +51,6 @@ class Quickdraw::Loader
 		@capture = capture
 		@capture_loading = capture_loading
 		@leaks = leaks
-		@cases_scale = cases_scale
 		@link = link
 		@warmed = false
 		@directory = directory
@@ -225,7 +224,7 @@ class Quickdraw::Loader
 	# Skipped if the run has already gone, after Ctrl-C, say.
 	private def serve_run(directory)
 		settings = Marshal.load(File.binread(File.join(directory, "settings")))
-		@test_files, @seed, @profile, @capture, @capture_loading, @leaks, @cases_scale = settings.values_at(:test_files, :seed, :profile, :capture, :capture_loading, :leaks, :cases_scale)
+		@test_files, @seed, @profile, @capture, @capture_loading, @leaks = settings.values_at(:test_files, :seed, :profile, :capture, :capture_loading, :leaks)
 		@directory = directory
 		@running = {}
 		@statuses = []
@@ -506,7 +505,6 @@ class Quickdraw::Loader
 		end
 
 		RubyVM::YJIT.enable if @yjit
-		Quickdraw::Property.scale = @cases_scale
 		Quickdraw::Worker.new(channel, test_files, @seed, timeouts:, profile: @profile, coverage: @coverage, capture:, leaks:, variant:).call
 	end
 

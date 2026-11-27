@@ -282,10 +282,6 @@ class Quickdraw::Property
 		end
 	end
 
-	# How many times as many cases each property checks as it asks for, from
-	# --cases-scale, or nil.
-	singleton_class.attr_accessor :scale
-
 	# Where failing cases are saved, one file per property.
 	@directory = File.join(Quickdraw::ROOT, ".quickdraw/properties")
 
@@ -373,7 +369,7 @@ class Quickdraw::Property
 		raise ::ArgumentError, "A property needs a block." unless body
 
 		@generators = generators
-		@cases = self.class.scale ? [(cases * self.class.scale).ceil, 1].max : cases
+		@cases = cases
 		@seconds = seconds
 		@key = key
 		@path = self.class.path(key)

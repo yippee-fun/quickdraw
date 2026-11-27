@@ -435,7 +435,7 @@ class Quickdraw::Coordinator
 	def initialize(
 		files:, processes:, max_processes:, seed:, reporter:,
 		filter: Quickdraw::Filter.new, fail_fast: false, test_output_to_stderr: false, selection: "", repeatable: true, history_path: nil, only_keys: nil, whole_files: {}, profile: false, coverage: false,
-		capture: nil, capture_loading: false, leaks: nil, cases_scale: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil,
+		capture: nil, capture_loading: false, leaks: nil, retries: nil, allow_flaky: nil, quarantine: nil, flakes_path: nil, output_paths: [], warm_loaders: nil, timeline: false, elastic: nil, variants: nil,
 		yjit: nil, browser_tests: :default, named_files: {}
 	)
 		raise ArgumentError, "browser_tests must be :default, :only or :all, not #{browser_tests.inspect}." unless browser_tests in :default | :only | :all
@@ -462,7 +462,6 @@ class Quickdraw::Coordinator
 		@capture = capture
 		@capture_loading = capture_loading
 		@leaks = leaks
-		@cases_scale = cases_scale
 		@seed = seed
 		@processes = processes
 		@max_processes = max_processes
@@ -736,7 +735,7 @@ class Quickdraw::Coordinator
 		session = @warm_loaders&.session(
 			group, gemfile: @gemfiles[group], capacity:,
 			test_files: @test_files, seed: @seed, profile: @profile, coverage: !@coverage.nil?, test_output_to_stderr: @test_output_to_stderr,
-			capture: @capture, capture_loading: @capture_loading, leaks: @leaks, cases_scale: @cases_scale,
+			capture: @capture, capture_loading: @capture_loading, leaks: @leaks,
 		)
 		return session if session
 
@@ -745,7 +744,7 @@ class Quickdraw::Coordinator
 
 		unless @forking
 			# Without fork, tests share this process, so leaks can't be told apart.
-			Quickdraw::Loader.new(worker_channels, @test_files, @seed, profile: @profile, leaks: :off, cases_scale: @cases_scale, report: report_writer).call_in_thread
+			Quickdraw::Loader.new(worker_channels, @test_files, @seed, profile: @profile, leaks: :off, report: report_writer).call_in_thread
 			return LoaderProcess.new(group:, pid: nil, control: nil, report:, channels: coordinator_channels)
 		end
 
@@ -756,7 +755,7 @@ class Quickdraw::Coordinator
 			worker_channels, @test_files, @seed,
 			gemfile: @gemfiles[group], directory:,
 			control:, test_output_to_stderr: @test_output_to_stderr, profile: @profile, coverage: !@coverage.nil?, group:, report: report_writer,
-			capture: @capture, capture_loading: @capture_loading, leaks: @leaks, cases_scale: @cases_scale,
+			capture: @capture, capture_loading: @capture_loading, leaks: @leaks,
 		) do
 			coordinator_channels.each(&:close)
 			control_writer.close
