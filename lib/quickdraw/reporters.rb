@@ -230,9 +230,9 @@ module Quickdraw::Reporters
 
 			case [result["flake"], passed_in]
 			in ["nondeterministic", "same worker"]
-				"Passed when run again in the same worker, so it fails some of the time on its own."
+				"Passed when run again in the same worker, so it fails some of the time on its own, and the same --seed may not make it fail again."
 			in ["nondeterministic", _]
-				"Failed again in a fresh worker, then passed in another#{retry_number}, so it fails some of the time on its own."
+				"Failed again in a fresh worker, then passed in another#{retry_number}, so it fails some of the time on its own, and the same --seed may not make it fail again."
 			in ["order_dependent", _]
 				"Failed again in the same worker, then passed in a fresh one#{retry_number}, so it likely depends on tests that ran before it."
 			else

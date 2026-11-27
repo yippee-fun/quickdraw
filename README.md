@@ -289,7 +289,7 @@ Quickdraw records each run in `.quickdraw/`, which belongs in `.gitignore`. That
   - passing again in the same worker means it fails some of the time on its own, from timing, randomness or the network;
   - failing again there but passing in a fresh worker means it likely depends on a test that ran before it, which `qd bisect` can find.
 
-  Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times in fresh workers, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
+  A flaky test's first failure is shown in full, for agents too, since it may not happen again, and `--seed` repeats the order but not timing or the network. `--flakes FILE` keeps every attempt of each flaky test, which the next run won't overwrite. Flaky tests still fail the run, unless you pass `--allow-flaky`. `--retry 3` retries up to three times in fresh workers, and `--retry 0` turns retries off. Retries stop after 10 failing tests, since that many usually means broken code.
 - **Reporting flakes**, from CI, say. `config.on_flaky` is called with each flaky test once the tests have finished, in the process that booted your config, so your app and its error reporting are loaded:
 
   ```ruby

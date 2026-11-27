@@ -48,9 +48,19 @@ class RetriesTest < Quickdraw::Test
 		refute result.success?
 		match { result => { summary: /\A2 tests · 2 assertions · 1 flaky · / } }
 		assert_includes result.output, "~ once.test.rb:2 Once › fails the first time"
-		assert_includes result.output, "Passed when run again in the same worker, so it fails some of the time on its own."
+		assert_includes result.output, "Passed when run again in the same worker, so it fails some of the time on its own, and the same --seed may not make it fail again."
 		refute_includes result.output, "bisect"
 		assert_equal runs(project).map(&:first).uniq.size, 1
+	end
+
+	test "agents see a flaky test's failure in full, even when the run is kept for last", timeout: 20 do
+		result = project(FIRST_RUN_FAILS).run("-p", "1", "--format", "agent")
+
+		refute result.success?
+		assert_match result.stdout, /^FLAKY once\.test\.rb:2 Once › fails the first time$/
+		assert_includes result.stdout, "  once.test.rb:4: assert File.readlines(\"runs\").size > 1\n"
+		assert_includes result.stdout, "  Passed when run again in the same worker, so it fails some of the time on its own"
+		assert_match result.stdout, /^Details: \S+ last once\.test\.rb:2/
 	end
 
 	test "a test that fails again in the same worker, then passes in a fresh one, likely depends on tests before it", timeout: 20 do
