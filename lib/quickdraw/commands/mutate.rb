@@ -43,9 +43,8 @@ class Quickdraw::Commands::Mutate
 			end
 
 			options[:targets] = last_run.targets
-			# Those the last run killed aren't run, but count as killed again,
-			# unless their file has changed since.
-			@carried = last_run.killed
+			# Those the last run killed aren't run, but count as killed again.
+			@carried = last_run.killed.to_h { |key| [key, true] }
 		end
 
 		unless Process.respond_to?(:fork)
@@ -207,10 +206,9 @@ class Quickdraw::Commands::Mutate
 	end
 
 	# With --survivors, counts the job as killed, without running it, if the
-	# last run killed it and its file hasn't changed since. It trusts that the
-	# tests that killed it still do, as they do when tests are only added.
+	# last run killed it.
 	private def carry(job)
-		return false unless @carried && @carried[@plan.keys.fetch(job.mutant.id)] == source_fingerprint(job.mutant)
+		return false unless @carried&.key?(@plan.keys.fetch(job.mutant.id))
 
 		@carried_ids[job.mutant.id] = true
 		@outcomes << [job, ["killed", nil]]
@@ -232,8 +230,6 @@ class Quickdraw::Commands::Mutate
 		@rows << [job, row] if @tracks_kills
 		true
 	end
-
-	private def source_fingerprint(mutant) = @plan.fingerprints[:sources].fetch(relative(mutant.subject.path))
 
 	private def cache_key(job)
 		@cache_keys[job.mutant.id] ||= begin
@@ -257,10 +253,7 @@ class Quickdraw::Commands::Mutate
 		rows = @rows.to_h { |job, row| [job.mutant.id, row] }
 
 		@outcomes.each do |job, outcome|
-			# Not those --survivors carried over, which didn't run against what's there now.
-			next if @cached.key?(job.mutant.id) || @carried_ids.key?(job.mutant.id)
-
-			@cache.store(cache_key(job), outcome, rows[job.mutant.id])
+			@cache.store(cache_key(job), outcome, rows[job.mutant.id]) unless @cached.key?(job.mutant.id)
 		end
 
 		@cache.write
@@ -301,7 +294,7 @@ class Quickdraw::Commands::Mutate
 			duration: now - @started_at,
 		)
 
-		killed = report.killed.to_h { |job, _outcome| [@plan.keys.fetch(job.mutant.id), source_fingerprint(job.mutant)] }
+		killed = report.killed.map { |job, _outcome| @plan.keys.fetch(job.mutant.id) }
 		survivors_saved = Quickdraw::Mutation::Survivors.save(report.survivors, targets: survivor_targets, killed:)
 		save_cache
 		report.call(survivors_saved:)

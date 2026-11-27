@@ -95,10 +95,6 @@ class MutateTest < Quickdraw::Test
 		# Its kills count as the last run's, so running it again runs nothing.
 		match { project.run("mutate", "--survivors", "--format", "agent") => { stdout: /MUTATION SCORE: 100% \(11 of 11 killed\). 0 mutants in .*, and 11 killed in the last run, not run again/ } }
 
-		# Not once the file has changed, nor from the cache, which they didn't run against.
-		project.write("lib/pricing.rb" => PRICING.sub("total / 10", "total / 10 # changed"))
-		match { project.run("mutate", "--survivors", "--format", "agent") => { stdout: /MUTATION SCORE: 100% \(11 of 11 killed\)\. 11 mutants in / } }
-
 		match { project.run("mutate", "--survivors", "lib/pricing.rb") => { exit_status: 2, stderr: /can’t be used with files/ } }
 	end
 

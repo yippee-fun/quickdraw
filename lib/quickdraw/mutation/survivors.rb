@@ -3,8 +3,7 @@
 # The last run's survivors, for `quickdraw mutate --show`: each one's id,
 # heading, change, and the tests that ran it. With them, what `quickdraw
 # mutate --survivors` needs to run the last run again without its kills: the
-# lines it mutated, as targets, and the ids of the mutants it killed, each
-# with its file's fingerprint then. JSON,
+# lines it mutated, as targets, and the ids of the mutants it killed. JSON,
 # since a checkout's files are untrusted, through a temporary file, so it's
 # never part of one run.
 module Quickdraw::Mutation::Survivors
@@ -12,12 +11,12 @@ module Quickdraw::Mutation::Survivors
 
 	PATH = ".quickdraw/last-mutate.json"
 
-	# What --survivors runs again: `targets` as mutate takes them, and the mutants
-	# `killed`, as { id => their file's fingerprint }.
+	# What --survivors runs again: `targets` as mutate takes them, and the ids of
+	# the mutants `killed`.
 	Run = Data.define(:targets, :killed)
 
 	# Returns whether they were saved.
-	def save(survivors, targets: [], killed: {})
+	def save(survivors, targets: [], killed: [])
 		require "json"
 
 		begin
@@ -42,7 +41,7 @@ module Quickdraw::Mutation::Survivors
 	# The last run, for --survivors, or nil if none was recorded.
 	def last_run
 		data = read
-		Run.new(targets: data["targets"], killed: data["killed"]) if Hash === data && Array === data["targets"] && Hash === data["killed"]
+		Run.new(targets: data["targets"], killed: data["killed"]) if Hash === data && Array === data["targets"] && Array === data["killed"]
 	end
 
 	# A survivor in full, or every survivor a line each with `key` "all".
