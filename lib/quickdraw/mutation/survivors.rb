@@ -1,15 +1,22 @@
 # frozen_string_literal: true
 
 # The last run's survivors, for `quickdraw mutate --show`: each one's id,
-# heading, change, and the tests that ran it. JSON, since a checkout's files
-# are untrusted, through a temporary file, so it's never part of one run.
+# heading, change, and the tests that ran it. With them, what `quickdraw
+# mutate --survivors` needs to run the last run again without its kills: the
+# lines it mutated, as targets, and the ids of the mutants it killed. JSON,
+# since a checkout's files are untrusted, through a temporary file, so it's
+# never part of one run.
 module Quickdraw::Mutation::Survivors
 	extend self
 
 	PATH = ".quickdraw/last-mutate.json"
 
+	# What --survivors runs again: `targets` as mutate takes them, and the ids of
+	# the mutants `killed`.
+	Run = Data.define(:targets, :killed)
+
 	# Returns whether they were saved.
-	def save(survivors)
+	def save(survivors, targets: [], killed: [])
 		require "json"
 
 		begin
@@ -19,7 +26,11 @@ module Quickdraw::Mutation::Survivors
 		end
 
 		temporary = "#{PATH}.#{Process.pid}"
-		File.write(temporary, JSON.generate(survivors.map { |survivor| survivor.transform_values { |value| utf8(value) } }))
+		File.write(temporary, JSON.generate({
+			"targets" => utf8(targets),
+			"killed" => killed,
+			"survivors" => survivors.map { |survivor| survivor.transform_values { |value| utf8(value) } },
+		}))
 		File.rename(temporary, PATH)
 		true
 	rescue SystemCallError, JSON::GeneratorError => error
@@ -27,16 +38,20 @@ module Quickdraw::Mutation::Survivors
 		false
 	end
 
+	# The last run, for --survivors, or nil if none was recorded.
+	def last_run
+		data = read
+		Run.new(targets: data["targets"], killed: data["killed"]) if Hash === data && Array === data["targets"] && Array === data["killed"]
+	end
+
 	# A survivor in full, or every survivor a line each with `key` "all".
 	# Returns an exit status.
 	def show(key, io:)
 		require "json"
 
-		survivors = begin
-			JSON.parse(File.read(PATH, encoding: Encoding::UTF_8))
-		rescue Errno::ENOENT, JSON::ParserError
-			nil
-		end
+		survivors = read
+		# As an older Quickdraw saved them.
+		survivors = survivors["survivors"] if Hash === survivors
 
 		unless survivors
 			warn "No mutation run has been recorded here."
@@ -63,6 +78,13 @@ module Quickdraw::Mutation::Survivors
 		end
 
 		0
+	end
+
+	private def read
+		require "json"
+		JSON.parse(File.read(PATH, encoding: Encoding::UTF_8))
+	rescue Errno::ENOENT, JSON::ParserError
+		nil
 	end
 
 	private def utf8(value)

@@ -21,7 +21,7 @@ class Quickdraw::Mutation::Report
 	# `missing` are the subjects no worker found, and `broken` the test files
 	# that failed to load, crashed or timed out. `unique_tests` are the tests
 	# (Baselines) this changes, with --unique-kills.
-	def initialize(io, plan, format:, threshold:, matrix:, outcomes:, rows:, jobs:, reach_ids:, cached:, uncovered:, missing:, broken:, unique_tests:, interrupted:, duration:)
+	def initialize(io, plan, format:, threshold:, matrix:, outcomes:, rows:, jobs:, reach_ids:, cached:, uncovered:, missing:, broken:, unique_tests:, interrupted:, duration:, carried: {})
 		@io = io
 		@format = format
 		@threshold = threshold
@@ -34,6 +34,7 @@ class Quickdraw::Mutation::Report
 		@jobs = jobs
 		@reach_ids = reach_ids
 		@cached = cached
+		@carried = carried
 		@uncovered = uncovered
 		@missing = missing
 		@broken = broken
@@ -67,6 +68,9 @@ class Quickdraw::Mutation::Report
 
 		exit_status
 	end
+
+	# The [job, outcome] of each mutant counted as killed.
+	attr_reader :killed
 
 	# For --show (see Survivors).
 	def survivors
@@ -361,7 +365,7 @@ class Quickdraw::Mutation::Report
 
 	# How many mutants ran, and how fast, not counting those from the cache.
 	private def rate
-		outcomes = @outcomes.reject { |job, _outcome| @cached.key?(job.mutant.id) }
+		outcomes = @outcomes.reject { |job, _outcome| @cached.key?(job.mutant.id) || @carried.key?(job.mutant.id) }
 		ran = outcomes.size
 		judging = outcomes.count { |job, _outcome| @reach_ids.key?(job.mutant.id) }
 		judged = case judging
@@ -371,10 +375,11 @@ class Quickdraw::Mutation::Report
 		end
 
 		seconds = format("%.2fs", @duration)
-		return "All #{pluralize(@cached.size, 'mutant')} unchanged since an earlier run, so none ran, in #{seconds}" if ran == 0 && @cached.any?
+		return "All #{pluralize(@cached.size, 'mutant')} unchanged since an earlier run, so none ran, in #{seconds}" if ran == 0 && @cached.any? && @carried.empty?
 
 		cached = ", and #{@cached.size} unchanged since an earlier run" if @cached.any?
-		"#{pluralize(ran, 'mutant')}#{judged} in #{seconds}#{format(' (%.0f/s)', ran / @duration) if ran > 0}#{cached}"
+		carried = ", and #{@carried.size} killed in the last run, not run again" if @carried.any?
+		"#{pluralize(ran, 'mutant')}#{judged} in #{seconds}#{format(' (%.0f/s)', ran / @duration) if ran > 0}#{cached}#{carried}"
 	end
 
 	private def format_score(score)

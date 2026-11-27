@@ -34,6 +34,19 @@ class Quickdraw::Commands::Mutate
 
 		return Quickdraw::Mutation::Survivors.show(options[:show], io: @io) if options[:show]
 
+		if options[:survivors]
+			last_run = Quickdraw::Mutation::Survivors.last_run
+
+			unless last_run
+				warn "No mutation run has been recorded here for --survivors to run again."
+				return 2
+			end
+
+			options[:targets] = last_run.targets
+			# Those the last run killed aren't run, but count as killed again.
+			@carried = last_run.killed.to_h { |key| [key, true] }
+		end
+
 		unless Process.respond_to?(:fork)
 			warn "mutate needs fork, which this platform doesn’t support."
 			return 2
@@ -66,6 +79,9 @@ class Quickdraw::Commands::Mutate
 		@cache_keys = {}
 		# The ids of mutants whose outcomes came from the cache.
 		@cached = {}
+		# The ids of mutants that --survivors counted as killed, from the last run.
+		@carried_ids = {}
+		@carried ||= nil
 		@outcomes = []
 		@rows = []
 		@uncovered = []
@@ -93,7 +109,7 @@ class Quickdraw::Commands::Mutate
 
 	# Without running anything. JSON is still a report, with the message on stderr.
 	private def finish(message, status)
-		Quickdraw::Mutation::Survivors.save([])
+		Quickdraw::Mutation::Survivors.save([], targets: survivor_targets)
 
 		if @format == "json"
 			warn message
@@ -179,7 +195,7 @@ class Quickdraw::Commands::Mutate
 			end
 		end
 
-		jobs = @jobs.reject { |job| from_cache(job) }
+		jobs = @jobs.reject { |job| carry(job) || from_cache(job) }
 		@io.puts "RUNNING: #{pluralize(jobs.size, 'mutant')}#{", and #{@cached.size} unchanged since an earlier run" if @cached.any?}" if @format == "agent" && jobs.any?
 
 		runner.call(jobs) do |job, outcome, row|
@@ -187,6 +203,16 @@ class Quickdraw::Commands::Mutate
 			@rows << [job, row] if @tracks_kills
 			progress
 		end
+	end
+
+	# With --survivors, counts the job as killed, without running it, if the
+	# last run killed it.
+	private def carry(job)
+		return false unless @carried&.key?(@plan.keys.fetch(job.mutant.id))
+
+		@carried_ids[job.mutant.id] = true
+		@outcomes << [job, ["killed", nil]]
+		true
 	end
 
 	# Takes the job's outcome from an earlier run, if nothing it depends on has
@@ -259,6 +285,7 @@ class Quickdraw::Commands::Mutate
 			jobs: @jobs,
 			reach_ids: @reach_ids,
 			cached: @cached,
+			carried: @carried_ids,
 			uncovered: @uncovered,
 			missing: @missing,
 			broken: @broken,
@@ -267,9 +294,18 @@ class Quickdraw::Commands::Mutate
 			duration: now - @started_at,
 		)
 
-		survivors_saved = Quickdraw::Mutation::Survivors.save(report.survivors)
+		killed = report.killed.map { |job, _outcome| @plan.keys.fetch(job.mutant.id) }
+		survivors_saved = Quickdraw::Mutation::Survivors.save(report.survivors, targets: survivor_targets, killed:)
 		save_cache
 		report.call(survivors_saved:)
+	end
+
+	# The lines this mutates, as targets, so --survivors mutates them again
+	# even once they're committed, and no longer changed.
+	private def survivor_targets
+		return [] unless @plan.respond_to?(:mutants)
+
+		[*@plan.mutants, *@plan.ignored.map(&:first)].map { |mutant| "#{relative(mutant.subject.path)}:#{mutant.line}-#{mutant.last_line}" }.uniq
 	end
 
 	private def progress
@@ -306,7 +342,7 @@ class Quickdraw::Commands::Mutate
 	end
 
 	private def parse
-		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED, matrix: false, show: nil, base: nil, unique_kills: false, cache: true }
+		options = { targets: [], processes: nil, threshold: 100.0, format: nil, seed: DEFAULT_SEED, matrix: false, show: nil, base: nil, unique_kills: false, cache: true, survivors: false }
 
 		until @args.empty?
 			argument = @args.shift
@@ -330,6 +366,8 @@ class Quickdraw::Commands::Mutate
 			in "--show"
 				options[:show] = @args.shift
 				return usage("--show needs a survivor's id, from the last run, or all.") unless options[:show]
+			in "--survivors"
+				options[:survivors] = true
 			in "--matrix"
 				options[:matrix] = true
 			in "--unique-kills"
@@ -350,9 +388,11 @@ class Quickdraw::Commands::Mutate
 		end
 
 		return usage("--base mutates the lines changed since a ref, so it can’t be used with files.") if options[:base] && options[:targets].any?
+		return usage("--survivors mutates the last run's lines again, so it can’t be used with files or --base.") if options[:survivors] && (options[:base] || options[:targets].any?)
+		return usage("--survivors doesn’t run every test, so it can’t be used with --matrix or --unique-kills.") if options[:survivors] && (options[:matrix] || options[:unique_kills])
 
 		# In a pull request on GitHub Actions, what it changes.
-		options[:base] ||= "origin/#{ENV['GITHUB_BASE_REF']}" if options[:targets].empty? && !ENV["GITHUB_BASE_REF"].to_s.empty?
+		options[:base] ||= "origin/#{ENV['GITHUB_BASE_REF']}" if options[:targets].empty? && !options[:survivors] && !ENV["GITHUB_BASE_REF"].to_s.empty?
 		options
 	end
 
@@ -385,6 +425,8 @@ class Quickdraw::Commands::Mutate
 			        --format FORMAT   human, agent or json
 			        --show ID         Show a survivor from the last run: its change and the tests that ran it
 			                          (all lists every survivor)
+			        --survivors       Mutate the last run's lines again, but run only the mutants it didn't
+			                          kill, counting the rest as killed, for the score with tests added since
 		TEXT
 	end
 
