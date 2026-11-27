@@ -210,7 +210,7 @@ class Quickdraw::Mutation::Mutator
 					@removed[statement] = true if remove(statement)
 				end
 
-				visit(statement, first_line(statement))
+				visit(statement, covering_line(statement))
 			end
 
 			return
@@ -505,6 +505,17 @@ class Quickdraw::Mutation::Mutator
 		end
 	end
 
+	# The line a test is seen to run when it runs `node`: its first line, or if
+	# Ruby fires no line event there, as for a multi-line hash or array literal
+	# whose event is on its first element's line, the first line in it that
+	# does.
+	private def covering_line(node)
+		line = first_line(node)
+		return line if traced?(line)
+
+		(line..node.location.end_line).find { |candidate| traced?(candidate) } || line
+	end
+
 	# An `if` or `unless` after the statement it runs, as in `a if b`.
 	private def modifier?(node)
 		node in Prism::IfNode[if_keyword_loc: Prism::Location, end_keyword_loc: nil] | Prism::UnlessNode[end_keyword_loc: nil]
@@ -624,7 +635,7 @@ class Quickdraw::Mutation::Mutator
 		in Prism::NilNode | Prism::TrueNode | Prism::FalseNode | Prism::IntegerNode | Prism::StringNode | Prism::SymbolNode
 			nil
 		else
-			add(statement.location, "nil", "removed the statement", first_line(statement))
+			add(statement.location, "nil", "removed the statement", covering_line(statement))
 		end
 	end
 

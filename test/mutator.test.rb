@@ -185,10 +185,10 @@ class MutatorTest < Quickdraw::Test
 
 		assert_equal mutants(source, lines: [5]).map { |mutant| [mutant.description, mutant.line, mutant.covering_line] }, [
 			["replaced the body with nil", 3, 2],
-			["[ a + 1, ] → []", 4, 4],
-			["+ → -", 5, 4],
-			["1 → 2", 5, 4],
-			["1 → 0", 5, 4],
+			["[ a + 1, ] → []", 4, 5],
+			["+ → -", 5, 5],
+			["1 → 2", 5, 5],
+			["1 → 0", 5, 5],
 		]
 	end
 
@@ -291,6 +291,33 @@ class MutatorTest < Quickdraw::Test
 		# line, as one in parentheses does when it holds.
 		assert_equal covering.values_at("+ → -", "- → +", "* → /", "/ → *"), [5, 8, 9, 12]
 		assert_equal mutants(source).filter_map { |mutant| mutant.covering_line if mutant.description == "removed the statement" }, [5, 8, 9]
+	end
+
+	test "covers a multi-line literal by the first line in it that runs" do
+		source = <<~RUBY
+			class A
+				def call(a)
+					log(a)
+					{
+						a: 1,
+						b: "b",
+					}
+				end
+
+				def nested(a)
+					@options = {
+						a: a,
+						b: [1,
+							2],
+					}
+				end
+			end
+		RUBY
+
+		# Ruby fires each literal's line event on its first element's line, not the brace's.
+		covering = mutants(source).to_h { |mutant| [mutant.description, mutant.covering_line] }
+		assert_equal covering.values_at("removed the statement", "{ a: 1, b: \"b\", } → {}", "removed b: \"b\"", "\"b\" → \"\""), [3, 5, 5, 5]
+		assert_equal covering.values_at("removed a: a", "[1, 2] → []"), [12, 12]
 	end
 
 	test "removes an element or argument with the comma after it, keeping a trailing comma's line to itself" do
@@ -681,9 +708,9 @@ class MutatorTest < Quickdraw::Test
 
 		assert_equal mutants(source).map { |mutant| [mutant.description, mutant.after.strip, mutant.covering_line] }, [
 			["replaced the body with nil", "nil", 2],
-			["removed the statement", "nil", 3],
-			["removed the in branch", "", 3],
-			["removed the in branch", "", 3],
+			["removed the statement", "nil", 4],
+			["removed the in branch", "", 4],
+			["removed the in branch", "", 4],
 			["removed the statement", "nil", 7],
 			["removed the rescue", "risky", 7],
 			["rescued value → nil", "risky rescue nil", 7],
