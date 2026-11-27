@@ -53,6 +53,18 @@ end
 - **Timeouts:** tests time out after 300 seconds, or set one per test with `test "…", timeout: 5 do`.
 - **Scope:** methods and constants defined at the top of a test file are only visible to that file's tests.
 
+### Porting from Minitest
+
+Most of a Minitest suite ports by renaming `def test_adds` to `test "adds" do` and `< Minitest::Test` to `< Quickdraw::Test`. What differs:
+
+- **`assert_equal actual, expected`:** the value you have comes first, then the one you expect, the other way round from Minitest's `assert_equal expected, actual`. A test passes either way, so a mechanical port that keeps Minitest's order only shows it in failure output, where Expected and Actual are swapped. The same goes for `refute_equal`, `assert_same`, `assert_in_delta` and `assert_match` (value, then pattern, where Minitest has `assert_match pattern, value`). `assert_includes collection, member` is in Minitest's order.
+- **Messages:** assertions don't take a message argument. Give `assert` and `refute` a block that returns one (`assert(user.valid?) { user.errors.full_messages }`), or add `context { … }` to the test, which shows with any failure after it.
+- **`assert_raises`** takes one class, and no message: `error = assert_raises(ArgumentError) { parse("") }`, then `assert_equal error.message, "empty input"`. For one of several classes, pass a class they share and check `error.class` after.
+- **Not there, and what to use instead:** `assert_kind_of` and `assert_instance_of` are `assert_match value, Class` (which uses `===`) and `assert_equal value.class, Class`; `assert_predicate x, :empty?` and `assert_empty x` are `assert x.empty?`; `assert_respond_to` is `assert x.respond_to?(:name)`; `assert_output` is `context` or `--capture`; `flunk` is `assert(false) { "why" }`; `pass` is `assert true`. `assert_nil`, `assert_operator` and `assert_includes` are as in Minitest.
+- **Setup and teardown:** `setup` and `teardown` methods work as in Minitest, and `defer { … }` cleans up right where something is made. A `describe` block's `setup` should call `super`.
+- **Mocks:** `stub` and `spy` replace Minitest::Mock and `Object#stub`, and are undone after the test.
+- **Files:** test files end in `.test.rb`, and there's no `test_helper` to require: put what it did in `config/quickdraw.rb`.
+
 ## Properties
 
 `check` runs a block with values from generators, 100 times by default, to test something that should hold for any input:
@@ -136,6 +148,14 @@ qd --failed                # what failed last time
 qd --changed               # tests affected by uncommitted changes
 qd --changed --base main   # or by everything since this branched from main
 qd --watch                 # run again when files change
+```
+
+From Rake, run it as a task, which passes `qd`'s exit status on:
+
+```ruby
+# Rakefile
+task(:test) { sh "bundle exec qd" }
+task default: :test
 ```
 
 `quickdraw` and `qd` are the same command. `qd --help` lists every option. `qd all` and `qd browser` take the same options and paths (see Browser testing for which runs include browser tests).
