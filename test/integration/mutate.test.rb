@@ -253,6 +253,33 @@ class MutateTest < Quickdraw::Test
 		assert_includes result.stdout, "MUTATION SCORE: 100% (7 of 7 killed)"
 	end
 
+	test "times a mutant out by the test it hangs in, not by all its tests' time", timeout: 30 do
+		result = project(
+			"lib/waiter.rb" => <<~RUBY,
+				class Waiter
+					def self.wait
+						sleep 0.2
+						true
+					end
+				end
+			RUBY
+			"test/waiter.test.rb" => <<~RUBY,
+				require_relative "../lib/waiter"
+				class WaiterTest < Quickdraw::Test
+					8.times do |index|
+						test("waits \#{index}") { assert Waiter.wait }
+					end
+				end
+			RUBY
+		).run("mutate", "lib/waiter.rb", "--format", "json")
+
+		report = JSON.parse(result.stdout)
+
+		# Sleeping 1.2s overruns the first test's 1.1s, where all eight tests' would be 5.3s.
+		assert_equal report["timed_out"], 1
+		assert_operator report["duration"], :<, 5
+	end
+
 	test "keeps a mutated method's visibility, and module functions' copies", timeout: 30 do
 		result = project(
 			"lib/secrets.rb" => <<~RUBY,

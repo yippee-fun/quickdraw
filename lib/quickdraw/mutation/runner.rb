@@ -12,11 +12,18 @@ class Quickdraw::Mutation::Runner
 	# it's marked `mutation: false`.
 	Baseline = Data.define(:path, :index, :name, :line, :status, :duration, :lines, :exempt)
 
-	# What a mutant runs: `tests` (Baselines) in order, until one fails, for up to `seconds`.
-	Job = Data.define(:mutant, :tests, :seconds)
+	# What a mutant runs: `tests` (Baselines) in order, until one fails.
+	Job = Data.define(:mutant, :tests)
+
+	# Each of a mutant's tests may take this many times as long as it did
+	# unmutated, plus TIMEOUT_MARGIN seconds, before the mutant counts as
+	# looping forever, which kills it. Each test has its own, so a hang shows
+	# in the first test it hangs, rather than after all their time.
+	TIMEOUT_FACTOR = 3
+	TIMEOUT_MARGIN = 0.5
 
 	# With `matrix`, each mutant runs all its tests, and #call yields which
-	# killed it (see Worker#mutate_every_test).
+	# killed it (see Worker#mutate).
 	def initialize(test_files, processes:, seed:, matrix: false)
 		@pool = Quickdraw::WorkerPool.new(test_files, processes:, seed:)
 		@matrix = matrix
@@ -128,7 +135,8 @@ class Quickdraw::Mutation::Runner
 		tests, unloaded = job.tests.partition { |test| slot.load(test.path) }
 		return [["unloaded", unloaded.first.path], nil] if tests.empty?
 
-		slot.write([:mutant, job.mutant, tests.map { |test| [test.path, test.index] }, job.seconds, @matrix])
+		timeouts = tests.map { |test| (test.duration * TIMEOUT_FACTOR) + TIMEOUT_MARGIN }
+		slot.write([:mutant, job.mutant, tests.map { |test| [test.path, test.index] }, timeouts, @matrix])
 		_, _id, outcome, row = slot.expect(:mutant)
 		row = row.merge("complete" => false) if row && unloaded.any?
 

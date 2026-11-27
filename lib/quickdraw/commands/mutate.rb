@@ -13,11 +13,6 @@ class Quickdraw::Commands::Mutate
 
 	FORMATS = ["human", "agent", "json"].freeze
 
-	# A mutant's tests may take this many times as long as they did unmutated,
-	# plus TIMEOUT_MARGIN seconds, before it counts as looping forever, which kills it.
-	TIMEOUT_FACTOR = 3
-	TIMEOUT_MARGIN = 0.5
-
 	# Fixed, so a test that uses rand, such as a property, kills the same mutants every time.
 	DEFAULT_SEED = 0
 
@@ -238,7 +233,7 @@ class Quickdraw::Commands::Mutate
 
 	private def job(mutant, tests)
 		tests = tests.sort_by(&:duration)
-		Quickdraw::Mutation::Runner::Job.new(mutant:, tests:, seconds: (tests.sum(&:duration) * TIMEOUT_FACTOR) + TIMEOUT_MARGIN)
+		Quickdraw::Mutation::Runner::Job.new(mutant:, tests:)
 	end
 
 	# The tests (Baselines) this adds or changes.

@@ -301,8 +301,8 @@ class Quickdraw::Worker
 				@channel.write([:ready, Process.pid])
 			in [:baseline, path, subjects]
 				@channel.write([:baseline, path, *baseline(path, subjects)])
-			in [:mutant, mutant, tests, seconds, matrix]
-				outcome, row = matrix ? mutate_every_test(mutant, tests, seconds) : [mutate(mutant, tests, seconds), nil]
+			in [:mutant, mutant, tests, timeouts, matrix]
+				outcome, row = mutate(mutant, tests, timeouts, every: matrix)
 				@channel.write([:mutant, mutant.id, outcome, row])
 			in [:fuzz, path, index, settings]
 				Quickdraw::Fuzz::Session.new(@channel, @files.fetch(path).fetch(index), test_seed: test_seed(path, index), **settings).call
@@ -533,36 +533,27 @@ class Quickdraw::Worker
 		outcome unless outcome == :timeout
 	end
 
-	# Runs `tests`, as [path, index], against `mutant` in a fork until one fails.
-	# Returns the outcome: ["killed", [path, index]] with the test that failed,
-	# ["survived"], ["timeout"] after `seconds`, ["crashed"], or ["unapplied", why].
-	private def mutate(mutant, tests, seconds)
-		outcome = in_fork(seconds) do
-			# Its thread didn't survive the fork. This process times the fork out instead.
-			@watchdog = nil
-			run_mutant(mutant, tests)
-		end
-
-		case outcome
-		in nil then ["crashed"]
-		in :timeout then ["timeout"]
-		else outcome
-		end
-	end
-
-	# For --matrix: runs every one of `tests` against `mutant` in a fork, rather
-	# than stopping at the first to fail, and returns the outcome #mutate would,
-	# with a row of which tests killed it: { "killed" => [[path, index]], "ran"
-	# => count, "complete" => whether every test ran }. Each test's outcome
-	# comes as it's known, so a later test that crashes or hangs the fork
-	# leaves the row incomplete, not lost, and a kill before it still counts.
-	private def mutate_every_test(mutant, tests, seconds)
+	# Runs `tests`, as [path, index], against `mutant` in a fork until one
+	# fails, or every one of them with `every` (for --matrix). Each test may
+	# take its one of `timeouts` seconds, so a mutant that hangs is stopped as
+	# soon as the test it hangs in overruns, not after all of theirs. Returns
+	# the outcome: ["killed", [path, index]] with the first test that failed,
+	# ["survived"], ["timeout"], ["crashed"], or ["unapplied", why]. Then, with
+	# `every`, a row of which tests killed it: { "killed" => [[path, index]],
+	# "ran" => count, "complete" => whether every test ran }. Each test's
+	# outcome comes as it's known, so a later test that crashes or hangs the
+	# fork leaves the row incomplete, not lost, and a kill before it still
+	# counts.
+	private def mutate(mutant, tests, timeouts, every:)
+		# So a property's failing case is neither replayed in the fork nor saved
+		# from it, where it would change other mutants' runs.
 		Quickdraw::Property.directory = File::NULL
 		reader, writer = IO.pipe
-		deadline = seconds && (now + seconds)
+		deadline = timeouts.first && (now + timeouts.first)
 
 		pid = Process.fork do
 			reader.close
+			# Its thread didn't survive the fork. This process times the fork out instead.
 			@watchdog = nil
 
 			begin
@@ -577,7 +568,9 @@ class Quickdraw::Worker
 			tests.each do |path, index|
 				seed(path, index)
 				result = run(@files.fetch(path).fetch(index))
-				writer.write(Quickdraw::Channel.encode([:test, path, index, result["failures"].any? || result["errors"].any?]))
+				failed = result["failures"].any? || result["errors"].any?
+				writer.write(Quickdraw::Channel.encode([:test, path, index, failed]))
+				break if failed && !every
 			end
 
 			writer.write(Quickdraw::Channel.encode([:done]))
@@ -606,6 +599,8 @@ class Quickdraw::Worker
 			in [:test, path, index, failed]
 				ran += 1
 				killed << [path, index] if failed
+				# The next test's own time, from now.
+				deadline = timeouts[ran] && (now + timeouts[ran])
 			in [:unapplied, reason] then return [["unapplied", reason], nil]
 			in [:done] then ending = :done
 			in nil then ending = :crashed
@@ -618,7 +613,7 @@ class Quickdraw::Worker
 		else ["crashed"]
 		end
 
-		[outcome, { "killed" => killed, "ran" => ran, "complete" => ending == :done }]
+		[outcome, ({ "killed" => killed, "ran" => ran, "complete" => ending == :done } if every)]
 	ensure
 		reader&.close
 		writer&.close
@@ -709,24 +704,6 @@ class Quickdraw::Worker
 		!!Process.wait2(pid, Process::WNOHANG)
 	rescue Errno::ECHILD
 		true
-	end
-
-	private def run_mutant(mutant, tests)
-		begin
-			mutant.apply
-		rescue Quickdraw::Interrupted
-			raise
-		rescue Exception => error
-			return ["unapplied", Quickdraw.plain_string("#{error.class}: #{error.message}")]
-		end
-
-		tests.each do |path, index|
-			seed(path, index)
-			result = run(@files.fetch(path).fetch(index))
-			return ["killed", [path, index]] if result["failures"].any? || result["errors"].any?
-		end
-
-		["survived"]
 	end
 
 	# Seeded by test rather than by process, so `rand` in a test gives the same

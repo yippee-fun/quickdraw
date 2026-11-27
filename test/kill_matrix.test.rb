@@ -7,7 +7,7 @@ class KillMatrixTest < Quickdraw::Test
 
 	def baseline(index) = Baseline.new(path: "a.test.rb", index:, name: "test #{index}", line: index + 1, status: "passed", duration: 0.001, lines: {}, exempt: false)
 
-	def job(id, *indices) = Job.new(mutant: Mutant.new(id:), tests: indices.map { |index| baseline(index) }, seconds: 1)
+	def job(id, *indices) = Job.new(mutant: Mutant.new(id:), tests: indices.map { |index| baseline(index) })
 
 	def row(*killed, complete: true) = { "killed" => killed.map { |index| ["a.test.rb", index] }, "ran" => 0, "complete" => complete }
 

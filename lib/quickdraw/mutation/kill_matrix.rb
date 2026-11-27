@@ -11,7 +11,7 @@ class Quickdraw::Mutation::KillMatrix
 	# A test (a Runner::Baseline) and how many mutants it ran against or killed.
 	Entry = Data.define(:test, :count)
 
-	# `results` are [Runner::Job, row] pairs (see Worker#mutate_every_test),
+	# `results` are [Runner::Job, row] pairs (see Worker#mutate),
 	# where a row is nil if the mutant didn't run.
 	def initialize(results)
 		@tests = {}
