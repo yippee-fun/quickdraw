@@ -52,6 +52,20 @@ class LeaksTest < Quickdraw::Test
 		refute_includes result.output, "LEAK"
 	end
 
+	test "doesn't count a detached child that's still running", timeout: 20 do
+		skip "Leak checks need fork" unless Process.respond_to?(:fork)
+
+		result = project("daemon.test.rb" => <<~RUBY).run("-p", "1", "--no-history", "--leaks", "fail", "--format", "agent")
+			class Daemon < Quickdraw::Test
+				test("detaches a child") { Process.detach(spawn("sleep", "1")); assert true }
+				test("starts another") { spawn("sleep", "1"); assert true }
+			end
+		RUBY
+
+		refute_includes result.stdout, "detaches a child"
+		assert_match result.stdout, /^ERROR daemon\.test\.rb:3 Daemon › starts another: Quickdraw::Leak: Child process \d+ \(sleep\) is still running\.$/
+	end
+
 	test "reports a child process that exited without being waited for", timeout: 20 do
 		skip "Leak checks need fork" unless Process.respond_to?(:fork)
 

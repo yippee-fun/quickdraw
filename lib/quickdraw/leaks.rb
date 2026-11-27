@@ -233,20 +233,28 @@ class Quickdraw::Leaks
 
 			ProcessStarts.started = false
 			leaks = nil
-			settle_detached
+			detached = settle_detached
 			pid, status = wait_for_child
 
 			while pid
-				(leaks ||= []) << { "kind" => "process", "message" => "Child process #{pid} exited (#{status}), but wasn't waited for." }
+				(leaks ||= []) << { "kind" => "process", "message" => "Child process #{pid} exited (#{status}), but wasn't waited for." } unless detached.key?(pid)
 				pid, status = wait_for_child
 			end
 
 			if status == :running
-				@children = :leaked
+				# One that Process.detach waits for is waited for. Not knowing
+				# which are running, as when one has just exited, is only a leak
+				# if none are detached.
+				running = running_children.reject { |child_pid, _label| child_pid ? detached.key?(child_pid) : detached.any? }
+
+				if running.any?
+					@children = :leaked
+					(leaks ||= []).concat(running.map { |_child_pid, label| { "kind" => "process", "message" => "Child process #{label} is still running." } })
+				end
+
 				# Until they've been reaped, checks wait for children, which the
 				# worker must know so as not to charge their CPU to the next test.
 				ProcessStarts.started = true
-				(leaks ||= []).concat(running_children.map { |child| { "kind" => "process", "message" => "Child process #{child} is still running." } })
 			end
 
 			leaks
@@ -263,15 +271,16 @@ class Quickdraw::Leaks
 		end
 	end
 
-	# Gives Process.detach's threads a moment to reap children that have just
-	# exited, such as one a test killed, so they aren't taken for children
-	# nobody waited for. One that's still running is still a leak.
+	# The pids of the children Process.detach's threads wait for, as { pid =>
+	# true }, after giving them a moment to reap those that have just exited,
+	# such as one a test killed, before this reaps them first.
 	private def settle_detached
 		waiters = Thread.list.select { |thread| Process::Waiter === thread && thread.alive? }
-		return if waiters.empty?
+		return {} if waiters.empty?
 
 		deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + DETACH_GRACE
 		waiters.each { |waiter| waiter.join((deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)).clamp(0, nil)) }
+		waiters.to_h { |waiter| [waiter.pid, true] }
 	end
 
 	# [pid, status] for a child that has exited, which this reaps, or [nil,
@@ -283,8 +292,9 @@ class Quickdraw::Leaks
 		[nil, :none]
 	end
 
-	# Running children's pids and programs, from ps, which is only run once a
-	# leak is found. Not their arguments, which can be secrets.
+	# Running children as [pid, "pid (program)"], from ps, which is only run
+	# once a leak is found, or [nil, "(unknown)"] if ps can't say. Not their
+	# arguments, which can be secrets.
 	private def running_children
 		parent = Process.pid.to_s
 		ps = nil
@@ -295,12 +305,12 @@ class Quickdraw::Leaks
 
 		children = table.lines.filter_map do |line|
 			pid, ppid, program = line.strip.split(" ", 3)
-			"#{pid} (#{File.basename(program.to_s)})" if ppid == parent && pid != ps
+			[Integer(pid, 10), "#{pid} (#{File.basename(program.to_s)})"] if ppid == parent && pid != ps
 		end
 
-		children.empty? ? ["(unknown)"] : children
+		children.empty? ? [[nil, "(unknown)"]] : children
 	rescue SystemCallError
-		["(unknown)"]
+		[[nil, "(unknown)"]]
 	end
 
 	# Names only, since values can be secrets.
